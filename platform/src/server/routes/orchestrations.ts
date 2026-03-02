@@ -28,13 +28,11 @@ export function orchestrationRoutes(orchestrator: SubagentOrchestrator) {
         name: body.name,
         userID: "default",
         tasks: body.tasks.map((t) => ({
-          label: t.label,
-          agentID: t.agentID,
+          agentID: t.agentID ?? "default",
           prompt: t.prompt,
           dependsOn: t.dependsOn,
-          retries: t.retries,
+          maxRetries: t.retries,
         })),
-        maxConcurrency: body.maxConcurrency,
       })
       return c.json(orch, 201)
     })

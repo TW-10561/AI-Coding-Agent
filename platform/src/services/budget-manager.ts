@@ -111,9 +111,9 @@ export class BudgetManager {
       ON CONFLICT(user_id, window)
       DO UPDATE SET max_tokens=excluded.max_tokens, max_requests=excluded.max_requests,
                     max_cost_cents=excluded.max_cost_cents, hard_limit=excluded.hard_limit
-    `, limit.id, limit.userID, limit.window, limit.maxTokens ?? null,
+    `, [limit.id, limit.userID, limit.window, limit.maxTokens ?? null,
        limit.maxRequests ?? null, limit.maxCostCents ?? null,
-       limit.hardLimit ? 1 : 0, Date.now())
+       limit.hardLimit ? 1 : 0, Date.now()])
     return limit
   }
 
@@ -144,8 +144,8 @@ export class BudgetManager {
     this.db.run(`
       INSERT INTO budget_usage (id, user_id, timestamp, tokens_input, tokens_output, cost_cents, session_id, task_id, model_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, ulid(), entry.userID, Date.now(), entry.tokensInput, entry.tokensOutput,
-       entry.costCents ?? 0, entry.sessionID ?? null, entry.taskID ?? null, entry.modelID ?? null)
+    `, [ulid(), entry.userID, Date.now(), entry.tokensInput, entry.tokensOutput,
+       entry.costCents ?? 0, entry.sessionID ?? null, entry.taskID ?? null, entry.modelID ?? null])
   }
 
   /** Check if a user can make a request (pre-flight check) */

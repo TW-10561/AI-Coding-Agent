@@ -133,10 +133,10 @@ export class TaskStateTracker {
       INSERT INTO tasks (id, user_id, workspace_id, type, state, title, prompt, agent_id, model_id,
                          progress, retries, max_retries, priority, created_at, orchestration_id, metadata)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, task.id, task.userID, task.workspaceID ?? null, task.type, task.state,
+    `, [task.id, task.userID, task.workspaceID ?? null, task.type, task.state,
        task.title, task.prompt, task.agentID ?? null, task.modelID ?? null,
        task.progress, task.retries, task.maxRetries, task.priority, task.createdAt,
-       task.orchestrationID ?? null, JSON.stringify(task.metadata))
+       task.orchestrationID ?? null, JSON.stringify(task.metadata)])
 
     return task
   }
@@ -170,7 +170,7 @@ export class TaskStateTracker {
 
     const setClauses = Object.keys(updates).map(k => `${k} = ?`).join(", ")
     const values = Object.values(updates)
-    this.db.run(`UPDATE tasks SET ${setClauses} WHERE id = ?`, ...values, id)
+    this.db.run(`UPDATE tasks SET ${setClauses} WHERE id = ?`, ...(values as any[]), id)
 
     const updated = this.get(id)!
     for (const cb of this.listeners) cb(updated, from, to)
@@ -181,13 +181,13 @@ export class TaskStateTracker {
   updateProgress(id: string, progress: number, currentStep?: string): void {
     this.db.run(
       "UPDATE tasks SET progress = ?, current_step = ? WHERE id = ?",
-      Math.min(100, Math.max(0, progress)), currentStep ?? null, id
+      [Math.min(100, Math.max(0, progress)), currentStep ?? null, id]
     )
   }
 
   /** Set the session ID once OpenCode creates it */
   setSession(id: string, sessionID: string): void {
-    this.db.run("UPDATE tasks SET session_id = ? WHERE id = ?", sessionID, id)
+    this.db.run("UPDATE tasks SET session_id = ? WHERE id = ?", [sessionID, id])
   }
 
   /** Get task by ID */
@@ -231,7 +231,7 @@ export class TaskStateTracker {
 
     const rows = this.db
       .query(`SELECT * FROM tasks ${where} ORDER BY ${orderBy} LIMIT ? OFFSET ?`)
-      .all(...params, limit, offset) as any[]
+      .all(...(params as any[]), limit, offset) as any[]
 
     return rows.map(this.rowToTask)
   }
@@ -245,7 +245,7 @@ export class TaskStateTracker {
 
     const row = this.db
       .query(`SELECT * FROM tasks WHERE ${conditions.join(" AND ")} ORDER BY priority ASC, created_at ASC LIMIT 1`)
-      .get(...params) as any
+      .get(...(params as any[])) as any
 
     return row ? this.rowToTask(row) : undefined
   }
@@ -260,7 +260,7 @@ export class TaskStateTracker {
 
     const rows = this.db
       .query(`SELECT state, COUNT(*) as c FROM tasks ${where} GROUP BY state`)
-      .all(...params) as any[]
+      .all(...(params as any[])) as any[]
 
     const result: any = { queued: 0, running: 0, completed: 0, failed: 0, aborted: 0, paused: 0, retrying: 0, total: 0 }
     for (const r of rows) {
@@ -281,7 +281,7 @@ export class TaskStateTracker {
     const cutoff = Date.now() - olderThanMs
     const result = this.db.run(
       "DELETE FROM tasks WHERE state IN ('completed','failed','aborted') AND completed_at < ?",
-      cutoff
+      [cutoff]
     )
     return result.changes
   }

@@ -9,11 +9,8 @@ import type { ScalableQueue } from "../../services/scalable-queue"
 
 const EnqueueBody = z.object({
   prompt: z.string().min(1),
-  directory: z.string().optional(),
   agentID: z.string().optional(),
   modelID: z.string().optional(),
-  providerID: z.string().optional(),
-  sessionID: z.string().optional(),
   workspaceID: z.string().optional(),
   priority: z.number().optional(),
 })
@@ -25,12 +22,10 @@ export function queueRoutes(queue: ScalableQueue) {
       const body = EnqueueBody.parse(await c.req.json())
       const task = await queue.enqueue({
         userID: "default",
+        title: body.prompt.slice(0, 100),
         prompt: body.prompt,
-        directory: body.directory ?? process.cwd(),
         agentID: body.agentID,
         modelID: body.modelID,
-        providerID: body.providerID,
-        sessionID: body.sessionID,
         workspaceID: body.workspaceID,
         priority: body.priority,
       })

@@ -97,8 +97,8 @@ export class WorkspaceManager {
     this.db.run(`
       INSERT INTO workspaces (id, name, directory, description, tags, active, created_at, last_accessed_at, metadata)
       VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
-    `, ws.id, ws.name, ws.directory, ws.description ?? null,
-       JSON.stringify(ws.tags), ws.createdAt, ws.lastAccessedAt, JSON.stringify(ws.metadata))
+    `, [ws.id, ws.name, ws.directory, ws.description ?? null,
+       JSON.stringify(ws.tags), ws.createdAt, ws.lastAccessedAt, JSON.stringify(ws.metadata)])
 
     return ws
   }
@@ -115,7 +115,7 @@ export class WorkspaceManager {
 
     // Deactivate all, activate this one
     this.db.run("UPDATE workspaces SET active = 0")
-    this.db.run("UPDATE workspaces SET active = 1, last_accessed_at = ? WHERE id = ?", Date.now(), id)
+    this.db.run("UPDATE workspaces SET active = 1, last_accessed_at = ? WHERE id = ?", [Date.now(), id])
     this._activeID = id
     ws.active = true
     ws.lastAccessedAt = Date.now()
@@ -158,10 +158,10 @@ export class WorkspaceManager {
     const ws = this.get(id)
     if (!ws) throw new Error(`Workspace not found: ${id}`)
 
-    if (patch.name !== undefined) this.db.run("UPDATE workspaces SET name = ? WHERE id = ?", patch.name, id)
-    if (patch.description !== undefined) this.db.run("UPDATE workspaces SET description = ? WHERE id = ?", patch.description, id)
-    if (patch.tags !== undefined) this.db.run("UPDATE workspaces SET tags = ? WHERE id = ?", JSON.stringify(patch.tags), id)
-    if (patch.metadata !== undefined) this.db.run("UPDATE workspaces SET metadata = ? WHERE id = ?", JSON.stringify(patch.metadata), id)
+    if (patch.name !== undefined) this.db.run("UPDATE workspaces SET name = ? WHERE id = ?", [patch.name, id])
+    if (patch.description !== undefined) this.db.run("UPDATE workspaces SET description = ? WHERE id = ?", [patch.description, id])
+    if (patch.tags !== undefined) this.db.run("UPDATE workspaces SET tags = ? WHERE id = ?", [JSON.stringify(patch.tags), id])
+    if (patch.metadata !== undefined) this.db.run("UPDATE workspaces SET metadata = ? WHERE id = ?", [JSON.stringify(patch.metadata), id])
 
     return this.get(id)!
   }
@@ -170,7 +170,7 @@ export class WorkspaceManager {
   delete(id: string): boolean {
     const ws = this.get(id)
     if (!ws) return false
-    this.db.run("DELETE FROM workspaces WHERE id = ?", id)
+    this.db.run("DELETE FROM workspaces WHERE id = ?", [id])
     if (this._activeID === id) this._activeID = null
     return true
   }

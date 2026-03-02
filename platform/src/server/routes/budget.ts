@@ -20,8 +20,7 @@ export function budgetRoutes(budget: BudgetManager) {
     // Check budget for a user
     .get("/check", async (c) => {
       const userID = c.req.query("userID") ?? "default"
-      const tokens = Number(c.req.query("tokens") ?? "0")
-      const result = budget.check(userID, tokens)
+      const result = budget.check(userID)
       return c.json(result)
     })
 
@@ -36,11 +35,14 @@ export function budgetRoutes(budget: BudgetManager) {
     .put("/limits", async (c) => {
       const body = SetLimitsBody.parse(await c.req.json())
       const userID = c.req.query("userID") ?? "default"
-      budget.setLimit(userID, body.window as BudgetWindow, {
+      budget.setLimit({
+        id: (await import("ulid")).ulid(),
+        userID,
+        window: body.window as BudgetWindow,
         maxTokens: body.maxTokens,
         maxRequests: body.maxRequests,
         maxCostCents: body.maxCostCents,
-        hardLimit: body.hardLimit,
+        hardLimit: body.hardLimit ?? false,
       })
       return c.json({ ok: true })
     })
@@ -52,7 +54,12 @@ export function budgetRoutes(budget: BudgetManager) {
         tokens: z.number(),
         costCents: z.number().optional(),
       }).parse(await c.req.json())
-      budget.recordUsage(body.userID, body.tokens, body.costCents)
+      budget.recordUsage({
+        userID: body.userID,
+        tokensInput: body.tokens,
+        tokensOutput: 0,
+        costCents: body.costCents,
+      })
       return c.json({ ok: true })
     })
 }

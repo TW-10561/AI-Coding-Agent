@@ -67,7 +67,6 @@ const scalableQueue = new ScalableQueue({
   budget,
   concurrency: 4,
   maxQueueDepth: 200,
-  maxRetries: 3,
 })
 const orchestrator = new SubagentOrchestrator({ client, audit })
 const parallelExecutor = new ParallelExecutionManager({

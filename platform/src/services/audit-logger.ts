@@ -202,7 +202,7 @@ export class AuditLogger {
 
     const rows = this.db
       .query(`SELECT * FROM audit_log ${where} ORDER BY timestamp DESC LIMIT ? OFFSET ?`)
-      .all(...params, limit, offset) as any[]
+      .all(...(params as any[]), limit, offset) as any[]
 
     return rows.map(this.rowToEntry)
   }
@@ -227,13 +227,13 @@ export class AuditLogger {
     }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : ""
 
-    const total = (this.db.query(`SELECT COUNT(*) as c FROM audit_log ${where}`).get(...params) as any)?.c ?? 0
-    const errors = (this.db.query(`SELECT COUNT(*) as c FROM audit_log ${where} ${where ? "AND" : "WHERE"} success = 0`).get(...params) as any)?.c ?? 0
-    const avgDur = (this.db.query(`SELECT AVG(duration) as d FROM audit_log ${where} ${where ? "AND" : "WHERE"} duration IS NOT NULL`).get(...params) as any)?.d ?? 0
+    const total = (this.db.query(`SELECT COUNT(*) as c FROM audit_log ${where}`).get(...(params as any[])) as any)?.c ?? 0
+    const errors = (this.db.query(`SELECT COUNT(*) as c FROM audit_log ${where} ${where ? "AND" : "WHERE"} success = 0`).get(...(params as any[])) as any)?.c ?? 0
+    const avgDur = (this.db.query(`SELECT AVG(duration) as d FROM audit_log ${where} ${where ? "AND" : "WHERE"} duration IS NOT NULL`).get(...(params as any[])) as any)?.d ?? 0
 
     const actionRows = this.db
       .query(`SELECT action, COUNT(*) as c FROM audit_log ${where} GROUP BY action`)
-      .all(...params) as any[]
+      .all(...(params as any[])) as any[]
     const byAction: Record<string, number> = {}
     for (const r of actionRows) byAction[r.action] = r.c
 

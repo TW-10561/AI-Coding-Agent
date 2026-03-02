@@ -30,8 +30,8 @@ export function auditRoutes(audit: AuditLogger) {
         sessionID: q.sessionID,
         workspaceID: q.workspaceID,
         success: q.success ? q.success === "true" : undefined,
-        from: q.from ? new Date(q.from).getTime() : undefined,
-        to: q.to ? new Date(q.to).getTime() : undefined,
+        since: q.from ? new Date(q.from).getTime() : undefined,
+        until: q.to ? new Date(q.to).getTime() : undefined,
         limit: q.limit ? Number(q.limit) : undefined,
         offset: q.offset ? Number(q.offset) : undefined,
       })
@@ -43,8 +43,7 @@ export function auditRoutes(audit: AuditLogger) {
       const from = c.req.query("from")
       const to = c.req.query("to")
       const stats = audit.stats({
-        from: from ? new Date(from).getTime() : undefined,
-        to: to ? new Date(to).getTime() : undefined,
+        since: from ? new Date(from).getTime() : undefined,
       })
       return c.json(stats)
     })

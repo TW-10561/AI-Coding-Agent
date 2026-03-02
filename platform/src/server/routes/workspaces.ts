@@ -71,8 +71,7 @@ export function workspaceRoutes(workspaces: WorkspaceManager) {
 
     // Workspace stats
     .get("/:id/stats", async (c) => {
-      const stats = workspaces.stats(c.req.param("id"))
-      if (!stats) return c.json({ error: "not_found" }, 404)
+      const stats = workspaces.stats()
       return c.json(stats)
     })
 }
