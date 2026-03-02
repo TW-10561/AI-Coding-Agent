@@ -1,0 +1,192 @@
+// ---------------------------------------------------------------------------
+// OpenCode process manager — spawns and supervises the self-hosted OpenCode
+// server as a child process of the platform.
+// ---------------------------------------------------------------------------
+
+import { env } from "../config/env"
+import { OpenCodeClient } from "./opencode-client"
+
+export class OpenCodeProcess {
+  private proc: ReturnType<typeof Bun.spawn> | undefined
+  private _url: string | undefined
+  private _ready = false
+
+  get url() {
+    return this._url ?? env.OPENCODE_URL
+  }
+  get ready() {
+    return this._ready
+  }
+
+  /**
+   * Start the OpenCode server if not already running.
+   * Waits until it prints its listen line, then marks ready.
+   */
+  async start(opts?: {
+    port?: number
+    hostname?: string
+    directory?: string
+    config?: Record<string, unknown>
+  }): Promise<string> {
+    if (this._ready) return this.url
+
+    const port = opts?.port ?? new URL(env.OPENCODE_URL).port ?? "4096"
+    const hostname = opts?.hostname ?? "127.0.0.1"
+    const dir = opts?.directory ?? env.OPENCODE_DIR
+
+    const envVars: Record<string, string> = {
+      ...process.env as Record<string, string>,
+      HOME: process.env.HOME ?? "/root",
+    }
+
+    // Forward server auth
+    if (env.OPENCODE_SERVER_USERNAME) envVars.OPENCODE_SERVER_USERNAME = env.OPENCODE_SERVER_USERNAME
+    if (env.OPENCODE_SERVER_PASSWORD) envVars.OPENCODE_SERVER_PASSWORD = env.OPENCODE_SERVER_PASSWORD
+
+    // Inject vLLM config so OpenCode uses the local LLM
+    const opencodeConfig = opts?.config ?? buildVllmConfig()
+    envVars.OPENCODE_CONFIG_CONTENT = JSON.stringify(opencodeConfig)
+
+    const args = [
+      env.OPENCODE_BIN,
+      "serve",
+      `--port=${port}`,
+      `--hostname=${hostname}`,
+    ]
+
+    console.log(`[opencode-process] starting: ${args.join(" ")}`)
+
+    this.proc = Bun.spawn(args, {
+      cwd: dir,
+      env: envVars,
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+
+    // Wait for the server to print its listen URL (max 30 s)
+    const url = await this.waitForReady(30_000)
+    this._url = url
+    this._ready = true
+    console.log(`[opencode-process] ready at ${url}`)
+
+    // Keep draining stderr in background
+    this.drainStderr()
+
+    return url
+  }
+
+  /**
+   * Gracefully stop the OpenCode server.
+   */
+  async stop() {
+    if (!this.proc) return
+    console.log("[opencode-process] stopping")
+    try {
+      // Try graceful dispose first
+      const client = new OpenCodeClient({ url: this.url })
+      await client.dispose().catch(() => {})
+    } catch {}
+    this.proc.kill("SIGTERM")
+    await this.proc.exited
+    this._ready = false
+    this.proc = undefined
+    console.log("[opencode-process] stopped")
+  }
+
+  // ── Internal helpers ─────────────────────────────────────────────
+
+  private async waitForReady(timeout: number): Promise<string> {
+    if (!this.proc?.stdout) throw new Error("No stdout on child process")
+
+    const stdout = this.proc.stdout
+    if (typeof stdout === "number") throw new Error("stdout is a file descriptor, not a stream")
+
+    const decoder = new TextDecoder()
+    let buffer = ""
+    const reader = stdout.getReader()
+    const deadline = Date.now() + timeout
+
+    while (Date.now() < deadline) {
+      const { value, done } = await Promise.race([
+        reader.read(),
+        new Promise<{ value: undefined; done: true }>((resolve) =>
+          setTimeout(() => resolve({ value: undefined, done: true }), deadline - Date.now()),
+        ),
+      ])
+
+      if (done && !value) break
+      if (value) {
+        buffer += decoder.decode(value, { stream: true })
+        // OpenCode prints: "opencode server listening on http://..."
+        const match = buffer.match(/listening on (https?:\/\/\S+)/)
+        if (match) {
+          // Release the reader so the stream isn't locked
+          reader.releaseLock()
+          return match[1]
+        }
+      }
+    }
+
+    reader.releaseLock()
+    throw new Error(`OpenCode server did not become ready within ${timeout}ms.\nOutput: ${buffer}`)
+  }
+
+  private async drainStderr() {
+    if (!this.proc?.stderr) return
+    const stderr = this.proc.stderr
+    if (typeof stderr === "number") return
+    const decoder = new TextDecoder()
+    const reader = stderr.getReader()
+    try {
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        if (value) {
+          const text = decoder.decode(value, { stream: true })
+          if (env.LOG_LEVEL === "debug") {
+            process.stderr.write(`[opencode] ${text}`)
+          }
+        }
+      }
+    } catch {}
+  }
+}
+
+/**
+ * Build an OpenCode config object that points to the local vLLM server.
+ * Reads connection details from platform env vars.
+ */
+function buildVllmConfig(): Record<string, unknown> {
+  const modelKey = env.VLLM_MODEL_NAME.replace(/\s+/g, "-")
+  return {
+    "$schema": "https://opencode.ai/config.json",
+    provider: {
+      vllm: {
+        name: "vLLM",
+        npm: "@ai-sdk/openai-compatible",
+        env: [],
+        options: {
+          baseURL: env.VLLM_BASE_URL,
+          apiKey: env.VLLM_API_KEY,
+        },
+        models: {
+          [modelKey]: {
+            id: env.VLLM_MODEL_ID,
+            name: env.VLLM_MODEL_NAME,
+            tool_call: true,
+            cost: { input: 0, output: 0 },
+            limit: {
+              context: env.VLLM_CONTEXT_LIMIT,
+              output: env.VLLM_OUTPUT_LIMIT,
+            },
+          },
+        },
+      },
+    },
+    model: `vllm/${modelKey}`,
+    enabled_providers: ["vllm"],
+  }
+}
+
+/** Singleton process manager */
+export const opencode = new OpenCodeProcess()

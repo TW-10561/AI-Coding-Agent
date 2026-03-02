@@ -1,0 +1,37 @@
+# ── Kadavuley Platform — Docker Compose ────────────────────────────────
+# Quick start:  docker compose up
+# With rebuild: docker compose up --build
+
+services:
+  platform:
+    build:
+      context: ..
+      dockerfile: platform/docker/Dockerfile
+    ports:
+      - "${PORT:-3100}:3100"    # Platform API
+      - "${OPENCODE_PORT:-4096}:4096"  # OpenCode (optional external access)
+    environment:
+      - PORT=3100
+      - HOST=0.0.0.0
+      - OPENCODE_URL=http://127.0.0.1:4096
+      - OPENCODE_BIN=opencode
+      - OPENCODE_DIR=/workspace
+      - NODE_ENV=${NODE_ENV:-production}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - VLLM_BASE_URL=${VLLM_BASE_URL:-http://172.30.140.91:8000/v1}
+      - VLLM_API_KEY=${VLLM_API_KEY:-vllm-qgDSWPGLwcjvq63ApWIiU0sgiKiF5E5nqvGaAcKfh8Q}
+      - VLLM_MODEL_ID=${VLLM_MODEL_ID:-plezan/MiniMax-M2.1-REAP-50-W4A16}
+      - VLLM_MODEL_NAME=${VLLM_MODEL_NAME:-MiniMax M2.1 REAP 50 W4A16}
+      - PLATFORM_API_KEY=${PLATFORM_API_KEY:-}
+    volumes:
+      - ${PROJECT_DIR:-.}:/workspace:rw
+      - opencode-state:/root/.local/share/opencode
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3100/health/ready"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+
+volumes:
+  opencode-state:

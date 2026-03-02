@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "@kadavuley/tui",
+  "version": "0.1.0",
+  "description": "Terminal UI client for Kadavuley AI Coding Platform — uses the Platform SDK only",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "kadavuley": "./src/main.ts"
+  },
+  "scripts": {
+    "start": "bun run src/main.ts",
+    "dev": "bun run --watch src/main.ts"
+  },
+  "dependencies": {
+    "chalk": "5.4.1",
+    "marked": "15.0.7",
+    "marked-terminal": "7.3.0"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.9",
+    "typescript": "5.8.2"
+  }
+}
