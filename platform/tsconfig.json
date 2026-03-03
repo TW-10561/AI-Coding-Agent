@@ -16,6 +16,6 @@
     },
     "baseUrl": "."
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "scripts/**/*.ts"],
+  "include": ["src/**/*.ts", "tests/**/*.ts", "scripts/**/*.ts", "tui/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }

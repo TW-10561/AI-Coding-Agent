@@ -1,28 +1,40 @@
 # ── Kadavuley Platform — Docker Compose ────────────────────────────────
-# Quick start:  docker compose up
-# With rebuild: docker compose up --build
+#
+# Quick start:
+#   cd platform/docker
+#   VLLM_BASE_URL=http://your-gpu:8000/v1 docker compose up --build
+#
+# Or with a .env file:
+#   cp ../../platform/.env.example .env   (edit .env)
+#   docker compose up --build
+#
+# Connect TUI to running container:
+#   kadavuley --tui-only   (or: KADAVULEY_URL=http://host:3100 bun run tui/src/main.ts)
 
 services:
   platform:
     build:
-      context: ..
+      context: ../..
       dockerfile: platform/docker/Dockerfile
+    container_name: kadavuley
     ports:
-      - "${PORT:-3100}:3100"    # Platform API
-      - "${OPENCODE_PORT:-4096}:4096"  # OpenCode (optional external access)
+      - "${PORT:-3100}:3100"
+      - "${OPENCODE_PORT:-4096}:4096"
     environment:
-      - PORT=3100
-      - HOST=0.0.0.0
-      - OPENCODE_URL=http://127.0.0.1:4096
-      - OPENCODE_BIN=opencode
-      - OPENCODE_DIR=/workspace
-      - NODE_ENV=${NODE_ENV:-production}
-      - LOG_LEVEL=${LOG_LEVEL:-info}
-      - VLLM_BASE_URL=${VLLM_BASE_URL:-http://172.30.140.91:8000/v1}
-      - VLLM_API_KEY=${VLLM_API_KEY:-vllm-qgDSWPGLwcjvq63ApWIiU0sgiKiF5E5nqvGaAcKfh8Q}
-      - VLLM_MODEL_ID=${VLLM_MODEL_ID:-plezan/MiniMax-M2.1-REAP-50-W4A16}
-      - VLLM_MODEL_NAME=${VLLM_MODEL_NAME:-MiniMax M2.1 REAP 50 W4A16}
-      - PLATFORM_API_KEY=${PLATFORM_API_KEY:-}
+      PORT: "3100"
+      HOST: "0.0.0.0"
+      OPENCODE_URL: "http://127.0.0.1:4096"
+      OPENCODE_BIN: "opencode"
+      OPENCODE_DIR: "/workspace"
+      NODE_ENV: "${NODE_ENV:-production}"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+      VLLM_BASE_URL: "${VLLM_BASE_URL:-http://172.30.140.91:8000/v1}"
+      VLLM_API_KEY: "${VLLM_API_KEY:-vllm-qgDSWPGLwcjvq63ApWIiU0sgiKiF5E5nqvGaAcKfh8Q}"
+      VLLM_MODEL_ID: "${VLLM_MODEL_ID:-plezan/MiniMax-M2.1-REAP-50-W4A16}"
+      VLLM_MODEL_NAME: "${VLLM_MODEL_NAME:-MiniMax M2.1 REAP 50 W4A16}"
+      VLLM_CONTEXT_LIMIT: "${VLLM_CONTEXT_LIMIT:-30000}"
+      VLLM_OUTPUT_LIMIT: "${VLLM_OUTPUT_LIMIT:-4096}"
+      PLATFORM_API_KEY: "${PLATFORM_API_KEY:-}"
     volumes:
       - ${PROJECT_DIR:-.}:/workspace:rw
       - opencode-state:/root/.local/share/opencode
@@ -31,7 +43,7 @@ services:
       test: ["CMD", "wget", "-qO-", "http://localhost:3100/health/ready"]
       interval: 15s
       timeout: 5s
-      start_period: 30s
+      start_period: 40s
 
 volumes:
   opencode-state:

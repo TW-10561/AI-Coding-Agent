@@ -53,6 +53,8 @@ export interface AgentInfo {
   id: string
   name: string
   description?: string
+  mode?: "primary" | "subagent" | "all"
+  native?: boolean
 }
 
 export interface FileNode {

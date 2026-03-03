@@ -5,11 +5,15 @@
   "description": "Production AI coding platform — slim backend + SDK over self-hosted OpenCode",
   "type": "module",
   "private": true,
+  "bin": {
+    "kadavuley": "./bin/kadavuley"
+  },
   "scripts": {
     "dev": "bun run --watch src/server/index.ts",
     "start": "bun run src/server/index.ts",
     "start:opencode": "bun run scripts/start-opencode.ts",
     "start:all": "bun run scripts/start-all.ts",
+    "launch": "bun run scripts/launch.ts",
     "build": "bun build src/server/index.ts --outdir dist --target bun",
     "test": "bun test --timeout 30000",
     "typecheck": "tsc --noEmit",

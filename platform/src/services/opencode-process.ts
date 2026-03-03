@@ -34,6 +34,18 @@ export class OpenCodeProcess {
     const hostname = opts?.hostname ?? "127.0.0.1"
     const dir = opts?.directory ?? env.OPENCODE_DIR
 
+    // ── Pre-check: is the port already in use? ──────────────────
+    try {
+      const probe = Bun.serve({ port: Number(port), hostname, fetch: () => new Response() })
+      probe.stop(true)
+    } catch {
+      throw new Error(
+        `Port ${port} is already in use. Kill the stale process:\n` +
+        `  lsof -i :${port}  # find PID\n` +
+        `  kill <PID>         # then re-launch`
+      )
+    }
+
     const envVars: Record<string, string> = {
       ...process.env as Record<string, string>,
       HOME: process.env.HOME ?? "/root",
@@ -106,29 +118,51 @@ export class OpenCodeProcess {
     const reader = stdout.getReader()
     const deadline = Date.now() + timeout
 
-    while (Date.now() < deadline) {
-      const { value, done } = await Promise.race([
-        reader.read(),
-        new Promise<{ value: undefined; done: true }>((resolve) =>
-          setTimeout(() => resolve({ value: undefined, done: true }), deadline - Date.now()),
-        ),
-      ])
+    // Detect early process exit (e.g. port conflict): the exited promise
+    // resolves with the exit code when the process dies.
+    let earlyExit = false
+    let earlyExitCode: number | null = null
+    this.proc.exited.then((code) => {
+      earlyExit = true
+      earlyExitCode = code ?? null
+    }).catch(() => {})
 
-      if (done && !value) break
-      if (value) {
-        buffer += decoder.decode(value, { stream: true })
-        // OpenCode prints: "opencode server listening on http://..."
-        const match = buffer.match(/listening on (https?:\/\/\S+)/)
-        if (match) {
-          // Release the reader so the stream isn't locked
-          reader.releaseLock()
-          return match[1]
+    try {
+      while (Date.now() < deadline) {
+        // If the process already exited, don't keep waiting for stdout
+        if (earlyExit && earlyExitCode !== 0) {
+          throw new Error(`OpenCode process exited with code ${earlyExitCode} (port conflict?). Output: ${buffer.trim()}`)
+        }
+
+        const remaining = Math.max(200, deadline - Date.now())
+        const { value, done } = await Promise.race([
+          reader.read(),
+          new Promise<{ value: undefined; done: true }>((resolve) =>
+            setTimeout(() => resolve({ value: undefined, done: true }), remaining),
+          ),
+        ])
+
+        if (done && !value) {
+          // Timeout tick or stream ended — keep looping unless deadline passed
+          continue
+        }
+        if (value) {
+          buffer += decoder.decode(value, { stream: true })
+          // OpenCode prints: "opencode server listening on http://..."
+          const match = buffer.match(/listening on (https?:\/\/\S+)/)
+          if (match) {
+            reader.releaseLock()
+            return match[1]
+          }
         }
       }
+    } catch (e: any) {
+      reader.releaseLock()
+      throw e
     }
 
     reader.releaseLock()
-    throw new Error(`OpenCode server did not become ready within ${timeout}ms.\nOutput: ${buffer}`)
+    throw new Error(`OpenCode server did not become ready within ${timeout}ms.\nOutput: ${buffer.trim()}`)
   }
 
   private async drainStderr() {
