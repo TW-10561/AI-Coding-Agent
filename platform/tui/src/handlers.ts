@@ -1,11 +1,11 @@
 // ---------------------------------------------------------------------------
-// handlers.ts — All command handlers for the Kadavuley TUI
+// handlers.ts — All command handlers for the Artemis TUI
 // Each function is self-contained and uses ui.ts for rendering
 // ---------------------------------------------------------------------------
 
 import { PlatformClient, PlatformApiError } from "../../src/sdk/client"
 import type { SessionInfo } from "../../src/types"
-import { C, Box } from "./theme"
+import { C, Box, TERM_WIDTH } from "./theme"
 import * as ui from "./ui"
 import * as readline from "readline"
 
@@ -30,23 +30,30 @@ export async function checkHealth(state: TuiState): Promise<boolean> {
 }
 
 export async function showStatus(state: TuiState) {
+  // ── Health ───────────────────────────────────────────────────────
+  let health: any
   try {
-    const health = await state.sdk.health()
+    health = await state.sdk.health()
+  } catch (e) {
+    ui.errorMsg(`Cannot reach platform: ${e}`)
+    return
+  }
+
+  const lines: string[] = []
+  lines.push(`${ui.statusDot(health.platform === "ok")} ${C.muted("Platform")}   ${health.platform === "ok" ? C.success("connected") : C.error("down")}`)
+  lines.push(`${ui.statusDot(health.opencode === "ok")} ${C.muted("OpenCode")}   ${health.opencode === "ok" ? C.success("connected") : C.error("down")}`)
+  lines.push(`${C.muted("  Uptime")}      ${C.text(health.uptime != null ? Math.floor(health.uptime / 1000) + "s" : "?")}`)
+  lines.push(`${C.muted("  Version")}     ${C.text(health.version ?? "?")}`)
+
+  ui.panel({
+    title: C.textBold("System Status"),
+    body: lines,
+    color: C.dim,
+  })
+
+  // ── Providers & Models (separate catch so health panel always shows) ──
+  try {
     const providers = await state.sdk.listProviders()
-
-    const lines: string[] = []
-    lines.push(`${ui.statusDot(health.platform === "ok")} ${C.muted("Platform")}   ${health.platform === "ok" ? C.success("connected") : C.error("down")}`)
-    lines.push(`${ui.statusDot(health.opencode === "ok")} ${C.muted("OpenCode")}   ${health.opencode === "ok" ? C.success("connected") : C.error("down")}`)
-    lines.push(`${C.muted("  Uptime")}      ${C.text(Math.floor(health.uptime / 1000) + "s")}`)
-    lines.push(`${C.muted("  Version")}     ${C.text(health.version)}`)
-
-    ui.panel({
-      title: C.textBold("System Status"),
-      body: lines,
-      color: C.dim,
-    })
-
-    // Providers & Models
     const allProviders = (providers as any).all ?? []
     if (allProviders.length > 0) {
       const provLines: string[] = []
@@ -68,80 +75,133 @@ export async function showStatus(state: TuiState) {
         color: C.dim,
       })
     }
-  } catch (e) {
-    ui.errorMsg(`Status check failed: ${e}`)
+  } catch {
+    // Provider list is optional — health panel already shown above
   }
 }
 
 // ── Agent Management ─────────────────────────────────────────────────
 
-/** User-facing agents — filter to primary + all mode agents */
-const USER_AGENTS = ["build", "plan", "explore", "docs"]
-const AGENT_DESCRIPTIONS: Record<string, string> = {
-  build:   "Default coding agent — full read/write/execute permissions",
-  plan:    "Planning mode — read-only, no edits allowed",
-  explore: "Fast codebase exploration — search and read focused",
-  docs:    "Documentation writer — specialized for docs content",
-}
-const AGENT_COLORS: Record<string, (s: string) => string> = {
+// OpenCode natively defines agents with mode = "primary" | "subagent" | "all".
+// Primary agents are user-facing (build, plan). Subagents are called internally
+// by the orchestrator (explore, general, etc.) — we show "all" and "primary".
+// We never hardcode the list: it comes live from GET :4096/agent via the SDK.
+
+/** Round-robin color palette for agents not matching a known name */
+const PALETTE: ReadonlyArray<(s: string) => string> = [
+  C.success, C.info, C.accent, C.warning, C.primary, C.primaryDim, C.highlight,
+]
+
+/** Well-known agent colors (OpenCode native agents) */
+const KNOWN_COLORS: Record<string, (s: string) => string> = {
   build:   C.success,
   plan:    C.info,
-  explore: C.accent,
-  docs:    C.warning,
+  general: C.accent,
+  explore: C.warning,
+  summary: C.muted,
+  title:   C.muted,
+}
+
+/** Return a deterministic color for any agent ID */
+function agentColor(agentID: string): (s: string) => string {
+  if (KNOWN_COLORS[agentID]) return KNOWN_COLORS[agentID]!
+  // stable but arbitrary: hash the string to a palette index
+  let h = 0
+  for (let i = 0; i < agentID.length; i++) h = (h * 31 + agentID.charCodeAt(i)) >>> 0
+  return PALETTE[h % PALETTE.length]!
 }
 
 export function agentLabel(agentID: string): string {
-  const color = AGENT_COLORS[agentID] ?? C.muted
+  const color = agentColor(agentID)
   const name = agentID.charAt(0).toUpperCase() + agentID.slice(1)
   return color(name)
 }
 
-export async function listAgents(state: TuiState) {
+/** Cache live agents so repeated calls don't hammer the API */
+let _agentCache: Array<{ id: string; name: string; description?: string; mode: string; native?: boolean }> | null = null
+let _agentCacheTs = 0
+const AGENT_CACHE_TTL_MS = 30_000   // 30 seconds
+
+async function fetchAgents(state: TuiState) {
+  const now = Date.now()
+  if (_agentCache && now - _agentCacheTs < AGENT_CACHE_TTL_MS) return _agentCache
   try {
-    const agents = await state.sdk.listAgents()
-    const lines: string[] = []
-    for (const a of agents) {
-      const isUser = USER_AGENTS.includes(a.name)
-      if (!isUser) continue
-      const active = a.name === state.currentAgent ? C.success(" ◀ active") : ""
-      const color = AGENT_COLORS[a.name] ?? C.text
-      const desc = AGENT_DESCRIPTIONS[a.name] || a.description || ""
-      lines.push(`${color(Box.dot)} ${C.textBold(a.name)}${active}`)
-      lines.push(`  ${C.muted(desc)}`)
-    }
-    console.log()
-    ui.panel({
-      title: C.textBold("Available Agents"),
-      body: lines,
-      color: C.dim,
-    })
-    console.log(`  ${C.dim("Switch with: /build  /plan  /explore  /docs")}`)
-  } catch (e) {
-    ui.errorMsg(`Error listing agents: ${e}`)
+    const raw = await state.sdk.listAgents() as any[]
+    _agentCache = raw.map(a => ({
+      id:          a.id ?? a.name,     // OpenCode returns { name, mode, native, ... }
+      name:        a.name ?? a.id,
+      description: a.description,
+      mode:        a.mode ?? "primary",
+      native:      a.native ?? false,
+    }))
+    _agentCacheTs = now
+    return _agentCache
+  } catch {
+    // Return hardcoded minimum so the TUI never breaks if OpenCode is down
+    return [
+      { id: "build",   name: "build",   description: "Default agent — full read/write/execute",  mode: "primary", native: true },
+      { id: "plan",    name: "plan",    description: "Plan mode — read-only, no file edits",      mode: "primary", native: true },
+      { id: "explore", name: "explore", description: "Explore mode — codebase search & analysis", mode: "all",     native: true },
+      { id: "general", name: "general", description: "General agent — multi-step reasoning",       mode: "all",     native: true },
+    ]
   }
 }
 
+export async function listAgents(state: TuiState) {
+  const agents = await fetchAgents(state)
+  // Show primary + all mode agents; hide internal-only ones (mode=subagent, hidden)
+  // OpenCode marks hidden agents like 'title', 'summary', 'compaction' — skip those.
+  const HIDDEN = new Set(["title", "summary", "compaction"])
+  const visible = agents.filter(a =>
+    (a.mode === "primary" || a.mode === "all") && !HIDDEN.has(a.id)
+  )
+  // If nothing passes (e.g. old OpenCode without mode field), show everything
+  const toShow = visible.length > 0 ? visible : agents
+
+  const lines: string[] = []
+  for (const a of toShow) {
+    const isActive = a.id === state.currentAgent
+    const active = isActive ? C.success(" ◀ active") : ""
+    const color = agentColor(a.id)
+    const modeTag = a.mode && a.mode !== "primary" ? C.dim(` [${a.mode}]`) : ""
+    const nativeTag = a.native ? C.dim(" ◆") : ""
+    lines.push(`${color(Box.dot)} ${C.textBold(a.name)}${nativeTag}${modeTag}${active}`)
+    if (a.description) lines.push(`  ${C.muted(a.description.slice(0, 78))}`)
+  }
+
+  console.log()
+  ui.panel({ title: C.textBold("Agents"), body: lines, color: C.dim })
+
+  // Show switch hints based on what's actually available
+  const switchHints = toShow.slice(0, 4).map(a => `/${a.id}`).join("  ")
+  console.log(`  ${C.dim("Switch with:")} ${C.dim(switchHints)}`)
+}
+
 export async function switchAgent(state: TuiState, agentID: string) {
-  const valid = USER_AGENTS
-  if (!valid.includes(agentID)) {
-    ui.warnMsg(`Unknown agent: ${agentID}. Available: ${valid.join(", ")}`)
+  // Validate against live agent list; allow anyway if API is down (non-blocking)
+  const agents = await fetchAgents(state)
+  const match = agents.find(a => a.id === agentID || a.name === agentID)
+  if (!match && agents.length > 0) {
+    const validIDs = agents.map(a => a.id).join(", ")
+    ui.warnMsg(`Unknown agent: ${agentID}. Available: ${validIDs}`)
     return
   }
-  const prev = state.currentAgent
-  state.currentAgent = agentID
 
-  // Create a new session for this agent so context is clean
+  const prev = state.currentAgent
+  const resolvedID = match?.id ?? agentID   // prefer canonical id from API
+  state.currentAgent = resolvedID
+
   try {
-    ui.startSpinner(`Switching to ${agentID} agent...`)
-    const session = await state.sdk.createSession({ agentID })
+    ui.startSpinner(`Switching to ${resolvedID} agent...`)
+    const session = await state.sdk.createSession({ agentID: resolvedID })
     ui.stopSpinner()
     state.currentSession = session
-    ui.successMsg(`Agent: ${agentLabel(prev)} ${Box.arrow} ${agentLabel(agentID)}`)
+    ui.successMsg(`Agent: ${agentLabel(prev)} ${Box.arrow} ${agentLabel(resolvedID)}`)
     console.log(`    ${C.muted("New session:")} ${C.accent(session.id.slice(0, 8))}`)
   } catch (e) {
     ui.stopSpinner()
-    state.currentAgent = agentID // keep the agent switch even if session creation fails
-    ui.successMsg(`Agent: ${agentLabel(prev)} ${Box.arrow} ${agentLabel(agentID)}`)
+    // Keep the agent switch even if session creation fails
+    ui.successMsg(`Agent: ${agentLabel(prev)} ${Box.arrow} ${agentLabel(resolvedID)}`)
     ui.warnMsg(`Could not create session for agent (${e}). Use /new to create one.`)
   }
 }
@@ -249,7 +309,7 @@ export async function showHistory(state: TuiState) {
 
     console.log()
     console.log(`  ${C.textBold("Conversation")} ${C.muted("— session " + state.currentSession.id.slice(0, 8))}`)
-    console.log(`  ${C.dim(Box.h.repeat(56))}`)
+    console.log(`  ${C.dim(Box.h.repeat(Math.max(1, TERM_WIDTH() - 4)))}`)
 
     for (const msg of messages) {
       const role = msg.info?.role ?? (msg as any).role ?? "unknown"
@@ -293,7 +353,7 @@ export async function sendPrompt(state: TuiState, content: string): Promise<void
   // Show user message
   ui.userMessage(content)
 
-  ui.startSpinner("Thinking via vLLM...")
+  ui.startSpinner("Thinking...")
 
   try {
     // Race the API call against a 120-second timeout so the TUI never hangs
@@ -308,6 +368,22 @@ export async function sendPrompt(state: TuiState, content: string): Promise<void
       ),
     ])
     ui.stopSpinner()
+
+    // Check for server-side error in the response (e.g. vLLM unreachable)
+    const respError = (response as any).info?.error
+    if (respError) {
+      const errMsg = respError.data?.message ?? respError.name ?? String(respError)
+      if (respError.name === "ContextOverflowError" || errMsg.toLowerCase().includes("context length")) {
+        ui.errorMsg("Session context is full.")
+        console.log(`    ${C.dim("Use /new to start a fresh session, or /delete this one.")}`)
+      } else if (errMsg.toLowerCase().includes("connect") || errMsg.toLowerCase().includes("url")) {
+        ui.errorMsg(`Cannot reach model: ${errMsg}`)
+        console.log(`    ${C.dim("Check VLLM_BASE_URL in .env and make sure vLLM is running.")}`)
+      } else {
+        ui.errorMsg(`Model error: ${errMsg}`)
+      }
+      return
+    }
 
     // Extract parts
     let text = ""
@@ -349,6 +425,11 @@ export async function sendPrompt(state: TuiState, content: string): Promise<void
     if (text) {
       const tokenStr = tokens > 0 ? `${tokens.toLocaleString()} tokens` : undefined
       ui.assistantMessage(text, tokenStr)
+    } else if (reasoning && toolCalls.length === 0) {
+      // Model returned reasoning only (no separate text part).
+      // Show the last meaningful line as a summary so the user isn't left with nothing.
+      const lastLine = reasoning.trim().split("\n").filter(l => l.trim()).pop() ?? ""
+      ui.assistantMessage(lastLine || "(model returned reasoning only — no text response)", undefined)
     } else if (toolCalls.length === 0) {
       ui.emptyState("(empty response)")
     }
@@ -361,6 +442,76 @@ export async function sendPrompt(state: TuiState, content: string): Promise<void
     } else {
       ui.errorMsg(`${e}`)
     }
+  }
+}
+
+// ── Provider Registry (Artemis model catalogue) ─────────────────────
+
+export async function showRegistry(state: TuiState, sub?: string) {
+  try {
+    const isRefresh = sub === "refresh"
+    if (isRefresh) {
+      ui.startSpinner("Probing all vLLM endpoints...")
+      await state.sdk.refreshRegistry()
+      ui.stopSpinner()
+    }
+
+    const reg = await state.sdk.registry()
+    if (!reg) {
+      ui.warnMsg("Registry not available — upgrade the platform backend.")
+      return
+    }
+
+    console.log()
+
+    // ── Local vLLM providers ──────────────────────────────────────
+    const localLines: string[] = []
+    for (const p of reg.local as any[]) {
+      const statusColor = p.status === "online" ? C.success :
+                          p.status === "offline" ? C.error : C.muted
+      const statusText = p.status === "online"
+        ? `${C.success("●")} online${p.latencyMs ? C.muted(` ${p.latencyMs}ms`) : ""}`
+        : p.status === "offline" ? `${C.error("●")} offline` : `${C.muted("●")} unknown`
+
+      const primary = p.isPrimary ? C.dim(" ⬡ primary") : ""
+      localLines.push(`${statusColor(Box.dot)} ${C.textBold(p.name)}${primary}  ${statusText}`)
+      localLines.push(`  ${C.muted("endpoint:")} ${C.dim(p.endpoint)}`)
+      for (const m of (p.models as any[]).slice(0, 5)) {
+        const ctx = m.contextLimit ? C.dim(` ctx:${(m.contextLimit / 1000).toFixed(0)}k`) : ""
+        const out = m.outputLimit  ? C.dim(` out:${m.outputLimit}`) : ""
+        localLines.push(`    ${C.accent(Box.arrow)} ${C.text(m.name ?? m.id)}${ctx}${out}`)
+      }
+      if (p.models.length > 5) localLines.push(`  ${C.dim(`… +${p.models.length - 5} more models`)}`)
+    }
+    ui.panel({ title: C.textBold("Local vLLM Providers"), body: localLines.length ? localLines : [C.muted("No vLLM endpoints configured.")], color: C.dim })
+
+    // ── Cloud providers ───────────────────────────────────────────
+    const cloudLines: string[] = []
+    for (const p of reg.cloud as any[]) {
+      const icon = p.configured ? C.success(Box.check) : C.muted(Box.diamond)
+      const keyNote = p.configured
+        ? C.success("  key configured")
+        : C.muted(`  set ${p.keyEnvVar} to enable`)
+      cloudLines.push(`${icon} ${C.textBold(p.name)}${keyNote}`)
+      if (p.configured) {
+        for (const m of (p.models as any[]).slice(0, 3)) {
+          const cost = `$${m.costIn}/$${m.costOut} per M tokens`
+          cloudLines.push(`  ${C.accent(Box.arrow)} ${C.text(m.name)}  ${C.dim(cost)}`)
+        }
+        if (p.models.length > 3) cloudLines.push(`  ${C.dim(`… +${p.models.length - 3} more`)}`)
+      }
+    }
+    ui.panel({
+      title: C.textBold("Cloud Providers"),
+      body: cloudLines.length ? cloudLines : [C.muted("No cloud providers configured."), C.dim("Add API keys to .env and restart the platform.")],
+      color: C.dim,
+    })
+
+    console.log(`  ${C.dim("Active model:")} ${C.accent(reg.activeModel)}`)
+    console.log(`  ${C.dim("Use /registry refresh to re-probe vLLM endpoints.")}`)
+    console.log(`  ${C.dim("Add cloud API keys to .env then restart the platform.")}`)
+  } catch (e) {
+    ui.errorMsg(`Registry error: ${e}`)
   }
 }
 
@@ -406,7 +557,7 @@ export async function showFiles(state: TuiState) {
     const items = Array.isArray(files) ? files : []
     const lines: string[] = []
     for (const f of items.slice(0, 40)) {
-      const icon = f.type === "directory" ? C.accent("📁") : C.muted("  ")
+      const icon = f.type === "directory" ? C.accent(">") : C.muted(" ")
       lines.push(`${icon} ${C.text(f.name ?? f.path)}`)
     }
     if (items.length > 40) {

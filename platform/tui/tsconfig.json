@@ -6,8 +6,7 @@
     "esModuleInterop": true,
     "strict": true,
     "skipLibCheck": true,
-    "outDir": "dist",
-    "rootDir": "src",
+    "noEmit": true,
     "types": ["@types/bun"],
     "paths": {
       "@sdk/*": ["../src/sdk/*"],

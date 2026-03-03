@@ -1,15 +1,16 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "name": "@kadavuley/tui",
+  "name": "@artemis/tui",
   "version": "0.1.0",
-  "description": "Terminal UI client for Kadavuley AI Coding Platform — uses the Platform SDK only",
+  "description": "Terminal UI client for Artemis AI Coding Platform — uses the Platform SDK only",
   "type": "module",
   "private": true,
   "bin": {
-    "kadavuley": "./src/main.ts"
+    "artemis": "./src/main.ts"
   },
   "scripts": {
     "start": "bun run src/main.ts",
+    "Artemis": "bun run src/main.ts",
     "dev": "bun run --watch src/main.ts"
   },
   "dependencies": {

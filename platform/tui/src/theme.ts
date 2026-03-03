@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// theme.ts — Visual theme for Kadavuley TUI
+// theme.ts — Visual theme for Artemis TUI
 // Inspired by OpenCode's design language: clean lines, muted tones, accent pops
 // ---------------------------------------------------------------------------
 

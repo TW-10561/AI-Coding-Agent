@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // ---------------------------------------------------------------------------
-// Kadavuley TUI — Terminal UI for the AI Coding Platform
+// Artemis TUI — Terminal UI for the AI Coding Platform
 // ---------------------------------------------------------------------------
 // Modular architecture:
 //   theme.ts    → Color palette, box drawing, constants
@@ -18,8 +18,8 @@ import * as readline from "readline"
 
 // ── Config ───────────────────────────────────────────────────────────
 
-const PLATFORM_URL = process.env.KADAVULEY_URL ?? "http://localhost:3100"
-const API_KEY = process.env.KADAVULEY_API_KEY ?? undefined
+const PLATFORM_URL = process.env.ARTEMIS_URL ?? "http://localhost:3100"
+const API_KEY = process.env.ARTEMIS_API_KEY ?? undefined
 
 // ── Init SDK ─────────────────────────────────────────────────────────
 
@@ -39,8 +39,9 @@ const rl = readline.createInterface({
   completer: (line: string) => {
     const commands = [
       "/new", "/sessions", "/switch", "/delete", "/history",
-      "/status", "/providers", "/files", "/project", "/vcs", "/tasks",
-      "/agents", "/build", "/plan", "/explore", "/docs",
+      "/status", "/providers", "/registry", "/registry refresh",
+      "/files", "/project", "/vcs", "/tasks",
+      "/agents", "/build", "/plan", "/explore", "/general",
       "/audit", "/audit stats", "/budget", "/budget check", "/budget set",
       "/workspaces", "/workspace new", "/workspace switch",
       "/queue", "/orchestrate", "/orchestrations",
@@ -73,12 +74,15 @@ function showPrompt() {
     ? state.currentSession.id.slice(0, 8)
     : "none"
   const agent = h.agentLabel(state.currentAgent)
-  // Print the colored prefix as a separate line so readline doesn't include
-  // invisible ANSI bytes in its cursor-position arithmetic.
-  process.stdout.write(`\n${agent} ${C.dim(Box.v)} ${C.accent(sid)} ${C.primary("❯")} `)
-  // Use a zero-length readline prompt — the decorative text is already written.
-  rl.setPrompt("")
-  rl.prompt(true) // preserveCursor = true
+  // Print the decorative status line on its own line via console.log.
+  // We must NOT pass ANSI codes to rl.setPrompt() because readline uses
+  // the raw byte-length of the prompt string to track cursor position —
+  // invisible ANSI escape bytes confuse it, causing typed chars to appear
+  // at the wrong column or not echo at all.
+  console.log(`\n  ${agent} ${C.dim(Box.v)} ${C.accent(sid)}`)
+  // Give readline a plain, ANSI-free prompt it can measure correctly.
+  rl.setPrompt("  ❯ ")
+  rl.prompt()
 }
 
 // ── Help Text ────────────────────────────────────────────────────────
@@ -86,7 +90,7 @@ function showPrompt() {
 function showHelp() {
   const w = (process.stdout.columns || 80) - 4
   console.log()
-  console.log(`  ${C.primaryBg("  ◆ Kadavuley  ")}  ${C.muted("Command Reference")}`)
+  console.log(`  ${C.primaryBg("  ◆ Artemis  ")}  ${C.muted("Command Reference")}`)  
   console.log(`  ${C.dim(Box.h.repeat(w))}`)
 
   const groups: [string, [string, string][]][] = [
@@ -97,18 +101,20 @@ function showHelp() {
       ["/delete <id>",   "Delete a session"],
       ["/history",       "Show conversation in current session"],
       ["/status",        "Platform health + model info"],
-      ["/providers",     "List LLM providers and models"],
+      ["/providers",     "List LLM providers (from OpenCode)"],
+      ["/registry",      "Artemis model catalogue — local vLLM + cloud"],
+      ["/registry refresh", "Re-probe vLLM endpoints"],
       ["/files",         "List project files"],
       ["/project",       "Project directory and git info"],
       ["/vcs",           "Current git branch"],
       ["/tasks",         "Background task queue"],
     ]],
     ["Agents", [
-      ["/agents",        "List available agents"],
+      ["/agents",        "List available agents (live from OpenCode)"],
       ["/build",         "Switch to Build agent (default, full permissions)"],
       ["/plan",          "Switch to Plan agent (read-only, no edits)"],
       ["/explore",       "Switch to Explore agent (codebase search)"],
-      ["/docs",          "Switch to Docs agent (documentation writer)"],
+      ["/general",       "Switch to General agent (multi-step tasks)"],
     ]],
     ["Backend Features", [
       ["/audit",            "Recent audit log entries"],
@@ -151,7 +157,7 @@ function showHelp() {
 async function showWelcome() {
   const w = (process.stdout.columns || 80) - 4
   console.log()
-  console.log(`  ${C.primaryBg("  ◆ Kadavuley  ")}  ${C.muted("AI Coding Platform")}`)
+  console.log(`  ${C.primaryBg("  ◆ Artemis  ")}  ${C.muted("AI Coding Platform")}`)
   console.log(`  ${C.dim(Box.h.repeat(w))}`)
   console.log()
   console.log(`  ${C.muted("Connecting to")} ${C.accent(PLATFORM_URL)}`)
@@ -219,8 +225,13 @@ async function handleInput(line: string) {
       case "/explore":
         await h.switchAgent(state, "explore")
         break
-      case "/docs":
-        await h.switchAgent(state, "docs")
+      case "/general":
+        await h.switchAgent(state, "general")
+        break
+
+      // ── Registry ─────────────────────────────────────────
+      case "/registry":
+        await h.showRegistry(state, arg || undefined)
         break
 
       // ── Backend Features ─────────────────────────────────────
@@ -307,7 +318,7 @@ async function main() {
     console.log()
     ui.errorMsg(`Cannot reach platform at ${PLATFORM_URL}`)
     console.log(`    ${C.dim("Make sure the backend is running: bun run start")}`)
-    console.log(`    ${C.dim("Set KADAVULEY_URL if using a different address")}\n`)
+    console.log(`    ${C.dim("Set ARTEMIS_URL if using a different address")}\n`)
     process.exit(1)
   }
 

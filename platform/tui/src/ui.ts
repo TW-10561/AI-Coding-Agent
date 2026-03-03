@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// ui.ts — Reusable UI rendering primitives for the Kadavuley TUI
+// ui.ts — Reusable UI rendering primitives for the Artemis TUI
 // Panels, tables, status bars, spinners, markdown rendering
 // ---------------------------------------------------------------------------
 
@@ -198,7 +198,7 @@ export function headerBar(opts: {
 }) {
   const w = TERM_WIDTH()
   console.log()
-  const brand = C.primaryBg("  ◆ Kadavuley  ")
+  const brand = C.primaryBg("  ◆ Artemis  ")
   const agentInfo = opts.agent ? `  ${C.textBold(opts.agent.charAt(0).toUpperCase() + opts.agent.slice(1))}` : ""
   const sessionInfo = opts.sessionId
     ? `  ${C.muted("session:")}${C.accent(opts.sessionId.slice(0, 8))}  ${C.muted(opts.sessionTitle || "(untitled)")}`
@@ -238,24 +238,32 @@ export function assistantMessage(text: string, tokenInfo?: string) {
   console.log(`  ${label}  ${right}`)
   console.log(`  ${C.primary(Box.v)}`)
 
-  // Render markdown and display
+  // Render markdown, trim trailing blank lines so we don't print empty │ rows
   const rendered = renderMarkdown(text)
   const lines = rendered.split("\n")
+  while (lines.length > 0 && lines[lines.length - 1]!.trim() === "") lines.pop()
   for (const line of lines) {
     console.log(`  ${C.primary(Box.v)} ${line}`)
   }
   console.log(`  ${C.primary(Box.v)}`)
 }
 
+const REASONING_MAX_LINES = 8
+
 export function reasoningBlock(text: string) {
   const label = `${C.muted("◇ Reasoning")}`
   console.log()
   console.log(`  ${label}`)
   console.log(`  ${C.dim(Box.v)}`)
-  const lines = text.trim().split("\n")
-  for (const line of lines) {
+  const allLines = text.trim().split("\n")
+  const shown = allLines.slice(0, REASONING_MAX_LINES)
+  for (const line of shown) {
     console.log(`  ${C.dim(Box.v)} ${C.muted(line)}`)
   }
+  if (allLines.length > REASONING_MAX_LINES) {
+    console.log(`  ${C.dim(Box.v)} ${C.dim(`  … +${allLines.length - REASONING_MAX_LINES} more lines (use /history to see all)`)}`)
+  }
+  console.log(`  ${C.dim(Box.v)}`)
 }
 
 export function toolCallLine(name: string) {
