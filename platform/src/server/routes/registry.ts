@@ -33,4 +33,28 @@ export function registryRoutes() {
       const snapshot = await buildRegistry(true)
       return c.json({ ok: true, probed: snapshot.local.length, generatedAt: snapshot.generatedAt })
     })
+
+    /** POST /api/registry/cloud/:id/key — store API key for a cloud provider */
+    .post("/cloud/:id/key", async (c) => {
+      const providerID = c.req.param("id")
+      const body = await c.req.json().catch(() => ({}))
+      const apiKey = (body as any).apiKey
+      if (!apiKey || typeof apiKey !== "string") {
+        return c.json({ error: "apiKey is required" }, 400)
+      }
+      // Store the key as an environment variable for this process
+      // Look up the env var name from the cloud catalogue
+      const snapshot = await buildRegistry()
+      const provider = snapshot.cloud.find((p: any) => p.id === providerID)
+      if (!provider) {
+        return c.json({ error: `Unknown provider: ${providerID}` }, 404)
+      }
+      const envVar = (provider as any).keyEnvVar
+      if (envVar) {
+        process.env[envVar] = apiKey
+      }
+      // Rebuild the registry so the provider shows as configured
+      await buildRegistry(true)
+      return c.json({ ok: true, provider: providerID, envVar })
+    })
 }

@@ -426,6 +426,11 @@ export class PlatformClient {
     return this.request("POST", "/api/registry/refresh")
   }
 
+  /** Set API key for a cloud provider (stored server-side) */
+  async setCloudApiKey(providerID: string, apiKey: string): Promise<{ ok: boolean }> {
+    return this.request("POST", `/api/registry/cloud/${providerID}/key`, { apiKey })
+  }
+
   // ── Direct Chat (bypasses OpenCode, talks to vLLM directly) ─────
 
   /** Direct chat with vLLM — no tools, no OpenCode system prompt, much faster */

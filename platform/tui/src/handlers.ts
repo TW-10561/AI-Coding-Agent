@@ -53,32 +53,53 @@ export async function showStatus(state: TuiState) {
     color: C.dim,
   })
 
-  // ── Providers & Models (separate catch so health panel always shows) ──
+  // ── Local vLLM models + Cloud providers (from our registry) ──
   try {
-    const providers = await state.sdk.listProviders()
-    const allProviders = (providers as any).all ?? []
-    if (allProviders.length > 0) {
-      const provLines: string[] = []
-      provLines.push(`${C.muted("Connected:")} ${C.accent(providers.connected.join(", ") || "none")}`)
-      for (const p of allProviders) {
-        provLines.push("")
-        provLines.push(`${C.success(Box.dot)} ${C.textBold(p.name)} ${C.dim(`(${p.id})`)}`)
-        const models = p.models ?? {}
-        for (const [k, m] of Object.entries(models) as any[]) {
-          const name = m.name ?? k
-          const ctx = m.limit?.context ?? "?"
-          const out = m.limit?.output ?? "?"
-          provLines.push(`  ${C.accent(Box.arrow)} ${C.text(name)}  ${C.muted(`ctx:${ctx}  out:${out}`)}`)
+    const reg = await state.sdk.registry()
+    if (reg) {
+      const modelLines: string[] = []
+
+      // Local vLLM models with status
+      if (reg.local && reg.local.length > 0) {
+        modelLines.push(C.textBold("Local vLLM (built-in)"))
+        for (const p of reg.local as any[]) {
+          const isOnline = p.status === "online"
+          const dot = isOnline ? C.success("●") : C.error("●")
+          const statusText = isOnline
+            ? C.success("online") + (p.latencyMs ? C.dim(` ${p.latencyMs}ms`) : "")
+            : C.error("offline")
+          modelLines.push(`  ${dot} ${C.textBold(p.name)} — ${statusText}`)
+          modelLines.push(`    ${C.dim(p.endpoint)}`)
+          for (const m of (p.models as any[])) {
+            const ctx = m.contextLimit ? C.dim(` ctx:${(m.contextLimit / 1000).toFixed(0)}k`) : ""
+            const out = m.outputLimit ? C.dim(` out:${m.outputLimit}`) : ""
+            const active = m.id === state.currentModel ? C.success(" ◀ active") : ""
+            modelLines.push(`    ${C.accent(Box.arrow)} ${C.text(m.name ?? m.id)}${ctx}${out}${active}`)
+          }
         }
       }
-      ui.panel({
-        title: C.textBold("LLM Providers"),
-        body: provLines,
-        color: C.dim,
-      })
+
+      // Cloud providers — just show configured status
+      if (reg.cloud && reg.cloud.length > 0) {
+        modelLines.push("")
+        modelLines.push(C.textBold("Cloud Providers"))
+        for (const p of reg.cloud as any[]) {
+          const icon = p.configured ? C.success(Box.check) : C.dim(Box.diamond)
+          const note = p.configured ? C.success("ready") : C.dim(`/apikey to configure`)
+          modelLines.push(`  ${icon} ${C.text(p.name)} — ${note}`)
+        }
+      }
+
+      if (modelLines.length > 0) {
+        ui.panel({
+          title: C.textBold("Models & Providers"),
+          body: modelLines,
+          color: C.dim,
+        })
+      }
     }
   } catch {
-    // Provider list is optional — health panel already shown above
+    // Registry is optional — health panel already shown above
   }
 }
 
@@ -347,19 +368,23 @@ export async function showHistory(state: TuiState) {
   }
 }
 
-// ── Direct Chat (bypass OpenCode) ────────────────────────────────────
+// ── Unified Chat — direct vLLM for speed ─────────────────────────────
 
-/** Chat history for direct-chat mode (in-memory, per session) */
-let _directChatHistory: Array<{ role: "user" | "assistant"; content: string }> = []
+/** In-memory chat history for multi-turn (kept per TUI session) */
+let _chatHistory: Array<{ role: "user" | "assistant"; content: string }> = []
 
-export async function sendDirectChat(state: TuiState, content: string): Promise<void> {
+/**
+ * Send a user message through the direct vLLM chat route.
+ * This is the ONLY chat path — no dual mode.
+ */
+export async function sendMessage(state: TuiState, content: string): Promise<void> {
   ui.userMessage(content)
-  ui.startSpinner("Thinking (direct)...")
+  ui.startSpinner("Thinking...")
 
   try {
-    _directChatHistory.push({ role: "user", content })
+    _chatHistory.push({ role: "user", content })
     // Keep last 10 turns to stay within context limits
-    if (_directChatHistory.length > 20) _directChatHistory = _directChatHistory.slice(-20)
+    if (_chatHistory.length > 20) _chatHistory = _chatHistory.slice(-20)
 
     const TIMEOUT_MS = 90_000
     const result = await Promise.race([
@@ -369,10 +394,10 @@ export async function sendDirectChat(state: TuiState, content: string): Promise<
         providerID: state.currentProvider || undefined,
         maxTokens: 2048,
         temperature: 0.3,
-        history: _directChatHistory.slice(0, -1), // exclude current msg (already in "message")
+        history: _chatHistory.slice(0, -1), // exclude current msg (already in "message")
       }),
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("Direct chat timed out after 90 s")), TIMEOUT_MS)
+        setTimeout(() => reject(new Error("Chat timed out after 90 s")), TIMEOUT_MS)
       ),
     ])
     ui.stopSpinner()
@@ -381,17 +406,73 @@ export async function sendDirectChat(state: TuiState, content: string): Promise<
       ui.reasoningBlock(result.reasoning)
     }
 
-    _directChatHistory.push({ role: "assistant", content: result.text })
+    _chatHistory.push({ role: "assistant", content: result.text })
 
     const tokenStr = result.tokens?.output ? `${result.tokens.output.toLocaleString()} tokens · ${result.latencyMs}ms` : `${result.latencyMs}ms`
     ui.assistantMessage(result.text, tokenStr)
   } catch (e) {
     ui.stopSpinner()
     if (e instanceof PlatformApiError) {
-      ui.errorMsg(`Direct chat error (${e.status})`, e.message)
+      ui.errorMsg(`Chat error (${e.status})`, e.message)
     } else {
       ui.errorMsg(`${e}`)
     }
+  }
+}
+
+// ── Cloud API Key Management ─────────────────────────────────────────
+
+/**
+ * Interactive prompt for users to enter API keys for cloud providers.
+ * Shows the cloud provider catalogue from our registry and lets them configure.
+ */
+export async function setApiKey(state: TuiState): Promise<void> {
+  try {
+    const reg = await state.sdk.registry()
+    if (!reg || !reg.cloud || reg.cloud.length === 0) {
+      ui.warnMsg("No cloud providers in registry.")
+      return
+    }
+
+    console.log()
+    const lines: string[] = []
+    for (let i = 0; i < reg.cloud.length; i++) {
+      const p = reg.cloud[i] as any
+      const icon = p.configured ? C.success(Box.check) : C.muted(Box.diamond)
+      const status = p.configured ? C.success("configured") : C.dim("not set")
+      lines.push(`  ${C.accent(String(i + 1).padStart(2))}. ${icon} ${C.textBold(p.name)}  ${status}  ${C.dim(p.keyEnvVar || "")}`)
+    }
+    ui.panel({ title: C.textBold("Cloud Providers — API Key Setup"), body: lines, color: C.dim })
+
+    return new Promise<void>((resolve) => {
+      state.rl.question(`\n  ${C.muted("Enter number (or empty to cancel):")} `, (answer) => {
+        const num = parseInt(answer.trim())
+        if (isNaN(num) || num < 1 || num > reg.cloud.length) {
+          if (answer.trim()) ui.warnMsg("Invalid selection.")
+          resolve()
+          return
+        }
+        const provider = reg.cloud[num - 1] as any
+        console.log()
+        console.log(`  ${C.muted("Provider:")} ${C.textBold(provider.name)}`)
+        console.log(`  ${C.dim("The key will be stored as")} ${C.accent(provider.keyEnvVar || provider.id + "_API_KEY")}`)
+        state.rl.question(`  ${C.muted("API Key:")} `, async (key) => {
+          if (!key.trim()) { ui.warnMsg("Cancelled."); resolve(); return }
+          try {
+            // Store the key in the platform backend
+            await state.sdk.setCloudApiKey(provider.id, key.trim())
+            ui.successMsg(`API key set for ${C.accent(provider.name)}`)
+            console.log(`    ${C.dim("Use /registry refresh to verify the provider is active.")}`) 
+          } catch (e: any) {
+            ui.errorMsg(`Failed to set key: ${e?.message ?? e}`)
+            console.log(`    ${C.dim("Tip: You can also set")} ${C.accent(provider.keyEnvVar || "")} ${C.dim("in your .env file and restart.")}`) 
+          }
+          resolve()
+        })
+      })
+    })
+  } catch (e) {
+    ui.errorMsg(`API key setup error: ${e}`)
   }
 }
 
@@ -835,7 +916,7 @@ export async function showAudit(state: TuiState, sub?: string) {
       for (const e of entries) {
         const time = new Date(e.timestamp).toLocaleTimeString()
         const status = e.success ? C.success(Box.check) : C.error(Box.cross_mark)
-        const meta = e.metadata ? JSON.parse(e.metadata) : {}
+        const meta = typeof e.metadata === "string" ? JSON.parse(e.metadata) : (e.metadata || {})
         lines.push(`${status} ${C.muted(time)}  ${C.accent(e.action)}  ${C.dim(meta.method ?? "")} ${C.dim(meta.path ?? "")}`)
       }
 

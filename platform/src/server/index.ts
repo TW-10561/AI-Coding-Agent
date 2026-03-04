@@ -195,14 +195,6 @@ app.get("/", async (c) => {
       </div>
     </div>
 
-    <div class="card" style="margin-bottom: 20px;">
-      <h3>Available Models</h3>
-      ${providerInfo.models.length > 0
-        ? providerInfo.models.map(m => '<span class="model-tag">' + m + '</span>').join('')
-        : '<span style="color:#666">No models loaded</span>'
-      }
-    </div>
-
     <!-- Tabbed Dashboard -->
     <div class="tabs">
       <div class="tab active" data-tab="audit">Audit Logs</div>
@@ -344,7 +336,7 @@ app.get("/", async (c) => {
         } else {
           document.getElementById('audit-entries').textContent = entries.map(e => {
             const t = new Date(e.timestamp).toLocaleTimeString();
-            const meta = e.metadata ? JSON.parse(e.metadata) : {};
+            const meta = typeof e.metadata === 'object' ? (e.metadata || {}) : (e.metadata ? JSON.parse(e.metadata) : {});
             return (e.success ? 'OK' : 'ERR') + '  ' + t + '  ' + e.action + '  ' + (meta.method||'') + ' ' + (meta.path||'');
           }).join('\\n');
         }

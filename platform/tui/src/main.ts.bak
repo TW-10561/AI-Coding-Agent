@@ -2,9 +2,11 @@
 // ---------------------------------------------------------------------------
 // Artemis TUI — Terminal UI for the AI Coding Platform
 // ---------------------------------------------------------------------------
-// Single unified mode — all messages go through direct vLLM chat for speed.
-// OpenCode engine is used for session persistence, agent tools, and project
-// context. There is no "direct vs opencode" toggle — just one seamless mode.
+// Modular architecture:
+//   theme.ts    → Color palette, box drawing, constants
+//   ui.ts       → Reusable rendering primitives (panels, tables, spinners)
+//   handlers.ts → All command handler functions
+//   main.ts     → Entry point, readline loop, command dispatch (this file)
 // ---------------------------------------------------------------------------
 
 import { PlatformClient } from "../../src/sdk/client"
@@ -13,7 +15,6 @@ import * as ui from "./ui"
 import * as h from "./handlers"
 import type { TuiState } from "./handlers"
 import * as readline from "readline"
-import { execSync } from "child_process"
 
 // ── Config ───────────────────────────────────────────────────────────
 
@@ -38,9 +39,9 @@ const rl = readline.createInterface({
   completer: (line: string) => {
     const commands = [
       "/new", "/sessions", "/switch", "/delete", "/history",
-      "/status", "/model",
+      "/status", "/providers", "/model",
       "/registry", "/registry refresh",
-      "/apikey",
+      "/chat", "/direct",
       "/files", "/project", "/vcs", "/tasks",
       "/agents", "/build", "/plan", "/explore", "/general",
       "/audit", "/audit stats", "/budget", "/budget check", "/budget set",
@@ -66,41 +67,21 @@ const state: TuiState = {
 }
 
 let processing = false
-
-// ── Port cleanup on exit ─────────────────────────────────────────────
-
-function cleanupPorts() {
-  const ports = [3100, 4096]
-  for (const port of ports) {
-    try {
-      execSync(`fuser -k ${port}/tcp 2>/dev/null`, { stdio: "ignore" })
-    } catch {
-      // fuser not found or no process — fine
-    }
-  }
-}
-
-function gracefulExit(code = 0) {
-  console.log(`\n  ${C.muted("Cleaning up ports...")}`)
-  cleanupPorts()
-  console.log(`  ${C.muted("Goodbye!")}\n`)
-  process.exit(code)
-}
-
-process.on("SIGINT", () => gracefulExit(0))
-process.on("SIGTERM", () => gracefulExit(0))
+let directMode = false  // when true, plain text goes through direct-chat (no OpenCode)
 
 // ── Prompt Setup ─────────────────────────────────────────────────────
+// We split prompt display into two parts:
+//   1. A decorated status prefix (printed to stdout, NOT part of readline prompt)
+//   2. A plain-text readline prompt (so character echo + cursor positioning works)
 
 function showPrompt() {
   const sid = state.currentSession
     ? state.currentSession.id.slice(0, 8)
     : "none"
   const agent = h.agentLabel(state.currentAgent)
-  const modelTag = state.currentModel
-    ? C.dim(` ${Box.dot} ${state.currentModel.split("/").pop()}`)
-    : ""
-  console.log(`\n  ${agent} ${C.dim(Box.v)} ${C.accent(sid)}${modelTag}`)
+  const mode = directMode ? C.warning("direct") : ""
+  const modelTag = state.currentModel ? C.dim(` ${Box.dot} ${state.currentModel.split("/").pop()}`) : ""
+  console.log(`\n  ${agent} ${C.dim(Box.v)} ${C.accent(sid)}${modelTag}${mode ? ` ${C.dim(Box.v)} ${mode}` : ""}`)
   rl.setPrompt("  ❯ ")
   rl.prompt()
 }
@@ -110,7 +91,7 @@ function showPrompt() {
 function showHelp() {
   const w = (process.stdout.columns || 80) - 4
   console.log()
-  console.log(`  ${C.primaryBg("  ◆ Artemis  ")}  ${C.muted("Command Reference")}`)
+  console.log(`  ${C.primaryBg("  ◆ Artemis  ")}  ${C.muted("Command Reference")}`)  
   console.log(`  ${C.dim(Box.h.repeat(w))}`)
 
   const groups: [string, [string, string][]][] = [
@@ -121,10 +102,8 @@ function showHelp() {
       ["/delete <id>",   "Delete a session"],
       ["/history",       "Show conversation in current session"],
       ["/status",        "Platform health + model info"],
-      ["/model",         "Select model from available local/cloud models"],
-      ["/registry",      "Local vLLM models + Cloud provider catalogue"],
+      ["/providers",     "List LLM providers (from OpenCode)"],      ["/model",         "Select model from available local/cloud models"],      ["/registry",      "Artemis model catalogue — local vLLM + cloud"],
       ["/registry refresh", "Re-probe vLLM endpoints"],
-      ["/apikey",        "Set API key for a cloud provider"],
       ["/files",         "List project files"],
       ["/project",       "Project directory and git info"],
       ["/vcs",           "Current git branch"],
@@ -155,7 +134,7 @@ function showHelp() {
     ["General", [
       ["/clear",  "Clear terminal"],
       ["/help",   "This help"],
-      ["/quit",   "Exit (auto-cleans ports 3100/4096)"],
+      ["/quit",   "Exit"],
     ]],
   ]
 
@@ -169,7 +148,7 @@ function showHelp() {
   }
 
   console.log()
-  console.log(`  ${C.dim("Type any text to send a prompt to the selected model.")}`)
+  console.log(`  ${C.dim("Type any text to send a prompt to your local vLLM model.")}`)
   console.log()
 }
 
@@ -196,6 +175,7 @@ async function handleInput(line: string) {
     const arg = args.join(" ")
 
     switch (cmd) {
+      // ── Session & Chat ───────────────────────────────────────
       case "/new":
         await h.createNewSession(state)
         break
@@ -216,11 +196,43 @@ async function handleInput(line: string) {
       case "/status": case "/st":
         await h.showStatus(state)
         break
+      case "/providers": case "/models":
+        await h.showProviders(state)
+        break
       case "/model":
         await h.showModelSelector(state)
         break
-      case "/apikey":
-        await h.setApiKey(state)
+      case "/chat":
+        if (!arg) { ui.warnMsg("Usage: /chat <message>"); break }
+        await h.sendDirectChat(state, arg)
+        break
+      case "/direct":
+        directMode = !directMode
+        if (directMode) {
+          // In direct mode, prefer the fast local model (gpt-oss-120b at localhost)
+          // unless user already picked a model
+          if (!state.currentModel) {
+            try {
+              const chatModels = await state.sdk.chatModels()
+              // Find gpt-oss-120b or any secondary fast model
+              const fast = chatModels.models.find(m =>
+                m.id.includes("gpt-oss") || m.id.includes("120b")
+              ) ?? chatModels.models[0]
+              if (fast) {
+                state.currentModel = fast.id
+                state.currentProvider = fast.provider
+                console.log(`  ${C.dim(`Auto-selected: ${fast.name} (${fast.providerName})`)}`)
+              }
+            } catch {}
+          }
+          ui.successMsg("Direct chat mode ON — messages go straight to vLLM (no tools/agents)")
+          console.log(`    ${C.dim("Use /direct again to switch back to OpenCode mode.")}`)
+        } else {
+          // Reset model selection to let OpenCode use its default (MiniMax)
+          state.currentModel = null
+          state.currentProvider = null
+          ui.successMsg("OpenCode mode ON — full agent + tool support")
+        }
         break
       case "/files":
         await h.showFiles(state)
@@ -235,6 +247,7 @@ async function handleInput(line: string) {
         await h.showTasks(state)
         break
 
+      // ── Agents ───────────────────────────────────────────────
       case "/agents": case "/agent":
         await h.listAgents(state)
         break
@@ -251,10 +264,12 @@ async function handleInput(line: string) {
         await h.switchAgent(state, "general")
         break
 
+      // ── Registry ─────────────────────────────────────────
       case "/registry":
         await h.showRegistry(state, arg || undefined)
         break
 
+      // ── Backend Features ─────────────────────────────────────
       case "/audit":
         await h.showAudit(state, arg || undefined)
         break
@@ -294,6 +309,7 @@ async function handleInput(line: string) {
         }
         break
 
+      // ── General ──────────────────────────────────────────────
       case "/clear":
         console.clear()
         await showWelcome()
@@ -302,20 +318,27 @@ async function handleInput(line: string) {
         showHelp()
         break
       case "/quit": case "/exit": case "/q":
-        gracefulExit(0)
+        console.log(`\n  ${C.muted("Goodbye!")}\n`)
+        process.exit(0)
       default:
         ui.warnMsg(`Unknown command: ${cmd}`)
         console.log(`    ${C.dim("Type /help for available commands.")}`)
     }
   } else {
-    // ── Send message — unified flow ────────────────────────────
-    await h.sendMessage(state, trimmed)
+    // Send as prompt to LLM
+    if (directMode) {
+      await h.sendDirectChat(state, trimmed)
+    } else {
+      await h.sendPrompt(state, trimmed)
+    }
   }
 }
 
 // ── Main ─────────────────────────────────────────────────────────────
 
 async function main() {
+  // ── Global safety net ─────────────────────────────────────────
+  // Catch stray promise rejections so they don't kill the process.
   process.on("unhandledRejection", (err) => {
     ui.errorMsg(`Unhandled error: ${err}`)
     if (!processing) showPrompt()
@@ -338,7 +361,7 @@ async function main() {
     process.exit(1)
   }
 
-  // Show system status — our registry (local vLLM + cloud catalogue)
+  // Show system status
   await h.showStatus(state)
 
   // Auto-resume or create session
@@ -355,8 +378,10 @@ async function main() {
     await h.createNewSession(state)
   }
 
-  // Auto-select the fastest local model
+  // Show quick hints
   console.log()
+
+  // Auto-select fast local model for direct chat
   try {
     const chatModels = await sdk.chatModels()
     const fast = chatModels.models.find(m =>
@@ -365,16 +390,21 @@ async function main() {
     if (fast) {
       state.currentModel = fast.id
       state.currentProvider = fast.provider
-      console.log(`  ${C.muted("Model:")} ${C.accent(fast.name)} ${C.dim(`(${fast.providerName})`)}`)
+      directMode = true
+      console.log(`  ${C.muted("Mode:")} ${C.warning("direct")} ${C.dim("|")} ${C.muted("Model:")} ${C.accent(fast.name)}`)
+      console.log(`  ${C.dim("Direct chat (fast, no tools). Use /direct to toggle OpenCode mode.")}`)
     }
   } catch {
-    console.log(`  ${C.dim("No chat models detected — using OpenCode default.")}`)
+    console.log(`  ${C.dim("Direct chat models unavailable, using OpenCode mode.")}`)
   }
 
   console.log()
-  ui.footerHints(["/model pick model", "/registry providers", "/apikey cloud keys", "/help commands", "/quit exit"])
+  ui.footerHints(["/model pick model", "/direct toggle mode", "/help commands", "/quit exit"])
 
   // ── Input loop ───────────────────────────────────────────────
+  // Key design: we PAUSE readline while processing a command so that
+  // (a) no input piles up, (b) the prompt is only shown when ready,
+  // and (c) any async error is caught here, not as an orphaned rejection.
 
   rl.on("line", async (line) => {
     if (processing) return
@@ -391,7 +421,11 @@ async function main() {
     }
   })
 
-  rl.on("close", () => gracefulExit(0))
+  rl.on("close", () => {
+    // Ctrl+D or stdin EOF — exit gracefully
+    console.log(`\n  ${C.muted("Goodbye!")}\n`)
+    process.exit(0)
+  })
 
   showPrompt()
 }
