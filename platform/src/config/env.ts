@@ -17,12 +17,12 @@ const Schema = z.object({
   OPENCODE_SERVER_PASSWORD: z.string().optional(),
 
   // ── Local LLM (vLLM) ──────────────────────────────────────────────
-  VLLM_BASE_URL: z.string().url().default("http://172.30.140.91:8000/v1"),
-  VLLM_API_KEY: z.string().default("vllm-qgDSWPGLwcjvq63ApWIiU0sgiKiF5E5nqvGaAcKfh8Q"),
-  VLLM_MODEL_ID: z.string().default("plezan/MiniMax-M2.1-REAP-50-W4A16"),
-  VLLM_MODEL_NAME: z.string().default("MiniMax M2.1 REAP 50 W4A16"),
-  VLLM_CONTEXT_LIMIT: z.coerce.number().default(30000),
-  VLLM_OUTPUT_LIMIT: z.coerce.number().default(4096),
+  //VLLM_BASE_URL: z.string().url().default(""),
+  //VLLM_API_KEY: z.string().default(""),
+  //VLLM_MODEL_ID: z.string().default(""),
+  //VLLM_MODEL_NAME: z.string().default(""),
+  //VLLM_CONTEXT_LIMIT: z.coerce.number().default(30000),
+  //VLLM_OUTPUT_LIMIT: z.coerce.number().default(4096),
 
   // ── Platform auth ──────────────────────────────────────────────────
   PLATFORM_API_KEY: z.string().optional(),
