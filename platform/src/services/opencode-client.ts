@@ -239,6 +239,20 @@ export class OpenCodeClient {
     return this.request("GET", "/agent")
   }
 
+  async skills(): Promise<unknown[]> {
+    return this.request("GET", "/skill")
+  }
+
+  async setAuth(providerID: string, body: Record<string, unknown>): Promise<boolean> {
+    await this.request("PUT", `/provider/${providerID}/auth`, body)
+    return true
+  }
+
+  async removeAuth(providerID: string): Promise<boolean> {
+    await this.request("DELETE", `/provider/${providerID}/auth`)
+    return true
+  }
+
   // ── Project / Files ────────────────────────────────────────────
 
   async currentProject(): Promise<ProjectInfo> {
@@ -253,12 +267,25 @@ export class OpenCodeClient {
     return this.request("GET", "/file", undefined, { path: dir })
   }
 
+  /** Alias used by file routes */
+  async listFiles(dir?: string): Promise<FileNode[]> {
+    return this.files(dir)
+  }
+
   async readFile(path: string): Promise<{ type: string; content: string }> {
     return this.request("GET", "/file/read", undefined, { path })
   }
 
   async findFiles(query: string): Promise<string[]> {
     return this.request("GET", "/file/search", undefined, { q: query })
+  }
+
+  async fileStatus(): Promise<Record<string, unknown>> {
+    return this.request("GET", "/file/status")
+  }
+
+  async findText(query: string): Promise<unknown[]> {
+    return this.request("GET", "/file/grep", undefined, { q: query })
   }
 
   // ── Config / VCS ───────────────────────────────────────────────
@@ -287,5 +314,55 @@ export class OpenCodeClient {
 
   async unrevert(sessionID: string): Promise<SessionInfo> {
     return this.request("POST", `/session/${sessionID}/unrevert`)
+  }
+
+  // ── Event subscription ──────────────────────────────────────────
+
+  private _eventListeners: Array<(event: any) => void> = []
+  private _eventSource: EventSource | null = null
+
+  /**
+   * Subscribe to OpenCode bus events via SSE.
+   * Returns an unsubscribe function.
+   */
+  subscribe(listener: (event: any) => void): () => void {
+    this._eventListeners.push(listener)
+
+    // Lazily start the EventSource if not already running
+    if (!this._eventSource && typeof EventSource !== "undefined") {
+      try {
+        this._eventSource = new EventSource(`${this.base}/event`)
+        this._eventSource.onmessage = (msg) => {
+          try {
+            const data = JSON.parse(msg.data)
+            for (const fn of this._eventListeners) fn(data)
+          } catch {}
+        }
+        this._eventSource.onerror = () => {
+          // Will auto-reconnect; swallow
+        }
+      } catch {
+        // EventSource not available (e.g. in Node without polyfill) — fall back to polling
+      }
+    }
+
+    return () => {
+      this._eventListeners = this._eventListeners.filter((l) => l !== listener)
+      if (this._eventListeners.length === 0 && this._eventSource) {
+        this._eventSource.close()
+        this._eventSource = null
+      }
+    }
+  }
+
+  /**
+   * Graceful teardown — close SSE connections.
+   */
+  async dispose(): Promise<void> {
+    if (this._eventSource) {
+      this._eventSource.close()
+      this._eventSource = null
+    }
+    this._eventListeners = []
   }
 }
