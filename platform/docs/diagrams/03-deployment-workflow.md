@@ -1,4 +1,4 @@
-<!-- Kadavuley — Deployment Workflow -->
+<!-- Artemis — Deployment Workflow -->
 <!-- Render with any Mermaid viewer: https://mermaid.live -->
 
 ```mermaid
@@ -12,7 +12,7 @@ graph LR
     end
 
     subgraph Run["🚀 Running"]
-        G["kadavuley"] --> H["Pre-flight checks"]
+        G["artemis"] --> H["Pre-flight checks"]
         H --> I["Starts OpenCode :4096"]
         I --> J["Starts Backend :3100"]
         J --> K["Launches TUI"]
@@ -20,15 +20,15 @@ graph LR
     end
 
     subgraph Modes["🔧 Modes"]
-        M["kadavuley<br/>(full stack)"]
-        N["kadavuley --headless<br/>(API only)"]
-        O["kadavuley --tui-only<br/>(TUI connects to existing)"]
+        M["artemis<br/>(full stack)"]
+        N["artemis --headless<br/>(API only)"]
+        O["artemis --tui-only<br/>(TUI connects to existing)"]
     end
 
     subgraph Docker["🐳 Docker"]
         P["docker compose up"] --> Q["Builds image"]
         Q --> R["OpenCode + Backend<br/>in container"]
-        R --> S["Connect TUI externally<br/>KADAVULEY_URL=host:3100"]
+        R --> S["Connect TUI externally<br/>ARTEMIS_URL=host:3100"]
     end
 
     F --> G

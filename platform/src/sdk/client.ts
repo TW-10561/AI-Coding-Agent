@@ -399,6 +399,65 @@ export class PlatformClient {
   async cancelParallelExecution(id: string): Promise<void> {
     return this.request("POST", `/api/parallel/${id}/cancel`)
   }
+
+  // ── Provider Registry (Artemis Zen equivalento) ─────────────────────
+
+  /** Full snapshot: local vLLM providers + cloud provider catalogue */
+  async registry(refresh?: boolean): Promise<{
+    local: Array<{
+      id: string; name: string; endpoint: string
+      status: "online" | "offline" | "unknown"; latencyMs?: number
+      models: Array<{ id: string; name: string; contextLimit: number; outputLimit: number }>
+      isPrimary: boolean
+    }>
+    cloud: Array<{
+      id: string; name: string; apiUrl: string; docUrl: string
+      keyEnvVar: string; configured: boolean
+      models: Array<{ id: string; name: string; contextLimit: number; outputLimit: number; costIn: number; costOut: number }>
+    }>
+    activeModel: string
+    generatedAt: string
+  }> {
+    return this.request("GET", "/api/registry", undefined, refresh ? { refresh: "true" } : undefined)
+  }
+
+  /** Force-re-probe all vLLM endpoints */
+  async refreshRegistry(): Promise<{ ok: boolean; probed: number; generatedAt: string }> {
+    return this.request("POST", "/api/registry/refresh")
+  }
+
+  // ── Direct Chat (bypasses OpenCode, talks to vLLM directly) ─────
+
+  /** Direct chat with vLLM — no tools, no OpenCode system prompt, much faster */
+  async directChat(opts: {
+    message: string
+    modelID?: string
+    providerID?: string
+    system?: string
+    maxTokens?: number
+    temperature?: number
+    history?: Array<{ role: "user" | "assistant"; content: string }>
+  }): Promise<{
+    text: string
+    reasoning?: string
+    model: string
+    provider: string
+    tokens: { input: number; output: number }
+    latencyMs: number
+  }> {
+    return this.request("POST", "/api/chat", opts)
+  }
+
+  /** List models available for direct chat */
+  async chatModels(): Promise<{
+    models: Array<{
+      id: string; name: string; provider: string; providerName: string
+      source: "local" | "cloud"; contextLimit: number; outputLimit: number
+    }>
+    activeModel: string
+  }> {
+    return this.request("GET", "/api/chat/models")
+  }
 }
 
 // ── Error class ──────────────────────────────────────────────────────

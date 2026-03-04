@@ -1,11 +1,11 @@
-<!-- Kadavuley — System Architecture -->
+<!-- Artemis — System Architecture -->
 <!-- Render with any Mermaid viewer: https://mermaid.live -->
 
 ```mermaid
 graph TB
     subgraph User["🖥️ User"]
-        TUI["Terminal UI<br/>(kadavuley CLI)"]
-        SDK["TypeScript SDK<br/>(@kadavuley/sdk)"]
+        TUI["Terminal UI<br/>(artemis CLI)"]
+        SDK["TypeScript SDK<br/>(@artemis/sdk)"]
         API["REST / SSE API"]
     end
 

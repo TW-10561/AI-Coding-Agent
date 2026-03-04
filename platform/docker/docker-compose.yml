@@ -1,4 +1,4 @@
-# ── Kadavuley Platform — Docker Compose ────────────────────────────────
+# ── Artemis Platform — Docker Compose ────────────────────────────────
 #
 # Quick start:
 #   cd platform/docker
@@ -9,14 +9,14 @@
 #   docker compose up --build
 #
 # Connect TUI to running container:
-#   kadavuley --tui-only   (or: KADAVULEY_URL=http://host:3100 bun run tui/src/main.ts)
+#   artemis --tui-only   (or: ARTEMIS_URL=http://host:3100 bun run tui/src/main.ts)
 
 services:
   platform:
     build:
       context: ../..
       dockerfile: platform/docker/Dockerfile
-    container_name: kadavuley
+    container_name: artemis
     ports:
       - "${PORT:-3100}:3100"
       - "${OPENCODE_PORT:-4096}:4096"

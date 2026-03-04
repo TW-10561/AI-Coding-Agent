@@ -1,14 +1,14 @@
-# Kadavuley AI Coding Platform
+# Artemis AI Coding Platform
 
 **Your own AI coding assistant — local, private, one command.**
 
-Kadavuley wraps a self-hosted [OpenCode](https://opencode.ai) engine with a production backend and a beautiful terminal UI. Point it at any OpenAI-compatible LLM (vLLM, Ollama, etc.) and start coding with AI — no cloud API keys required.
+Artemis wraps a self-hosted [OpenCode](https://opencode.ai) engine with a production backend and a beautiful terminal UI. Point it at any OpenAI-compatible LLM (vLLM, Ollama, etc.) and start coding with AI — no cloud API keys required.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  kadavuley                                                  │
+│  artemis                                                  │
 │                                                             │
-│    ◆ Kadavuley   AI Coding Platform — Terminal Client       │
+│    ◆ Artemis   AI Coding Platform — Terminal Client       │
 │    ─────────────────────────────────────────────────────     │
 │    ● Platform   connected                                   │
 │    ● OpenCode   connected                                   │
@@ -37,7 +37,7 @@ Kadavuley wraps a self-hosted [OpenCode](https://opencode.ai) engine with a prod
 
 ## Part 1: Run Locally (Developer)
 
-Step-by-step guide to run Kadavuley on your own machine.
+Step-by-step guide to run Artemis on your own machine.
 
 ### Prerequisites
 
@@ -58,8 +58,8 @@ bun --version      # should show 1.3.x or higher
 ### Step 2 — Clone the repository
 
 ```bash
-git clone https://github.com/sst/opencode.git kadavuley
-cd kadavuley
+git clone https://github.com/sst/opencode.git artemis
+cd artemis
 ```
 
 ### Step 3 — Install dependencies
@@ -143,14 +143,14 @@ Once started, you should see:
 
 ```
   ╔══════════════════════════════════════════╗
-  ║   ◆  K A D A V U L E Y                  ║
+  ║   ◆  A R T E M I S                  ║
   ╚══════════════════════════════════════════╝
 
   [launch]  OpenCode ready → http://127.0.0.1:4096
   [launch]  Platform ready → http://0.0.0.0:3100
   [launch]  Starting TUI...
 
-    ◆ Kadavuley    AI Coding Platform — Terminal Client
+    ◆ Artemis    AI Coding Platform — Terminal Client
     ● Platform   connected
     ● OpenCode   connected
 ```
@@ -161,13 +161,13 @@ Type any text to send a prompt to your LLM. Type `/help` for all commands.
 
 ## Part 2: For Users (Global Distribution)
 
-How **other people** can install and use Kadavuley with a single command.
+How **other people** can install and use Artemis with a single command.
 
 ### Option A: One-line install (recommended)
 
 ```bash
-git clone https://github.com/sst/opencode.git kadavuley
-cd kadavuley
+git clone https://github.com/sst/opencode.git artemis
+cd artemis
 bash install.sh
 ```
 
@@ -175,7 +175,7 @@ The install script automatically:
 1. Installs Bun (if not present)
 2. Installs all dependencies
 3. Builds the OpenCode engine from source
-4. Links the `kadavuley` CLI to `~/.local/bin`
+4. Links the `artemis` CLI to `~/.local/bin`
 5. Adds PATH entries to `.bashrc` / `.zshrc`
 
 After install, users just edit one file and run one command:
@@ -185,7 +185,7 @@ After install, users just edit one file and run one command:
 nano platform/.env
 
 # Run!
-kadavuley
+artemis
 ```
 
 ### Option B: Docker (zero dependencies)
@@ -193,8 +193,8 @@ kadavuley
 Users who have Docker don't need Bun at all:
 
 ```bash
-git clone https://github.com/sst/opencode.git kadavuley
-cd kadavuley
+git clone https://github.com/sst/opencode.git artemis
+cd artemis
 
 # Start the headless backend in Docker
 cd platform/docker
@@ -202,22 +202,22 @@ VLLM_BASE_URL=http://your-gpu-server:8000/v1 docker compose up --build -d
 
 # Connect TUI locally (needs Bun and TUI deps)
 cd ../..
-KADAVULEY_URL=http://localhost:3100 bun run platform/tui/src/main.ts
+ARTEMIS_URL=http://localhost:3100 bun run platform/tui/src/main.ts
 ```
 
 ### Launch modes
 
 | Command | What it does |
 |---------|-------------|
-| `kadavuley` | Full stack: OpenCode + Backend + TUI |
-| `kadavuley --headless` | Backend only (no TUI) — for API/SDK/Docker use |
-| `kadavuley --tui-only` | Connect TUI to an already-running backend |
+| `artemis` | Full stack: OpenCode + Backend + TUI |
+| `artemis --headless` | Backend only (no TUI) — for API/SDK/Docker use |
+| `artemis --tui-only` | Connect TUI to an already-running backend |
 
-### Using Kadavuley as an Agent
+### Using Artemis as an Agent
 
-Kadavuley can act as a **fully autonomous AI coding agent**. From the TUI:
+Artemis can act as a **fully autonomous AI coding agent**. From the TUI:
 
-1. **Start a session**: Run `kadavuley` — a session is auto-created
+1. **Start a session**: Run `artemis` — a session is auto-created
 2. **Give it a task**: Type `Refactor the auth module to use JWT tokens` and press Enter
 3. **Watch it work**: The AI reads your files, writes code, runs tests — all locally
 4. **Multi-agent mode**: Use `/orchestrate` to run complex DAG workflows:
@@ -234,7 +234,7 @@ Run the backend on a shared server:
 
 ```bash
 # On the server (start headless)
-kadavuley --headless
+artemis --headless
 # Or with Docker:
 docker compose up -d
 ```
@@ -243,7 +243,7 @@ Team members connect their TUIs:
 
 ```bash
 # On each developer's machine
-KADAVULEY_URL=http://team-server:3100 kadavuley --tui-only
+ARTEMIS_URL=http://team-server:3100 artemis --tui-only
 ```
 
 ---
@@ -295,7 +295,7 @@ docker compose up --build
 └───────────────────────────────────────────────────┘
          ↕                        ↕
     User's TUI              vLLM / Ollama
-  (kadavuley --tui-only)    (GPU server)
+  (artemis --tui-only)    (GPU server)
 ```
 
 ### Docker healthcheck
@@ -303,7 +303,7 @@ docker compose up --build
 The container has a built-in healthcheck at `GET /health/ready`:
 
 ```bash
-docker inspect --format='{{.State.Health.Status}}' kadavuley
+docker inspect --format='{{.State.Health.Status}}' artemis
 # → "healthy"
 ```
 
@@ -412,7 +412,7 @@ VLLM_MODEL_NAME=GPT-4o
 ## Architecture
 
 ```
-  User → kadavuley CLI
+  User → artemis CLI
            │
            ├─→ OpenCode Engine (:4096)     # AI agent runtime
            │      Sessions · Agents · Tools · MCP · LSP
@@ -442,7 +442,7 @@ See [docs/diagrams/](docs/diagrams/) for full Mermaid diagrams:
 Connect from any TypeScript/JavaScript application:
 
 ```typescript
-import { PlatformClient } from "@kadavuley/platform/sdk"
+import { PlatformClient } from "@artemis/platform/sdk"
 
 const client = new PlatformClient({
   baseUrl: "http://localhost:3100",
@@ -494,7 +494,7 @@ const orch = await client.startOrchestration({
 
 ```
 platform/
-├── bin/kadavuley             # CLI entry point (run from anywhere)
+├── bin/artemis             # CLI entry point (run from anywhere)
 ├── scripts/
 │   ├── launch.ts             # Unified launcher (OpenCode + Backend + TUI)
 │   ├── start-all.ts          # OpenCode + Backend (headless)

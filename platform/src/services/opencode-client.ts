@@ -1,6 +1,14 @@
 // ---------------------------------------------------------------------------
 // OpenCode engine client — typed HTTP + SSE wrapper around the self-hosted
 // OpenCode server running on localhost:4096.
+//
+// Key contract with OpenCode:
+//   • POST /session           — create session (body MUST be JSON, even {})
+//   • POST /session/:id/message — send prompt
+//       body: { parts: [{ type: "text", text: "…" }], agent?: "build" }
+//   • Response MessageV2 parts: text, reasoning, tool, step-start,
+//       step-finish, snapshot, patch, file, agent, retry, compaction, subtask
+//   • info.error may be set even on 200 (e.g. ContextOverflowError)
 // ---------------------------------------------------------------------------
 
 import { env } from "../config/env"
@@ -13,10 +21,19 @@ import type {
   VcsInfo,
   FileNode,
   PromptInput,
-  CommandInput,
-  ShellInput,
   HealthStatus,
 } from "../types"
+
+export class OpenCodeError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+    public body?: string,
+  ) {
+    super(message)
+    this.name = "OpenCodeError"
+  }
+}
 
 export class OpenCodeClient {
   private base: string
@@ -50,11 +67,18 @@ export class OpenCodeClient {
     return u.toString()
   }
 
+  /**
+   * Generic request.
+   * IMPORTANT: POST/PUT/PATCH always send a JSON body (at least `{}`) because
+   * OpenCode rejects Content-Type: application/json with no body as
+   * "Malformed JSON in request body".
+   */
   private async request<T>(method: string, path: string, body?: unknown, params?: Record<string, string | undefined>): Promise<T> {
+    const needsBody = ["POST", "PUT", "PATCH"].includes(method.toUpperCase())
     const res = await fetch(this.url(path, params), {
       method,
       headers: this.headers,
-      body: body ? JSON.stringify(body) : undefined,
+      body: needsBody ? JSON.stringify(body ?? {}) : (body ? JSON.stringify(body) : undefined),
     })
     if (!res.ok) {
       const text = await res.text().catch(() => "")
@@ -77,25 +101,28 @@ export class OpenCodeClient {
     return res.body
   }
 
-  // ── Health ──────────────────────────────────────────────────────
+  // ── Health ─────────────────────────────────────────────────────
 
-  async health(): Promise<{ ok: boolean; url: string }> {
+  async health(): Promise<{ ok: boolean } & HealthStatus> {
+    const start = Date.now()
     try {
-      const res = await fetch(this.url("/path"), { headers: this.headers })
-      return { ok: res.ok, url: this.base }
+      await this.request("GET", "/session")
+      return {
+        ok: true,
+        platform: "ok",
+        opencode: "ok",
+        uptime: Date.now() - start,
+        version: "0.1.0",
+      }
     } catch {
-      return { ok: false, url: this.base }
+      return {
+        ok: false,
+        platform: "ok",
+        opencode: "unreachable",
+        uptime: 0,
+        version: "0.1.0",
+      }
     }
-  }
-
-  // ── Projects ───────────────────────────────────────────────────
-
-  async projects(): Promise<ProjectInfo[]> {
-    return this.request("GET", "/project")
-  }
-
-  async currentProject(): Promise<ProjectInfo> {
-    return this.request("GET", "/project/current")
   }
 
   // ── Sessions ───────────────────────────────────────────────────
@@ -112,7 +139,7 @@ export class OpenCodeClient {
   }
 
   async createSession(opts?: { parentID?: string; title?: string; agentID?: string }): Promise<SessionInfo> {
-    return this.request("POST", "/session", opts)
+    return this.request("POST", "/session", opts ?? {})
   }
 
   async deleteSession(id: string): Promise<boolean> {
@@ -124,7 +151,7 @@ export class OpenCodeClient {
   }
 
   async forkSession(id: string, messageID?: string): Promise<SessionInfo> {
-    return this.request("POST", `/session/${id}/fork`, messageID ? { messageID } : undefined)
+    return this.request("POST", `/session/${id}/fork`, messageID ? { messageID } : {})
   }
 
   async summarizeSession(id: string): Promise<boolean> {
@@ -148,11 +175,10 @@ export class OpenCodeClient {
   }
 
   /**
-   * Send a prompt and get the full streamed response body.
-   * For raw SSE streaming, use `promptStream()`.
+   * Send a prompt and get the full response.
+   * Transforms the Platform SDK PromptInput into OpenCode's expected format.
    */
   async prompt(sessionID: string, input: PromptInput): Promise<MessageWithParts> {
-    // OpenCode expects { parts: [{ type: "text", text: "..." }] }
     const body = this.toOpenCodePrompt(input)
     return this.request("POST", `/session/${sessionID}/message`, body)
   }
@@ -174,7 +200,14 @@ export class OpenCodeClient {
     return this.stream("POST", `/session/${sessionID}/message`, body)
   }
 
-  /** Convert SDK PromptInput → OpenCode message body format */
+  /**
+   * Convert SDK PromptInput → OpenCode message body format.
+   *
+   * OpenCode expects:
+   *   { parts: [{ type: "text", text: "..." }], agent?: "build" }
+   *
+   * NOT "agentID" — OpenCode uses the field name "agent" in its PromptInput schema.
+   */
   private toOpenCodePrompt(input: PromptInput): Record<string, unknown> {
     const parts: Array<Record<string, unknown>> = [
       { type: "text", text: input.content },
@@ -186,9 +219,9 @@ export class OpenCodeClient {
       }
     }
     const body: Record<string, unknown> = { parts }
-    if (input.agentID) body.agentID = input.agentID
-    if (input.modelID) body.modelID = input.modelID
-    if (input.providerID) body.providerID = input.providerID
+    // OpenCode uses "agent" (NOT "agentID") in its PromptInput schema
+    if (input.agentID) body.agent = input.agentID
+    if (input.modelID) body.model = { modelID: input.modelID, providerID: input.providerID ?? "vllm" }
     return body
   }
 
@@ -196,49 +229,39 @@ export class OpenCodeClient {
     return this.request("DELETE", `/session/${sessionID}/message/${messageID}`)
   }
 
-  async revert(sessionID: string): Promise<SessionInfo> {
-    return this.request("POST", `/session/${sessionID}/revert`)
-  }
+  // ── Providers ──────────────────────────────────────────────────
 
-  async unrevert(sessionID: string): Promise<SessionInfo> {
-    return this.request("POST", `/session/${sessionID}/unrevert`)
-  }
-
-  // ── Commands & shell ───────────────────────────────────────────
-
-  async command(sessionID: string, input: CommandInput): Promise<MessageWithParts> {
-    return this.request("POST", `/session/${sessionID}/command`, input)
-  }
-
-  async shell(sessionID: string, input: ShellInput): Promise<MessageWithParts> {
-    return this.request("POST", `/session/${sessionID}/shell`, input)
-  }
-
-  // ── Providers & models ─────────────────────────────────────────
-
-  async providers(): Promise<{ all: ProviderInfo[]; default: string; connected: string[] }> {
+  async providers(): Promise<{ all: ProviderInfo[]; default: Record<string, string>; connected: string[] }> {
     return this.request("GET", "/provider")
   }
-
-  async setAuth(providerID: string, info: Record<string, unknown>): Promise<boolean> {
-    return this.request("PUT", `/auth/${providerID}`, info)
-  }
-
-  async removeAuth(providerID: string): Promise<boolean> {
-    return this.request("DELETE", `/auth/${providerID}`)
-  }
-
-  // ── Agents & skills ────────────────────────────────────────────
 
   async agents(): Promise<AgentInfo[]> {
     return this.request("GET", "/agent")
   }
 
-  async skills(): Promise<unknown[]> {
-    return this.request("GET", "/skill")
+  // ── Project / Files ────────────────────────────────────────────
+
+  async currentProject(): Promise<ProjectInfo> {
+    return this.request("GET", "/project")
   }
 
-  // ── Config ─────────────────────────────────────────────────────
+  async projects(): Promise<ProjectInfo[]> {
+    return this.request("GET", "/project")
+  }
+
+  async files(dir?: string): Promise<FileNode[]> {
+    return this.request("GET", "/file", undefined, { path: dir })
+  }
+
+  async readFile(path: string): Promise<{ type: string; content: string }> {
+    return this.request("GET", "/file/read", undefined, { path })
+  }
+
+  async findFiles(query: string): Promise<string[]> {
+    return this.request("GET", "/file/search", undefined, { q: query })
+  }
+
+  // ── Config / VCS ───────────────────────────────────────────────
 
   async config(): Promise<Record<string, unknown>> {
     return this.request("GET", "/config")
@@ -248,79 +271,21 @@ export class OpenCodeClient {
     return this.request("PATCH", "/config", patch)
   }
 
-  // ── Files ──────────────────────────────────────────────────────
-
-  async findFiles(query: string): Promise<string[]> {
-    return this.request("GET", "/find/file", undefined, { query })
-  }
-
-  async findText(query: string): Promise<unknown[]> {
-    return this.request("GET", "/find", undefined, { query })
-  }
-
-  async listFiles(dir?: string): Promise<FileNode[]> {
-    return this.request("GET", "/file", undefined, { path: dir })
-  }
-
-  async readFile(path: string): Promise<{ type: string; content: string }> {
-    return this.request("GET", "/file/content", undefined, { path })
-  }
-
-  async fileStatus(): Promise<unknown[]> {
-    return this.request("GET", "/file/status")
-  }
-
-  // ── VCS ────────────────────────────────────────────────────────
-
   async vcs(): Promise<VcsInfo> {
     return this.request("GET", "/vcs")
   }
 
-  // ── Paths ──────────────────────────────────────────────────────
-
-  async paths(): Promise<{ home: string; state: string; config: string; worktree: string; directory: string }> {
+  async paths(): Promise<unknown> {
     return this.request("GET", "/path")
   }
 
-  // ── Events (SSE) ──────────────────────────────────────────────
+  // ── Revert ─────────────────────────────────────────────────────
 
-  events(): EventSource {
-    return new EventSource(this.url("/event"))
+  async revert(sessionID: string): Promise<SessionInfo> {
+    return this.request("POST", `/session/${sessionID}/revert`)
   }
 
-  /**
-   * Subscribe to all OpenCode events via SSE. Returns an unsubscribe function.
-   */
-  subscribe(handler: (event: { type: string; properties: unknown }) => void): () => void {
-    const es = this.events()
-    const onMessage = (e: MessageEvent) => {
-      try {
-        handler(JSON.parse(e.data))
-      } catch {}
-    }
-    es.addEventListener("message", onMessage)
-    return () => {
-      es.removeEventListener("message", onMessage)
-      es.close()
-    }
-  }
-
-  // ── Instance lifecycle ─────────────────────────────────────────
-
-  async dispose(): Promise<boolean> {
-    return this.request("POST", "/instance/dispose")
-  }
-}
-
-// ── Error type ───────────────────────────────────────────────────────
-
-export class OpenCodeError extends Error {
-  constructor(
-    public status: number,
-    message: string,
-    public body?: string,
-  ) {
-    super(message)
-    this.name = "OpenCodeError"
+  async unrevert(sessionID: string): Promise<SessionInfo> {
+    return this.request("POST", `/session/${sessionID}/unrevert`)
   }
 }

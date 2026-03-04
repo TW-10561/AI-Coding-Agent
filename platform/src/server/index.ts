@@ -36,6 +36,8 @@ import { workspaceRoutes } from "./routes/workspaces"
 import { orchestrationRoutes } from "./routes/orchestrations"
 import { queueRoutes } from "./routes/queue"
 import { parallelRoutes } from "./routes/parallel"
+import { registryRoutes } from "./routes/registry"
+import { chatRoutes } from "./routes/chat"
 
 // ── Instantiate services ──────────────────────────────────────────────
 
@@ -133,7 +135,7 @@ app.get("/", async (c) => {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Kadavuley AI Coding Platform</title>
+  <title>Artemis AI Coding Platform</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: 'Inter', -apple-system, sans-serif; background: #0a0a0f; color: #e0e0e8; min-height: 100vh; }
@@ -175,7 +177,7 @@ app.get("/", async (c) => {
 </head>
 <body>
   <div class="container">
-    <h1>Kadavuley AI Coding Platform</h1>
+    <h1>Artemis AI Coding Platform</h1>
     <p class="subtitle">Self-hosted AI coding engine powered by local vLLM &mdash; no cloud APIs</p>
 
     <div class="grid">
@@ -304,7 +306,7 @@ app.get("/", async (c) => {
       </div>
     </div>
 
-    <div class="footer">Kadavuley v0.1.0 &mdash; OpenCode Engine &mdash; vLLM Local Inference</div>
+    <div class="footer">Artemis v0.1.0 &mdash; OpenCode Engine &mdash; vLLM Local Inference</div>
   </div>
 
   <script>
@@ -440,6 +442,8 @@ app.route("/api/workspaces", workspaceRoutes(workspaces))
 app.route("/api/orchestrations", orchestrationRoutes(orchestrator))
 app.route("/api/queue", queueRoutes(scalableQueue))
 app.route("/api/parallel", parallelRoutes(parallelExecutor))
+app.route("/api/registry", registryRoutes())
+app.route("/api/chat", chatRoutes())
 
 // Convenience: project + config pass-through
 app.get("/api/project", async (c) => c.json(await client.currentProject()))
@@ -480,7 +484,7 @@ const server = Bun.serve({
 
 console.log(`
 ┌─────────────────────────────────────────────────┐
-│  Kadavuley AI Coding Platform                   │
+│  Artemis AI Coding Platform                     │
 │  Platform  →  http://${server.hostname}:${server.port}            │
 │  OpenCode  →  ${env.OPENCODE_URL}               │
 │  Env       →  ${env.NODE_ENV}                   │

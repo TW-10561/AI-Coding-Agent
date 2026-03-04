@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // ---------------------------------------------------------------------------
-// Kadavuley — Single-command launcher
+// Artemis — Single-command launcher
 // Starts: OpenCode engine → Platform backend → TUI (interactive)
 // ---------------------------------------------------------------------------
 
@@ -9,7 +9,7 @@ import { opencode } from "../src/services/opencode-process"
 
 const LOGO = `
   ╔══════════════════════════════════════════╗
-  ║   ◆  K A D A V U L E Y                  ║
+  ║   ◆  A R T E M I S                       ║
   ║   AI Coding Platform — Local & Private   ║
   ╚══════════════════════════════════════════╝
 `

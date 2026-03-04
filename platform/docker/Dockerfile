@@ -1,6 +1,6 @@
-# ── Kadavuley Platform — Production Docker Image ──────────────────────
-# Build:   docker build -t kadavuley -f platform/docker/Dockerfile .
-# Run:     docker run -p 3100:3100 -p 4096:4096 -e VLLM_BASE_URL=... kadavuley
+# ── Artemis Platform — Production Docker Image ──────────────────────
+# Build:   docker build -t artemis -f platform/docker/Dockerfile .
+# Run:     docker run -p 3100:3100 -p 4096:4096 -e VLLM_BASE_URL=... artemis
 # Compose: cd platform/docker && docker compose up --build
 # ───────────────────────────────────────────────────────────────────────
 

@@ -39,7 +39,9 @@ const rl = readline.createInterface({
   completer: (line: string) => {
     const commands = [
       "/new", "/sessions", "/switch", "/delete", "/history",
-      "/status", "/providers", "/registry", "/registry refresh",
+      "/status", "/providers", "/model",
+      "/registry", "/registry refresh",
+      "/chat", "/direct",
       "/files", "/project", "/vcs", "/tasks",
       "/agents", "/build", "/plan", "/explore", "/general",
       "/audit", "/audit stats", "/budget", "/budget check", "/budget set",
@@ -59,10 +61,13 @@ const state: TuiState = {
   sdk,
   currentSession: null,
   currentAgent: "build",
+  currentModel: null,
+  currentProvider: null,
   rl,
 }
 
 let processing = false
+let directMode = false  // when true, plain text goes through direct-chat (no OpenCode)
 
 // ── Prompt Setup ─────────────────────────────────────────────────────
 // We split prompt display into two parts:
@@ -74,13 +79,9 @@ function showPrompt() {
     ? state.currentSession.id.slice(0, 8)
     : "none"
   const agent = h.agentLabel(state.currentAgent)
-  // Print the decorative status line on its own line via console.log.
-  // We must NOT pass ANSI codes to rl.setPrompt() because readline uses
-  // the raw byte-length of the prompt string to track cursor position —
-  // invisible ANSI escape bytes confuse it, causing typed chars to appear
-  // at the wrong column or not echo at all.
-  console.log(`\n  ${agent} ${C.dim(Box.v)} ${C.accent(sid)}`)
-  // Give readline a plain, ANSI-free prompt it can measure correctly.
+  const mode = directMode ? C.warning("direct") : ""
+  const modelTag = state.currentModel ? C.dim(` ${Box.dot} ${state.currentModel.split("/").pop()}`) : ""
+  console.log(`\n  ${agent} ${C.dim(Box.v)} ${C.accent(sid)}${modelTag}${mode ? ` ${C.dim(Box.v)} ${mode}` : ""}`)
   rl.setPrompt("  ❯ ")
   rl.prompt()
 }
@@ -101,8 +102,7 @@ function showHelp() {
       ["/delete <id>",   "Delete a session"],
       ["/history",       "Show conversation in current session"],
       ["/status",        "Platform health + model info"],
-      ["/providers",     "List LLM providers (from OpenCode)"],
-      ["/registry",      "Artemis model catalogue — local vLLM + cloud"],
+      ["/providers",     "List LLM providers (from OpenCode)"],      ["/model",         "Select model from available local/cloud models"],      ["/registry",      "Artemis model catalogue — local vLLM + cloud"],
       ["/registry refresh", "Re-probe vLLM endpoints"],
       ["/files",         "List project files"],
       ["/project",       "Project directory and git info"],
@@ -199,6 +199,41 @@ async function handleInput(line: string) {
       case "/providers": case "/models":
         await h.showProviders(state)
         break
+      case "/model":
+        await h.showModelSelector(state)
+        break
+      case "/chat":
+        if (!arg) { ui.warnMsg("Usage: /chat <message>"); break }
+        await h.sendDirectChat(state, arg)
+        break
+      case "/direct":
+        directMode = !directMode
+        if (directMode) {
+          // In direct mode, prefer the fast local model (gpt-oss-120b at localhost)
+          // unless user already picked a model
+          if (!state.currentModel) {
+            try {
+              const chatModels = await state.sdk.chatModels()
+              // Find gpt-oss-120b or any secondary fast model
+              const fast = chatModels.models.find(m =>
+                m.id.includes("gpt-oss") || m.id.includes("120b")
+              ) ?? chatModels.models[0]
+              if (fast) {
+                state.currentModel = fast.id
+                state.currentProvider = fast.provider
+                console.log(`  ${C.dim(`Auto-selected: ${fast.name} (${fast.providerName})`)}`)
+              }
+            } catch {}
+          }
+          ui.successMsg("Direct chat mode ON — messages go straight to vLLM (no tools/agents)")
+          console.log(`    ${C.dim("Use /direct again to switch back to OpenCode mode.")}`)
+        } else {
+          // Reset model selection to let OpenCode use its default (MiniMax)
+          state.currentModel = null
+          state.currentProvider = null
+          ui.successMsg("OpenCode mode ON — full agent + tool support")
+        }
+        break
       case "/files":
         await h.showFiles(state)
         break
@@ -291,7 +326,11 @@ async function handleInput(line: string) {
     }
   } else {
     // Send as prompt to LLM
-    await h.sendPrompt(state, trimmed)
+    if (directMode) {
+      await h.sendDirectChat(state, trimmed)
+    } else {
+      await h.sendPrompt(state, trimmed)
+    }
   }
 }
 
@@ -341,7 +380,26 @@ async function main() {
 
   // Show quick hints
   console.log()
-  ui.footerHints(["/agents switch mode", "/help commands", "/new session", "/quit exit"])
+
+  // Auto-select fast local model for direct chat
+  try {
+    const chatModels = await sdk.chatModels()
+    const fast = chatModels.models.find(m =>
+      m.id.includes("gpt-oss") || m.id.includes("120b")
+    ) ?? chatModels.models[0]
+    if (fast) {
+      state.currentModel = fast.id
+      state.currentProvider = fast.provider
+      directMode = true
+      console.log(`  ${C.muted("Mode:")} ${C.warning("direct")} ${C.dim("|")} ${C.muted("Model:")} ${C.accent(fast.name)}`)
+      console.log(`  ${C.dim("Direct chat (fast, no tools). Use /direct to toggle OpenCode mode.")}`)
+    }
+  } catch {
+    console.log(`  ${C.dim("Direct chat models unavailable, using OpenCode mode.")}`)
+  }
+
+  console.log()
+  ui.footerHints(["/model pick model", "/direct toggle mode", "/help commands", "/quit exit"])
 
   // ── Input loop ───────────────────────────────────────────────
   // Key design: we PAUSE readline while processing a command so that

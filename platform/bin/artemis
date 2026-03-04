@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# ── Kadavuley CLI Wrapper ────────────────────────────────────────────
-# Usage: kadavuley [--headless] [--tui-only]
+# ── Artemis CLI Wrapper ────────────────────────────────────────────
+# Usage: artemis [--headless] [--tui-only]
 # Run from anywhere — auto-detects platform root.
 set -euo pipefail
 

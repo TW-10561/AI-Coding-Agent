@@ -1,12 +1,12 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "name": "@kadavuley/platform",
+  "name": "@artemis/platform",
   "version": "0.1.0",
   "description": "Production AI coding platform — slim backend + SDK over self-hosted OpenCode",
   "type": "module",
   "private": true,
   "bin": {
-    "kadavuley": "./bin/kadavuley"
+    "artemis": "./bin/artemis"
   },
   "scripts": {
     "dev": "bun run --watch src/server/index.ts",
@@ -18,7 +18,8 @@
     "test": "bun test --timeout 30000",
     "typecheck": "tsc --noEmit",
     "generate:types": "bun run scripts/generate-types.ts",
-    "tui": "bun run tui/src/main.ts"
+    "tui": "bun run tui/src/main.ts",
+    "Artemis": "bun run tui/src/main.ts"
   },
   "dependencies": {
     "hono": "4.10.7",

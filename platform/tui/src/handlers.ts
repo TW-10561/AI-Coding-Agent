@@ -15,6 +15,8 @@ export interface TuiState {
   sdk: PlatformClient
   currentSession: SessionInfo | null
   currentAgent: string        // active agent mode (default: "build")
+  currentModel: string | null // selected model ID (null = use provider default)
+  currentProvider: string | null // selected provider ID (null = use default vllm)
   rl: readline.Interface
 }
 
@@ -318,21 +320,25 @@ export async function showHistory(state: TuiState) {
       let text = ""
       let reasoning = ""
       for (const part of parts) {
-        if (part.type === "text" && (part.text ?? part.content)) {
-          text += part.text ?? part.content
+        if (part.type === "text" && part.text && !(part as any).synthetic) {
+          text += part.text
         } else if (part.type === "reasoning" && part.text) {
           reasoning += part.text
-        } else if (part.type === "tool-invocation" || part.type === "tool-result") {
-          // Skip in history view for cleanliness
         }
+        // skip tool, step-start, step-finish, patch, snapshot, etc.
       }
 
       if (text) {
         if (role === "user") {
           ui.userMessage(text.trim())
         } else {
-          if (reasoning) ui.reasoningBlock(reasoning)
-          ui.assistantMessage(text, undefined)
+          const msgError2 = (msg as any).info?.error
+          if (msgError2) {
+            ui.errorMsg(`${msgError2.name ?? "Error"}: ${msgError2.data?.message ?? msgError2.message ?? ""}`)
+          } else {
+            if (reasoning) ui.reasoningBlock(reasoning)
+            ui.assistantMessage(text, undefined)
+          }
         }
       }
     }
@@ -341,7 +347,55 @@ export async function showHistory(state: TuiState) {
   }
 }
 
-// ── Send Prompt ──────────────────────────────────────────────────────
+// ── Direct Chat (bypass OpenCode) ────────────────────────────────────
+
+/** Chat history for direct-chat mode (in-memory, per session) */
+let _directChatHistory: Array<{ role: "user" | "assistant"; content: string }> = []
+
+export async function sendDirectChat(state: TuiState, content: string): Promise<void> {
+  ui.userMessage(content)
+  ui.startSpinner("Thinking (direct)...")
+
+  try {
+    _directChatHistory.push({ role: "user", content })
+    // Keep last 10 turns to stay within context limits
+    if (_directChatHistory.length > 20) _directChatHistory = _directChatHistory.slice(-20)
+
+    const TIMEOUT_MS = 90_000
+    const result = await Promise.race([
+      state.sdk.directChat({
+        message: content,
+        modelID: state.currentModel || undefined,
+        providerID: state.currentProvider || undefined,
+        maxTokens: 2048,
+        temperature: 0.3,
+        history: _directChatHistory.slice(0, -1), // exclude current msg (already in "message")
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("Direct chat timed out after 90 s")), TIMEOUT_MS)
+      ),
+    ])
+    ui.stopSpinner()
+
+    if (result.reasoning) {
+      ui.reasoningBlock(result.reasoning)
+    }
+
+    _directChatHistory.push({ role: "assistant", content: result.text })
+
+    const tokenStr = result.tokens?.output ? `${result.tokens.output.toLocaleString()} tokens · ${result.latencyMs}ms` : `${result.latencyMs}ms`
+    ui.assistantMessage(result.text, tokenStr)
+  } catch (e) {
+    ui.stopSpinner()
+    if (e instanceof PlatformApiError) {
+      ui.errorMsg(`Direct chat error (${e.status})`, e.message)
+    } else {
+      ui.errorMsg(`${e}`)
+    }
+  }
+}
+
+// ── Send Prompt (through OpenCode — tools, agents, full IDE) ─────────
 
 export async function sendPrompt(state: TuiState, content: string): Promise<void> {
   if (!state.currentSession) {
@@ -362,48 +416,58 @@ export async function sendPrompt(state: TuiState, content: string): Promise<void
       state.sdk.prompt(state.currentSession!.id, {
         content,
         agentID: state.currentAgent || undefined,
+        modelID: state.currentModel || undefined,
+        providerID: state.currentProvider || undefined,
       }),
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("LLM request timed out after 120 s — is vLLM running?")), PROMPT_TIMEOUT_MS)
+        setTimeout(() => reject(new Error("TIMEOUT")), PROMPT_TIMEOUT_MS)
       ),
     ])
     ui.stopSpinner()
 
-    // Check for server-side error in the response (e.g. vLLM unreachable)
-    const respError = (response as any).info?.error
-    if (respError) {
-      const errMsg = respError.data?.message ?? respError.name ?? String(respError)
-      if (respError.name === "ContextOverflowError" || errMsg.toLowerCase().includes("context length")) {
-        ui.errorMsg("Session context is full.")
-        console.log(`    ${C.dim("Use /new to start a fresh session, or /delete this one.")}`)
-      } else if (errMsg.toLowerCase().includes("connect") || errMsg.toLowerCase().includes("url")) {
-        ui.errorMsg(`Cannot reach model: ${errMsg}`)
-        console.log(`    ${C.dim("Check VLLM_BASE_URL in .env and make sure vLLM is running.")}`)
+    // ── Check for errors returned in info.error (e.g. ContextOverflowError) ──
+    const msgError = (response as any).info?.error
+    if (msgError) {
+      const errName: string = msgError.name ?? "UnknownError"
+      const errMsg: string = msgError.data?.message ?? msgError.message ?? JSON.stringify(msgError)
+      if (errName === "ContextOverflowError") {
+        ui.errorMsg(`Context overflow — session history is too long for the model.`)
+        console.log(`    ${C.dim("Creating a fresh session automatically...")}`)        
+        await createNewSession(state)
       } else {
-        ui.errorMsg(`Model error: ${errMsg}`)
+        ui.errorMsg(`${errName}: ${errMsg}`)
       }
       return
     }
 
-    // Extract parts
+    // ── Extract parts from OpenCode MessageV2 format ──────────────────────
     let text = ""
     let reasoning = ""
     const toolCalls: string[] = []
-    const parts = response.parts ?? (response as any).message?.parts ?? []
+    const parts = (response as any).parts ?? []
 
-    // Token info
-    let tokens = 0
+    let tokens: number = (response as any).info?.tokens?.output ?? 0
     for (const part of parts) {
-      if (part.type === "text" && (part.text ?? part.content)) {
-        text += part.text ?? part.content
+      if (part.type === "text" && part.text && !part.synthetic) {
+        text += part.text
       } else if (part.type === "reasoning" && part.text) {
         reasoning += part.text
-      } else if (part.type === "tool-invocation") {
-        toolCalls.push((part as any).toolName ?? "tool")
-      } else if (part.type === "tool-result") {
-        toolCalls.push(`${(part as any).toolName ?? "tool"} ${Box.arrow} result`)
+      } else if (part.type === "tool") {
+        const status = (part as any).state?.status ?? ""
+        const name = (part as any).tool ?? "tool"
+        if (status === "completed") {
+          toolCalls.push(`${name} ${Box.arrow} done`)
+        } else if (status === "error") {
+          toolCalls.push(`${name} ${Box.arrow} error`)
+        } else {
+          toolCalls.push(name)
+        }
       } else if (part.type === "step-finish") {
-        tokens = (part as any).tokens?.output ?? (part as any).tokens?.total ?? 0
+        const stepTokens = (part as any).tokens?.output ?? 0
+        if (stepTokens > tokens) tokens = stepTokens
+      } else if (part.type === "retry") {
+        const retryErr = (part as any).error
+        if (retryErr) console.log(`  ${C.warning(Box.warning_sign)} ${C.muted(`Retry: ${retryErr.message ?? retryErr.name ?? "unknown error"}`)}`)        
       }
     }
 
@@ -426,12 +490,12 @@ export async function sendPrompt(state: TuiState, content: string): Promise<void
       const tokenStr = tokens > 0 ? `${tokens.toLocaleString()} tokens` : undefined
       ui.assistantMessage(text, tokenStr)
     } else if (reasoning && toolCalls.length === 0) {
-      // Model returned reasoning only (no separate text part).
-      // Show the last meaningful line as a summary so the user isn't left with nothing.
-      const lastLine = reasoning.trim().split("\n").filter(l => l.trim()).pop() ?? ""
-      ui.assistantMessage(lastLine || "(model returned reasoning only — no text response)", undefined)
-    } else if (toolCalls.length === 0) {
-      ui.emptyState("(empty response)")
+      // Model returned only reasoning — show reasoning as the response
+      ui.assistantMessage(reasoning, undefined)
+    } else if (toolCalls.length > 0) {
+      ui.emptyState("(agent ran tools — no text reply)")
+    } else {
+      ui.emptyState("(empty response — check OpenCode and vLLM logs)")
     }
 
   } catch (e) {
@@ -439,9 +503,114 @@ export async function sendPrompt(state: TuiState, content: string): Promise<void
     if (e instanceof PlatformApiError) {
       ui.errorMsg(`API Error (${e.status})`, e.message)
       if (e.body) console.log(`    ${C.dim(e.body.slice(0, 200))}`)
+    } else if (e instanceof Error && e.message === "TIMEOUT") {
+      ui.warnMsg("OpenCode request timed out after 120s.")
+      console.log(`    ${C.dim("Tip: Use /chat for faster direct responses (no tools).")}`)
+      console.log(`    ${C.dim("     Or check vLLM logs for the slow model.")}`)
     } else {
       ui.errorMsg(`${e}`)
     }
+  }
+}
+
+// ── Model Selection (dropdown-style picker) ─────────────────────────
+
+export async function showModelSelector(state: TuiState): Promise<void> {
+  try {
+    const reg = await state.sdk.registry()
+    if (!reg) { ui.warnMsg("Registry not available."); return }
+
+    // Build a flat list of all available models from local + cloud
+    interface ModelEntry {
+      idx: number
+      id: string
+      name: string
+      provider: string
+      providerName: string
+      source: "local" | "cloud"
+      ctx: number
+      out: number
+      status?: string
+    }
+    const models: ModelEntry[] = []
+    let idx = 1
+
+    // Local vLLM models
+    for (const p of reg.local) {
+      if (p.status !== "online") continue
+      for (const m of p.models) {
+        models.push({
+          idx: idx++,
+          id: m.id,
+          name: m.name ?? m.id,
+          provider: p.id,
+          providerName: p.name,
+          source: "local",
+          ctx: m.contextLimit,
+          out: m.outputLimit,
+          status: p.status,
+        })
+      }
+    }
+
+    // Cloud models (only if the provider is configured)  
+    for (const p of reg.cloud) {
+      if (!p.configured) continue
+      for (const m of p.models) {
+        models.push({
+          idx: idx++,
+          id: m.id,
+          name: m.name ?? m.id,
+          provider: p.id,
+          providerName: p.name,
+          source: "cloud",
+          ctx: m.contextLimit,
+          out: m.outputLimit,
+        })
+      }
+    }
+
+    if (models.length === 0) {
+      ui.warnMsg("No models available. Check vLLM status or add cloud API keys.")
+      return
+    }
+
+    // Display the model list
+    console.log()
+    const lines: string[] = []
+    let lastSource = ""
+    for (const m of models) {
+      if (m.source !== lastSource) {
+        if (lastSource) lines.push("")
+        lines.push(m.source === "local" ? C.textBold("  Local vLLM") : C.textBold("  Cloud"))
+        lastSource = m.source
+      }
+      const isActive = m.id === state.currentModel && m.provider === state.currentProvider
+      const active = isActive ? C.success(" ◀ active") : ""
+      const ctxStr = m.ctx ? C.dim(` ctx:${(m.ctx / 1000).toFixed(0)}k`) : ""
+      const outStr = m.out ? C.dim(` out:${m.out}`) : ""
+      lines.push(`  ${C.accent(String(m.idx).padStart(2))}. ${C.text(m.name)}${ctxStr}${outStr}  ${C.muted(m.providerName)}${active}`)
+    }
+    ui.panel({ title: C.textBold("Select Model"), body: lines, color: C.dim })
+
+    // Prompt for selection
+    return new Promise<void>((resolve) => {
+      state.rl.question(`\n  ${C.muted("Enter number (or empty to keep current):")} `, (answer) => {
+        const num = parseInt(answer.trim())
+        if (isNaN(num) || num < 1 || num > models.length) {
+          if (answer.trim()) ui.warnMsg("Invalid selection.")
+          resolve()
+          return
+        }
+        const selected = models[num - 1]!
+        state.currentModel = selected.id
+        state.currentProvider = selected.provider
+        ui.successMsg(`Model: ${C.accent(selected.name)} ${C.dim(`(${selected.providerName})`)}`)
+        resolve()
+      })
+    })
+  } catch (e) {
+    ui.errorMsg(`Model selection error: ${e}`)
   }
 }
 
