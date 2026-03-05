@@ -166,6 +166,21 @@ const CLOUD_CATALOG: Omit<CloudProvider, "configured">[] = [
   },
 ]
 
+// ── Static vLLM servers — known deployments that may not always be online ──
+// Models are pre-configured so they appear in the registry even when offline,
+// giving users visibility into the full fleet of available models.
+// When the server comes online, live-probed models replace these.
+
+const STATIC_VLLM_SERVERS: Record<string, LocalModel[]> = {
+  "http://172.30.140.143:11435/v1": [
+    { id: "lukealonso/MiniMax-M2.5-REAP-139B-A10B-NVFP4", name: "MiniMax M2.5 REAP 139B",  contextLimit: 32768, outputLimit: 4096 },
+    { id: "Qwen/Qwen2.5-Coder-32B-Instruct-AWQ",          name: "Qwen 2.5 Coder 32B AWQ", contextLimit: 32768, outputLimit: 4096 },
+    { id: "Qwen/Qwen3-8B",                                 name: "Qwen3 8B",               contextLimit: 32768, outputLimit: 4096 },
+    { id: "openai/gpt-oss-20b",                             name: "GPT-OSS 20B",            contextLimit: 32768, outputLimit: 4096 },
+    { id: "QuixiAI/Qwen3-30B-A3B-AWQ",                     name: "Qwen3 30B A3B AWQ",      contextLimit: 32768, outputLimit: 4096 },
+  ],
+}
+
 // ── vLLM endpoint resolution ──────────────────────────────────────────
 // Endpoints come from two env var sources:
 //   1. VLLM_BASE_URL (single primary, always present)
@@ -193,6 +208,58 @@ function resolveVllmEndpoints(): Array<{ endpoint: string; apiKey: string; isPri
   return endpoints
 }
 
+// ── Auto-discovery: scan for vLLM servers on known hosts/ports ────────
+// Scans hosts from VLLM_SCAN_HOSTS (default: primary host + localhost)
+// on ports VLLM_SCAN_PORTS (default: 8000-8010).  Each scan is a quick
+// HEAD /v1/models with a 1.5s timeout.  Found endpoints get merged.
+
+async function discoverVllmEndpoints(): Promise<string[]> {
+  const discovered: string[] = []
+
+  // Resolve which hosts to scan
+  const primaryHost = (() => {
+    try { return new URL(env.VLLM_BASE_URL ?? "").hostname }
+    catch { return "" }
+  })()
+  const scanHostsStr = process.env["VLLM_SCAN_HOSTS"] ?? ""
+  const defaultHosts = [primaryHost, "localhost", "127.0.0.1"].filter(Boolean)
+  const hosts = scanHostsStr
+    ? scanHostsStr.split(",").map(s => s.trim()).filter(Boolean)
+    : [...new Set(defaultHosts)]
+
+  // Resolve ports
+  const scanPortsStr = process.env["VLLM_SCAN_PORTS"] ?? ""
+  let ports: number[]
+  if (scanPortsStr) {
+    ports = scanPortsStr.split(",").map(s => parseInt(s.trim())).filter(n => !isNaN(n))
+  } else {
+    ports = Array.from({ length: 11 }, (_, i) => 8000 + i) // 8000–8010
+  }
+
+  // Probe all host:port combos in parallel (HEAD with tight timeout)
+  const probes = hosts.flatMap(host =>
+    ports.map(async (port) => {
+      const url = `http://${host}:${port}/v1/models`
+      try {
+        const res = await fetch(url, {
+          method: "HEAD",
+          signal: AbortSignal.timeout(1500),
+        })
+        if (res.ok) return `http://${host}:${port}/v1`
+      } catch {
+        // not reachable — ignore
+      }
+      return null
+    })
+  )
+
+  const results = await Promise.all(probes)
+  for (const r of results) {
+    if (r) discovered.push(r)
+  }
+  return discovered
+}
+
 // ── Live vLLM probe ───────────────────────────────────────────────────
 
 async function probeVllmEndpoint(
@@ -213,26 +280,28 @@ async function probeVllmEndpoint(
     })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
 
-    const json = await res.json() as { data?: Array<{ id: string }> }
+    const json = await res.json() as { data?: Array<{ id: string; max_model_len?: number }> }
     const latencyMs = Date.now() - before
     const models: LocalModel[] = (json.data ?? []).map(m => ({
       id: m.id,
       name: (isPrimary && m.id === env.VLLM_MODEL_ID)
         ? (env.VLLM_MODEL_NAME || m.id)     // use friendly name for the primary model
         : m.id,
-      contextLimit: isPrimary && m.id === env.VLLM_MODEL_ID ? env.VLLM_CONTEXT_LIMIT : 32768,
+      contextLimit: isPrimary && m.id === env.VLLM_MODEL_ID
+        ? env.VLLM_CONTEXT_LIMIT
+        : (m.max_model_len ?? 32768),
       outputLimit:  isPrimary && m.id === env.VLLM_MODEL_ID ? env.VLLM_OUTPUT_LIMIT  : 4096,
     }))
 
     return { id, name, endpoint, status: "online", latencyMs, models, isPrimary }
   } catch {
-    // Offline — still include it so the TUI can show it as degraded
-    const fallbackModels: LocalModel[] = isPrimary ? [{
-      id:           env.VLLM_MODEL_ID,
-      name:         env.VLLM_MODEL_NAME,
-      contextLimit: env.VLLM_CONTEXT_LIMIT,
-      outputLimit:  env.VLLM_OUTPUT_LIMIT,
-    }] : []
+    // Offline — use static model list if available, otherwise env fallback
+    const staticModels = STATIC_VLLM_SERVERS[endpoint]
+    const fallbackModels: LocalModel[] = staticModels
+      ? staticModels
+      : isPrimary
+        ? [{ id: env.VLLM_MODEL_ID, name: env.VLLM_MODEL_NAME, contextLimit: env.VLLM_CONTEXT_LIMIT, outputLimit: env.VLLM_OUTPUT_LIMIT }]
+        : []
     return { id, name, endpoint, status: "offline", models: fallbackModels, isPrimary }
   }
 }
@@ -249,6 +318,28 @@ export async function buildRegistry(force = false): Promise<RegistrySnapshot> {
   if (!force && _cache && now - _cacheTs < CACHE_TTL_MS) return _cache
 
   const endpoints = resolveVllmEndpoints()
+  const knownUrls = new Set(endpoints.map(e => e.endpoint))
+
+  // Auto-discover additional vLLM servers on the subnet
+  try {
+    const discovered = await discoverVllmEndpoints()
+    for (const url of discovered) {
+      if (!knownUrls.has(url)) {
+        knownUrls.add(url)
+        endpoints.push({ endpoint: url, apiKey: env.VLLM_API_KEY ?? "", isPrimary: false })
+      }
+    }
+  } catch {
+    // Discovery failed — proceed with configured endpoints only
+  }
+
+  // Merge static vLLM servers (known deployments that may be offline)
+  for (const staticEp of Object.keys(STATIC_VLLM_SERVERS)) {
+    if (!knownUrls.has(staticEp)) {
+      knownUrls.add(staticEp)
+      endpoints.push({ endpoint: staticEp, apiKey: env.VLLM_API_KEY ?? "", isPrimary: false })
+    }
+  }
 
   // Probe all vLLM endpoints in parallel
   const localProviders = await Promise.all(endpoints.map((ep, i) => probeVllmEndpoint(i, ep)))

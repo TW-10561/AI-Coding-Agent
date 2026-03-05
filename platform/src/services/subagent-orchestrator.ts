@@ -248,8 +248,8 @@ export class SubagentOrchestrator {
       let text = ""
       const parts = response.parts ?? (response as any).message?.parts ?? []
       for (const part of parts) {
-        if (part.type === "text" && part.content) {
-          text += part.content
+        if (part.type === "text" && part.text) {
+          text += part.text
         }
       }
 

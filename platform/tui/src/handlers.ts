@@ -25,7 +25,8 @@ export interface TuiState {
 export async function checkHealth(state: TuiState): Promise<boolean> {
   try {
     const health = await state.sdk.health()
-    return health.platform === "ok" && health.opencode === "ok"
+    // Platform running is enough — OpenCode being down is degraded, not fatal
+    return health.platform === "ok"
   } catch {
     return false
   }
@@ -59,23 +60,46 @@ export async function showStatus(state: TuiState) {
     if (reg) {
       const modelLines: string[] = []
 
-      // Local vLLM models with status
+      // ── Local models — flat list with server shown per model ──
       if (reg.local && reg.local.length > 0) {
-        modelLines.push(C.textBold("Local vLLM (built-in)"))
+        modelLines.push(C.textBold("Local Models"))
+
+        // Collect all models from all local providers into a flat list
+        const allModels: Array<{ name: string; id: string; ctx: number; out: number; endpoint: string; online: boolean; latencyMs?: number }> = []
         for (const p of reg.local as any[]) {
           const isOnline = p.status === "online"
-          const dot = isOnline ? C.success("●") : C.error("●")
-          const statusText = isOnline
-            ? C.success("online") + (p.latencyMs ? C.dim(` ${p.latencyMs}ms`) : "")
-            : C.error("offline")
-          modelLines.push(`  ${dot} ${C.textBold(p.name)} — ${statusText}`)
-          modelLines.push(`    ${C.dim(p.endpoint)}`)
           for (const m of (p.models as any[])) {
-            const ctx = m.contextLimit ? C.dim(` ctx:${(m.contextLimit / 1000).toFixed(0)}k`) : ""
-            const out = m.outputLimit ? C.dim(` out:${m.outputLimit}`) : ""
-            const active = m.id === state.currentModel ? C.success(" ◀ active") : ""
-            modelLines.push(`    ${C.accent(Box.arrow)} ${C.text(m.name ?? m.id)}${ctx}${out}${active}`)
+            allModels.push({
+              name: m.name ?? m.id,
+              id: m.id,
+              ctx: m.contextLimit ?? 0,
+              out: m.outputLimit ?? 0,
+              endpoint: p.endpoint,
+              online: isOnline,
+              latencyMs: p.latencyMs,
+            })
           }
+        }
+
+        // Deduplicate by model name (same model on multiple endpoints → show first online)
+        const seen = new Set<string>()
+        const unique: typeof allModels = []
+        for (const m of allModels) {
+          if (!seen.has(m.name)) {
+            seen.add(m.name)
+            unique.push(m)
+          }
+        }
+
+        for (const m of unique) {
+          const dot = m.online ? C.success("●") : C.error("●")
+          const ctx = m.ctx ? C.dim(` ctx:${(m.ctx / 1000).toFixed(0)}k`) : ""
+          const out = m.out ? C.dim(` out:${m.out}`) : ""
+          const active = m.id === state.currentModel ? C.success(" ◀ active") : ""
+          const latency = m.online && m.latencyMs ? C.dim(` ${m.latencyMs}ms`) : ""
+          modelLines.push(`  ${dot} ${C.text(m.name)}${ctx}${out}${latency}${active}`)
+          // Show the server endpoint under each model
+          modelLines.push(`    ${C.dim(m.endpoint)}`)
         }
       }
 
@@ -171,24 +195,24 @@ async function fetchAgents(state: TuiState) {
 }
 
 export async function listAgents(state: TuiState) {
+  // We only support these 4 agents — OpenCode may return extras (triage, docs,
+  // duplicate-pr) that are part of the OpenCode project itself, not our platform.
+  const SUPPORTED = new Set(["build", "plan", "explore", "general"])
   const agents = await fetchAgents(state)
-  // Show primary + all mode agents; hide internal-only ones (mode=subagent, hidden)
-  // OpenCode marks hidden agents like 'title', 'summary', 'compaction' — skip those.
-  const HIDDEN = new Set(["title", "summary", "compaction"])
-  const visible = agents.filter(a =>
-    (a.mode === "primary" || a.mode === "all") && !HIDDEN.has(a.id)
+  const toShow = agents.filter(a => SUPPORTED.has(a.id))
+
+  // Fallback: if API is down and fetchAgents returned hardcoded list, use that
+  const finalList = toShow.length > 0 ? toShow : agents.filter(a =>
+    (a.mode === "primary" || a.mode === "all")
   )
-  // If nothing passes (e.g. old OpenCode without mode field), show everything
-  const toShow = visible.length > 0 ? visible : agents
 
   const lines: string[] = []
-  for (const a of toShow) {
+  for (const a of finalList) {
     const isActive = a.id === state.currentAgent
     const active = isActive ? C.success(" ◀ active") : ""
     const color = agentColor(a.id)
     const modeTag = a.mode && a.mode !== "primary" ? C.dim(` [${a.mode}]`) : ""
-    const nativeTag = a.native ? C.dim(" ◆") : ""
-    lines.push(`${color(Box.dot)} ${C.textBold(a.name)}${nativeTag}${modeTag}${active}`)
+    lines.push(`${color(Box.dot)} ${C.textBold(a.name)}${active}`)
     if (a.description) lines.push(`  ${C.muted(a.description.slice(0, 78))}`)
   }
 
@@ -196,19 +220,21 @@ export async function listAgents(state: TuiState) {
   ui.panel({ title: C.textBold("Agents"), body: lines, color: C.dim })
 
   // Show switch hints based on what's actually available
-  const switchHints = toShow.slice(0, 4).map(a => `/${a.id}`).join("  ")
+  const switchHints = finalList.slice(0, 4).map(a => `/${a.id}`).join("  ")
   console.log(`  ${C.dim("Switch with:")} ${C.dim(switchHints)}`)
 }
 
 export async function switchAgent(state: TuiState, agentID: string) {
-  // Validate against live agent list; allow anyway if API is down (non-blocking)
-  const agents = await fetchAgents(state)
-  const match = agents.find(a => a.id === agentID || a.name === agentID)
-  if (!match && agents.length > 0) {
-    const validIDs = agents.map(a => a.id).join(", ")
-    ui.warnMsg(`Unknown agent: ${agentID}. Available: ${validIDs}`)
+  // Only allow our 4 supported agents
+  const SUPPORTED = new Set(["build", "plan", "explore", "general"])
+  if (!SUPPORTED.has(agentID)) {
+    ui.warnMsg(`Unknown agent: ${agentID}. Available: ${[...SUPPORTED].join(", ")}`)
     return
   }
+
+  // Validate against live agent list
+  const agents = await fetchAgents(state)
+  const match = agents.find(a => a.id === agentID || a.name === agentID)
 
   const prev = state.currentAgent
   const resolvedID = match?.id ?? agentID   // prefer canonical id from API
@@ -376,6 +402,7 @@ let _chatHistory: Array<{ role: "user" | "assistant"; content: string }> = []
 /**
  * Send a user message through the direct vLLM chat route.
  * This is the ONLY chat path — no dual mode.
+ * Automatically searches for a relevant skill and injects it as context.
  */
 export async function sendMessage(state: TuiState, content: string): Promise<void> {
   ui.userMessage(content)
@@ -386,21 +413,63 @@ export async function sendMessage(state: TuiState, content: string): Promise<voi
     // Keep last 10 turns to stay within context limits
     if (_chatHistory.length > 20) _chatHistory = _chatHistory.slice(-20)
 
-    const TIMEOUT_MS = 90_000
+    // Auto-inject relevant skill context (RAG-lite)
+    // Only activate for substantive messages — skip greetings and short queries.
+    // The server-side findRelevantSkill uses a 0.75 threshold; we mirror that
+    // here by requiring a high relevance score to avoid false positives
+    // (e.g. "hi" matching "architecture" via substring).
+    let systemPrompt: string | undefined
+    try {
+      if (content.trim().length >= 8) {
+        const skillResults = await state.sdk.searchSkills(content)
+        if (skillResults.length > 0 && skillResults[0]!.relevance >= 0.75) {
+          const topSkill = await state.sdk.getSkill(skillResults[0]!.skill.id)
+          if (topSkill?.content) {
+            systemPrompt = `You have access to the following reference material about "${topSkill.displayName}":\n\n${topSkill.content}\n\nUse this knowledge when relevant to the user's question. If the question is unrelated to this material, ignore it and answer normally.`
+            console.log(`  ${C.dim(`📚 Using skill: ${topSkill.displayName} (${(skillResults[0]!.relevance * 100).toFixed(0)}% match)`)}`)
+          }
+        }
+      }
+    } catch {
+      // Skill search failed — proceed without context
+    }
+
+    const TIMEOUT_MS = 180_000  // 3 min for tool-calling loops
     const result = await Promise.race([
       state.sdk.directChat({
         message: content,
+        system: systemPrompt,
         modelID: state.currentModel || undefined,
         providerID: state.currentProvider || undefined,
-        maxTokens: 2048,
+        maxTokens: 4096,
         temperature: 0.3,
-        history: _chatHistory.slice(0, -1), // exclude current msg (already in "message")
+        tools: true,             // enable tool calling
+        history: _chatHistory.slice(0, -1),
       }),
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("Chat timed out after 90 s")), TIMEOUT_MS)
+        setTimeout(() => reject(new Error("Chat timed out after 180 s")), TIMEOUT_MS)
       ),
     ])
     ui.stopSpinner()
+
+    // Show tool usage summary if tools were called
+    if (result.toolCalls && result.toolCalls.length > 0) {
+      const toolSummary = result.toolCalls.map((tc: any) => {
+        const icon = tc.success ? C.success("✓") : C.error("✗")
+        const name = C.accent(tc.tool)
+        const argStr = tc.tool === "bash"
+          ? C.dim(` ${(tc.args?.command ?? "").slice(0, 60)}`)
+          : tc.tool === "read_file" || tc.tool === "write_file"
+            ? C.dim(` ${tc.args?.path ?? ""}`)
+            : tc.tool === "grep_search"
+              ? C.dim(` "${tc.args?.pattern ?? ""}"`)
+              : ""
+        return `    ${icon} ${name}${argStr}`
+      })
+      console.log(`\n  ${C.muted(`Tools used (${result.toolCalls.length}):`)}`)
+      for (const line of toolSummary) console.log(line)
+      console.log()
+    }
 
     if (result.reasoning) {
       ui.reasoningBlock(result.reasoning)
@@ -408,7 +477,9 @@ export async function sendMessage(state: TuiState, content: string): Promise<voi
 
     _chatHistory.push({ role: "assistant", content: result.text })
 
-    const tokenStr = result.tokens?.output ? `${result.tokens.output.toLocaleString()} tokens · ${result.latencyMs}ms` : `${result.latencyMs}ms`
+    const tokenStr = result.tokens?.output
+      ? `${result.tokens.output.toLocaleString()} tokens · ${result.latencyMs}ms`
+      : `${result.latencyMs}ms`
     ui.assistantMessage(result.text, tokenStr)
   } catch (e) {
     ui.stopSpinner()
@@ -753,13 +824,13 @@ export async function showRegistry(state: TuiState, sub?: string) {
     }
     ui.panel({
       title: C.textBold("Cloud Providers"),
-      body: cloudLines.length ? cloudLines : [C.muted("No cloud providers configured."), C.dim("Add API keys to .env and restart the platform.")],
+      body: cloudLines.length ? cloudLines : [C.muted("No cloud providers configured."), C.dim("Use /apikey to set API keys for cloud providers.")],
       color: C.dim,
     })
 
     console.log(`  ${C.dim("Active model:")} ${C.accent(reg.activeModel)}`)
     console.log(`  ${C.dim("Use /registry refresh to re-probe vLLM endpoints.")}`)
-    console.log(`  ${C.dim("Add cloud API keys to .env then restart the platform.")}`)
+    console.log(`  ${C.dim("Use /apikey to configure cloud provider keys.")}`)
   } catch (e) {
     ui.errorMsg(`Registry error: ${e}`)
   }
@@ -942,8 +1013,8 @@ export async function showBudget(state: TuiState, sub?: string, arg?: string) {
         title: C.textBold("Budget Check"),
         body: [
           `${C.muted("Allowed:")}  ${result.allowed ? C.success("YES") : C.error("NO")}`,
-          ...(result.warnings?.length > 0 ? result.warnings.map((w: string) => `${C.warning(Box.warning_sign)} ${w}`) : []),
-          ...(result.remaining ? Object.entries(result.remaining).map(([k, v]) => `${C.muted(k + ":")} ${v}`) : []),
+          ...(result.reason ? [`${C.warning(Box.warning_sign)} ${result.reason}`] : []),
+          ...(result.remaining ? Object.entries(result.remaining).filter(([_, v]) => v != null).map(([k, v]) => `${C.muted(k + ":")} ${v}`) : []),
         ],
         color: C.dim,
       })
@@ -1255,9 +1326,169 @@ export async function startParallelInteractive(state: TuiState): Promise<void> {
   })
 }
 
+// ── Skills ───────────────────────────────────────────────────────────
+
+export async function showSkills(state: TuiState, sub?: string) {
+  try {
+    if (sub === "reload") {
+      ui.startSpinner("Reloading skills from disk...")
+      const result = await state.sdk.reloadSkills()
+      ui.stopSpinner()
+      ui.successMsg(`Reloaded ${result.count} skills`)
+      return
+    }
+
+    if (sub && sub !== "list") {
+      // Treat sub as a search query
+      const results = await state.sdk.searchSkills(sub)
+      if (results.length === 0) {
+        ui.emptyState(`No skills match "${sub}".`, "Use /skills to see all available skills.")
+        return
+      }
+
+      console.log()
+      const lines: string[] = []
+      for (const r of results.slice(0, 10)) {
+        const s = r.skill
+        const rel = Math.round(r.relevance * 100)
+        lines.push(`${s.icon} ${C.textBold(s.displayName)}  ${C.dim(`[${s.category}]`)}  ${C.muted(rel + "% match")}`)
+        lines.push(`  ${C.muted(s.description)}`)
+        lines.push(`  ${C.dim(s.tags.map(t => `#${t}`).join(" "))}`)
+      }
+      ui.panel({ title: C.textBold(`Skills matching "${sub}"`), body: lines, color: C.dim })
+      console.log(`  ${C.dim("Use /skill <name> to read full content.")}`)
+      return
+    }
+
+    // List all skills grouped by category
+    const categories = await state.sdk.skillsByCategory()
+    const catKeys = Object.keys(categories).sort()
+
+    if (catKeys.length === 0) {
+      ui.emptyState("No skills installed.", "Add SKILL.md files to platform/skills/installed/")
+      return
+    }
+
+    console.log()
+    const lines: string[] = []
+    let total = 0
+    for (const cat of catKeys) {
+      const skills = categories[cat]!
+      total += skills.length
+      lines.push(C.textBold(`${cat} (${skills.length})`))
+      for (const s of skills) {
+        lines.push(`  ${s.icon} ${C.accent(s.id.padEnd(30))} ${C.muted(s.description.slice(0, 50))}`)
+      }
+      lines.push("")
+    }
+    ui.panel({ title: C.textBold(`Skills (${total})`), body: lines, color: C.dim })
+    console.log(`  ${C.dim("Use /skills <query> to search, /skill <name> to read.")}`)
+  } catch (e) {
+    ui.errorMsg(`Error: ${e}`)
+  }
+}
+
+export async function showSkillDetail(state: TuiState, id: string) {
+  try {
+    const skill = await state.sdk.getSkill(id)
+    if (!skill) {
+      ui.errorMsg(`Skill not found: ${id}`)
+      return
+    }
+
+    console.log()
+    console.log(`  ${skill.icon} ${C.primaryBg(`  ${skill.displayName}  `)}  ${C.dim(`[${skill.category}]`)}`)
+    console.log(`  ${C.muted(skill.description)}`)
+    console.log(`  ${C.dim(skill.tags.map((t: string) => `#${t}`).join(" "))}`)
+    console.log(`  ${C.dim(Box.h.repeat(Math.max(1, TERM_WIDTH() - 4)))}`)
+    console.log()
+
+    // Print the skill content with basic formatting
+    const lines = skill.content.split("\n")
+    for (const line of lines) {
+      if (line.startsWith("# ")) {
+        console.log(`  ${C.textBold(line.slice(2))}`)
+      } else if (line.startsWith("## ")) {
+        console.log(`\n  ${C.accent(line.slice(3))}`)
+      } else if (line.startsWith("### ")) {
+        console.log(`  ${C.highlight(line.slice(4))}`)
+      } else if (line.startsWith("- ")) {
+        console.log(`    ${C.muted("•")} ${C.text(line.slice(2))}`)
+      } else if (line.startsWith("  - ")) {
+        console.log(`      ${C.dim("◦")} ${C.text(line.slice(4))}`)
+      } else if (line.trim() === "") {
+        console.log()
+      } else {
+        console.log(`  ${C.text(line)}`)
+      }
+    }
+  } catch (e: any) {
+    if (e?.status === 404) {
+      ui.errorMsg(`Skill not found: ${id}. Use /skills to list all.`)
+    } else {
+      ui.errorMsg(`Error: ${e}`)
+    }
+  }
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function truncate(s: string, max: number): string {
   if (!s) return ""
   return s.length > max ? s.slice(0, max - 1) + "…" : s
+}
+
+// ── Security Policies ────────────────────────────────────────────────
+
+export async function showPolicies(state: TuiState) {
+  try {
+    const status = await state.sdk.policyStatus()
+    const lines: string[] = []
+
+    lines.push(`${C.muted("Enabled:")}          ${status.enabled ? C.success("yes") : C.error("no")}`)
+    lines.push(`${C.muted("Execution Mode:")}   ${C.text(status.executionMode)}`)
+    lines.push(`${C.muted("Risk Thresholds:")}  ${C.text(`deny ≥ ${status.riskThresholds.deny}, ask ≥ ${status.riskThresholds.ask}`)}`)
+    lines.push(`${C.muted("Network Mode:")}     ${C.text(status.networkMode)}`)
+    lines.push("")
+
+    const fIcon = status.sensitiveFiles.enabled ? C.success(Box.check) : C.dim(Box.diamond)
+    lines.push(`  ${fIcon} ${C.textBold("Sensitive File Guard")}  ${C.dim(`(${status.sensitiveFiles.patternCount} patterns)`)}`)
+
+    const dIcon = status.destructiveGuard.enabled ? C.success(Box.check) : C.dim(Box.diamond)
+    lines.push(`  ${dIcon} ${C.textBold("Destructive Command Guard")}`)
+
+    const lIcon = status.loopDetection.enabled ? C.success(Box.check) : C.dim(Box.diamond)
+    lines.push(`  ${lIcon} ${C.textBold("Loop Detection")}  ${C.dim(`score: ${status.loopDetection.currentScore}`)}`)
+
+    lines.push(`  ${C.success(Box.check)} ${C.textBold("Skill Trust")}  ${C.dim(`${status.skillTrust.registered} registered, default: ${status.skillTrust.defaultLevel}`)}`)
+
+    lines.push(`  ${C.success(Box.check)} ${C.textBold("RBAC")}  ${C.dim(`roles: ${status.rbac.roles.join(", ")}`)}`)
+
+    lines.push(`  ${C.success(Box.check)} ${C.textBold("Autonomy Control")}  ${C.dim(`default: ${status.autonomy.defaultMode}`)}`)
+    for (const a of status.autonomy.agents) {
+      lines.push(`    ${C.dim(Box.arrow)} ${C.text(a.name)}: ${C.accent(a.mode)}`)
+    }
+
+    ui.panel({
+      title: C.textBold("Security Policies"),
+      body: lines,
+      color: C.dim,
+    })
+  } catch (e) {
+    ui.errorMsg(`Policy status error: ${e}`)
+  }
+}
+
+export async function checkCommandPolicy(state: TuiState, command: string) {
+  try {
+    const result = await state.sdk.checkCommand(command)
+    if (result.destructive) {
+      ui.warnMsg(`Destructive command detected (${result.severity})`)
+      console.log(`  ${C.dim("Reason:")} ${C.text(result.reason ?? "unknown")}`)
+    } else {
+      ui.successMsg("Command is safe")
+    }
+  } catch (e) {
+    ui.errorMsg(`Check failed: ${e}`)
+  }
 }

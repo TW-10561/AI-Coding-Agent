@@ -1,16 +1,16 @@
 // ---------------------------------------------------------------------------
-// Platform auth middleware — validates API key or JWT in incoming requests
+// Auth middleware — simple API key gate
+// ---------------------------------------------------------------------------
+// If PLATFORM_API_KEY is set, all /api/* requests must carry it as:
+//   Authorization: Bearer <key>   OR   x-api-key: <key>
+// When the env var is unset the middleware is a no-op (open mode).
 // ---------------------------------------------------------------------------
 
 import type { Context, Next } from "hono"
 import { env } from "../config/env"
 
-/**
- * Simple API-key auth middleware.
- * Checks `Authorization: Bearer <key>` or `x-api-key` header.
- * Skip if no PLATFORM_API_KEY is configured (open mode for dev).
- */
 export async function authMiddleware(c: Context, next: Next) {
+  // Open mode — no key configured, allow everything
   if (!env.PLATFORM_API_KEY) return next()
 
   const bearer = c.req.header("authorization")?.replace(/^Bearer\s+/i, "")
@@ -18,7 +18,11 @@ export async function authMiddleware(c: Context, next: Next) {
   const key = bearer ?? header
 
   if (!key || key !== env.PLATFORM_API_KEY) {
-    return c.json({ error: "unauthorized", message: "Invalid or missing API key" }, 401)
+    return c.json(
+      { error: "unauthorized", message: "Invalid or missing API key" },
+      401,
+    )
   }
+
   return next()
 }

@@ -18,12 +18,12 @@ export function healthRoutes(client: OpenCodeClient) {
         uptime: Date.now() - startedAt,
         version: "0.1.0",
       }
-      const code = oc.ok ? 200 : 503
-      return c.json(status, code)
+      // Platform is always healthy if it can respond; OpenCode being down is degraded, not failed
+      return c.json(status, 200)
     })
     .get("/ready", async (c) => {
       const oc = await client.health()
-      if (!oc.ok) return c.json({ ready: false }, 503)
-      return c.json({ ready: true })
+      // Ready means platform is up; OpenCode is optional
+      return c.json({ ready: true, opencode: oc.ok })
     })
 }

@@ -1,0 +1,60 @@
+{
+  "security": {
+    "enabled": true,
+    "execution_mode": "host",
+    "risk_policy": "hybrid",
+    "risk_thresholds": {
+      "deny": 80,
+      "ask": 50
+    },
+    "sandbox": {
+      "memory_limit": "512m",
+      "cpu_limit": "1",
+      "image_tag": "node:20-alpine",
+      "enabled": false
+    },
+    "network": {
+      "enabled": true,
+      "mode": "allow",
+      "deny_patterns": [
+        "internal.company.com",
+        "192.168.*",
+        "10.*"
+      ]
+    },
+    "sensitive_files": {
+      "enabled": true,
+      "block_on_detect": false,
+      "warn_only": true
+    },
+    "destructive_commands": {
+      "enabled": true,
+      "require_approval": true,
+      "pre_check": true
+    },
+    "loop_detection": {
+      "enabled": true,
+      "threshold": 50,
+      "window_ms": 60000,
+      "max_repetitions": 5
+    },
+    "skill_trust": {
+      "default_level": "restricted",
+      "require_approval_for_restricted": false
+    },
+    "audit_logging": {
+      "enabled": true,
+      "directory": ".opencode/audit",
+      "verify_integrity": true,
+      "retention_days": 30
+    },
+    "user_role": "developer"
+  },
+  "agent_autonomy": {
+    "enabled": true,
+    "mode": "semi_autonomous",
+    "max_iterations": 10,
+    "require_approval_on_high_risk": false,
+    "require_approval_on_loop_detection": true
+  }
+}

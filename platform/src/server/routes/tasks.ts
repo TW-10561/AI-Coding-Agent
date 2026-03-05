@@ -1,15 +1,15 @@
 // ---------------------------------------------------------------------------
 // Task routes — /api/tasks
-// Platform-level job queue for async coding tasks
+// Enqueue coding tasks and track their status through the task queue.
 // ---------------------------------------------------------------------------
 
 import { Hono } from "hono"
 import z from "zod"
-import { TaskQueue } from "../../services/task-queue"
+import type { TaskQueue } from "../../services/task-queue"
 
 const EnqueueBody = z.object({
   prompt: z.string().min(1),
-  directory: z.string().optional(),
+  directory: z.string().min(1),
   agentID: z.string().optional(),
   modelID: z.string().optional(),
   providerID: z.string().optional(),
@@ -18,13 +18,15 @@ const EnqueueBody = z.object({
 
 export function taskRoutes(queue: TaskQueue) {
   return new Hono()
-    // Enqueue a task
+
+    // Enqueue a new task
     .post("/", async (c) => {
       const body = EnqueueBody.parse(await c.req.json())
+      const userID = "default" // TODO: replace with real auth user
       const run = queue.enqueue({
-        userID: "default", // replace with real auth user
+        userID,
         prompt: body.prompt,
-        directory: body.directory ?? process.cwd(),
+        directory: body.directory,
         agentID: body.agentID,
         modelID: body.modelID,
         providerID: body.providerID,
@@ -33,24 +35,29 @@ export function taskRoutes(queue: TaskQueue) {
       return c.json(run, 201)
     })
 
-    // List tasks
+    // List tasks (all runs)
     .get("/", async (c) => {
       const status = c.req.query("status") as any
       const runs = queue.list({ status: status ?? undefined })
       return c.json(runs)
     })
 
-    // Get single task
+    // Get task by ID
     .get("/:id", async (c) => {
       const run = queue.get(c.req.param("id"))
       if (!run) return c.json({ error: "not_found" }, 404)
       return c.json(run)
     })
 
-    // Abort task
+    // Abort a running task
     .post("/:id/abort", async (c) => {
-      const ok = await queue.abort(c.req.param("id"))
-      if (!ok) return c.json({ error: "cannot_abort" }, 400)
+      const id = c.req.param("id")
+      const run = queue.get(id)
+      if (!run) return c.json({ error: "not_found" }, 404)
+      if (run.status === "completed" || run.status === "failed") {
+        return c.json({ error: "already_finished", status: run.status }, 400)
+      }
+      await queue.abort(id)
       return c.json({ aborted: true })
     })
 }

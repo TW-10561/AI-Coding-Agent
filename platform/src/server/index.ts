@@ -38,6 +38,11 @@ import { queueRoutes } from "./routes/queue"
 import { parallelRoutes } from "./routes/parallel"
 import { registryRoutes } from "./routes/registry"
 import { chatRoutes } from "./routes/chat"
+import { skillRoutes } from "./routes/skills"
+import { policyRoutes } from "./routes/policies"
+import { SkillManager } from "../services/skill-manager"
+import { PolicyEngine } from "../services/policy-engine"
+import { buildRegistry } from "../services/provider-registry"
 
 // ── Instantiate services ──────────────────────────────────────────────
 
@@ -55,7 +60,8 @@ const queue = new TaskQueue({ client, concurrency: 4 })
 const dataDir = env.OPENCODE_DIR + "/.platform"
 
 // Ensure data directory exists
-import { mkdirSync } from "fs"
+import { mkdirSync, readFileSync } from "fs"
+import { resolve } from "path"
 try { mkdirSync(dataDir, { recursive: true }) } catch {}
 
 const audit = new AuditLogger({ dbPath: dataDir + "/audit.db" })
@@ -76,6 +82,21 @@ const parallelExecutor = new ParallelExecutionManager({
   tracker: taskTracker,
   audit,
 })
+
+// Skill knowledge base
+const skills = new SkillManager({
+  skillsDir: env.OPENCODE_DIR + "/platform/skills",
+})
+skills.load()
+console.log(`[skills] Loaded ${skills.count()} skills`)
+
+// Policy engine
+const policyEngine = new PolicyEngine({}, audit)
+console.log(`[policies] Security policy engine initialized`)
+
+// Wire audit into the module-level default policy engine (used by chat + tools)
+import { defaultPolicyEngine } from "../services/policy-engine"
+defaultPolicyEngine.setAudit(audit)
 
 // Start the scalable queue
 scalableQueue.start()
@@ -117,18 +138,9 @@ app.use("/api/*", async (c, next) => {
 // ── Root landing page ────────────────────────────────────────────────
 app.get("/", async (c) => {
   const health = await client.health().catch(() => ({ ok: false }))
-  let providerInfo = { providers: [] as any[], models: [] as string[] }
-  try {
-    const result = await client.providers()
-    const providers = (result as any).all ?? []
-    providerInfo.providers = providers
-    for (const p of providers) {
-      const models = p.models ?? {}
-      for (const [key, m] of Object.entries(models)) {
-        providerInfo.models.push(`${p.id}/${(m as any).name ?? key}`)
-      }
-    }
-  } catch {}
+  // Use our provider registry — not OpenCode
+  let registry: any = { local: [], cloud: [] }
+  try { registry = await buildRegistry() } catch {}
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -149,7 +161,7 @@ app.get("/", async (c) => {
     .dot { width: 10px; height: 10px; border-radius: 50%; }
     .dot.ok { background: #22c55e; box-shadow: 0 0 8px #22c55e88; }
     .dot.err { background: #ef4444; box-shadow: 0 0 8px #ef444488; }
-    .model-tag { display: inline-block; background: #1e1e2e; border: 1px solid #2e2e3e; border-radius: 6px; padding: 3px 8px; margin: 2px; font-size: 0.78rem; color: #a78bfa; }
+
     .tabs { display: flex; gap: 4px; margin-bottom: 16px; flex-wrap: wrap; }
     .tab { background: #1a1a24; border: 1px solid #2a2a3a; border-radius: 8px; padding: 8px 16px; cursor: pointer; color: #888; font-size: 0.85rem; transition: all 0.2s; }
     .tab:hover { background: #22223a; color: #e0e0e8; }
@@ -191,7 +203,7 @@ app.get("/", async (c) => {
       </div>
       <div class="card">
         <h3>LLM Provider</h3>
-        <div class="status"><span class="dot ${providerInfo.providers.length > 0 ? 'ok' : 'err'}"></span> ${providerInfo.providers.length > 0 ? 'vLLM (Local)' : 'No provider'}</div>
+        <div class="status"><span class="dot ${registry.local.length > 0 ? 'ok' : 'err'}"></span> ${registry.local.length} local vLLM + ${registry.cloud.filter((p: any) => p.configured).length} cloud</div>
       </div>
     </div>
 
@@ -204,6 +216,7 @@ app.get("/", async (c) => {
       <div class="tab" data-tab="orchestrations">Orchestrations</div>
       <div class="tab" data-tab="parallel">Parallel</div>
       <div class="tab" data-tab="sessions">Sessions</div>
+      <div class="tab" data-tab="models">Models</div>
       <div class="tab" data-tab="api">API Reference</div>
     </div>
 
@@ -269,6 +282,43 @@ app.get("/", async (c) => {
       </div>
     </div>
 
+    <!-- MODELS PANEL -->
+    <div class="panel" id="panel-models">
+      <div class="card">
+        <h3>Local vLLM Models <button class="btn secondary" style="float:right;padding:4px 12px;font-size:0.75rem" onclick="loadModels()">Refresh</button></h3>
+        <div id="local-models">
+          ${registry.local.map((p: any) => `
+            <div style="margin-bottom:14px;padding:12px;background:#0e0e16;border:1px solid #1e1e2e;border-radius:8px">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+                <span class="dot ${p.status === 'online' ? 'ok' : 'err'}"></span>
+                <strong style="color:#e0e0e8">${p.name}</strong>
+                <span style="color:${p.status === 'online' ? '#22c55e' : '#ef4444'};font-size:0.85rem">${p.status}${p.latencyMs ? ' (' + p.latencyMs + 'ms)' : ''}</span>
+              </div>
+              <div style="color:#666;font-size:0.8rem;margin-bottom:4px">${p.endpoint}</div>
+              ${p.models.map((m: any) => `
+                <div style="color:#a78bfa;font-size:0.85rem;padding:2px 0 2px 16px">
+                  → ${m.name || m.id} ${m.contextLimit ? '<span style="color:#555">ctx:' + Math.floor(m.contextLimit/1000) + 'k</span>' : ''} ${m.outputLimit ? '<span style="color:#555">out:' + m.outputLimit + '</span>' : ''}
+                </div>
+              `).join('')}
+            </div>
+          `).join('')}
+          ${registry.local.length === 0 ? '<div style="color:#666;padding:12px">No vLLM endpoints configured</div>' : ''}
+        </div>
+      </div>
+      <div class="card" style="margin-top:14px">
+        <h3>Cloud Providers</h3>
+        <div id="cloud-providers">
+          ${registry.cloud.map((p: any) => `
+            <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #111118">
+              <span style="color:${p.configured ? '#22c55e' : '#555'}">${p.configured ? '✓' : '○'}</span>
+              <span style="color:#e0e0e8">${p.name}</span>
+              <span style="color:${p.configured ? '#22c55e' : '#666'};font-size:0.82rem">${p.configured ? 'Configured' : 'No API key — use /apikey in TUI'}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    </div>
+
     <!-- API PANEL -->
     <div class="panel" id="panel-api">
       <div class="card">
@@ -293,6 +343,11 @@ app.get("/", async (c) => {
             <tr><td><code>GET</code></td><td><a href="/api/project">/api/project</a></td><td>Project info</td></tr>
             <tr><td><code>GET</code></td><td><a href="/api/files">/api/files</a></td><td>Project files</td></tr>
             <tr><td><code>GET</code></td><td><a href="/api/vcs">/api/vcs</a></td><td>VCS status</td></tr>
+            <tr><td><code>GET</code></td><td><a href="/api/registry">/api/registry</a></td><td>Provider registry (vLLM + cloud)</td></tr>
+            <tr><td><code>POST</code></td><td>/api/chat</td><td>Direct LLM chat</td></tr>
+            <tr><td><code>GET</code></td><td><a href="/api/skills">/api/skills</a></td><td>List all skills</td></tr>
+            <tr><td><code>GET</code></td><td>/api/skills/search?q=</td><td>Search skills</td></tr>
+            <tr><td><code>GET</code></td><td><a href="/api/skills/categories">/api/skills/categories</a></td><td>Skills by category</td></tr>
           </tbody>
         </table>
       </div>
@@ -317,7 +372,7 @@ app.get("/", async (c) => {
         tab.classList.add('active');
         document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
         // Auto-load data for the tab
-        const loaders = { audit: loadAudit, budget: loadBudget, workspaces: loadWorkspaces, queue: loadQueue, orchestrations: loadOrchestrations, parallel: loadParallel, sessions: loadSessions };
+        const loaders = { audit: loadAudit, budget: loadBudget, workspaces: loadWorkspaces, queue: loadQueue, orchestrations: loadOrchestrations, parallel: loadParallel, sessions: loadSessions, models: loadModels };
         if (loaders[tab.dataset.tab]) loaders[tab.dataset.tab]();
       });
     });
@@ -410,6 +465,32 @@ app.get("/", async (c) => {
       } catch(e) { document.getElementById('sessions-list').textContent = 'Error: ' + e; }
     }
 
+    async function loadModels() {
+      try {
+        const reg = await fetchJSON('/api/registry');
+        let html = '<h4 style="color:#888;margin-bottom:8px">Local vLLM</h4>';
+        if (reg.local && reg.local.length > 0) {
+          for (const p of reg.local) {
+            const dot = p.status === 'online' ? '<span class="dot ok"></span>' : '<span class="dot err"></span>';
+            html += '<div style="margin-bottom:12px;padding:10px;background:#0e0e16;border:1px solid #1e1e2e;border-radius:8px">';
+            html += '<div style="display:flex;align-items:center;gap:8px">' + dot + ' <strong>' + p.name + '</strong> <span style="color:' + (p.status==='online'?'#22c55e':'#ef4444') + '">' + p.status + '</span></div>';
+            html += '<div style="color:#555;font-size:0.8rem">' + p.endpoint + '</div>';
+            for (const m of p.models) {
+              html += '<div style="color:#a78bfa;padding:2px 0 2px 16px">→ ' + (m.name||m.id) + (m.contextLimit ? ' <span style="color:#555">ctx:'+Math.floor(m.contextLimit/1000)+'k</span>':'') + '</div>';
+            }
+            html += '</div>';
+          }
+        } else { html += '<div style="color:#666">No local vLLM endpoints</div>'; }
+        html += '<h4 style="color:#888;margin:14px 0 8px">Cloud Providers</h4>';
+        if (reg.cloud) {
+          for (const p of reg.cloud) {
+            html += '<div style="padding:4px 0;border-bottom:1px solid #111118"><span style="color:' + (p.configured?'#22c55e':'#555') + '">' + (p.configured?'✓':'○') + '</span> ' + p.name + ' — <span style="color:' + (p.configured?'#22c55e':'#666') + '">' + (p.configured?'Configured':'No API key') + '</span></div>';
+          }
+        }
+        document.getElementById('local-models').innerHTML = html;
+      } catch(e) { document.getElementById('local-models').innerHTML = 'Error: ' + e; }
+    }
+
     // Auto-load first tab
     loadAudit();
   </script>
@@ -436,6 +517,48 @@ app.route("/api/queue", queueRoutes(scalableQueue))
 app.route("/api/parallel", parallelRoutes(parallelExecutor))
 app.route("/api/registry", registryRoutes())
 app.route("/api/chat", chatRoutes())
+app.route("/api/skills", skillRoutes(skills))
+app.route("/api/policies", policyRoutes(policyEngine))
+
+// ── CLI client download routes (no auth) ─────────────────────────────
+// These serve the user-facing CLI tool. Users run:
+//   curl -fsSL http://SERVER/api/install | bash
+
+const binDir = resolve(import.meta.dir, "../../../bin")
+
+app.get("/api/client", (c) => {
+  try {
+    const script = readFileSync(resolve(binDir, "artemis-client"), "utf-8")
+    // Patch the default server URL to this server's actual address
+    const host = c.req.header("host") ?? `${env.HOST}:${env.PORT}`
+    const proto = c.req.header("x-forwarded-proto") ?? "http"
+    const patched = script.replace(
+      /ARTEMIS_SERVER="\$\{ARTEMIS_SERVER:-[^"]*\}"/,
+      `ARTEMIS_SERVER="\${ARTEMIS_SERVER:-${proto}://${host}}"`,
+    )
+    c.header("Content-Type", "text/plain; charset=utf-8")
+    c.header("Content-Disposition", 'attachment; filename="artemis"')
+    return c.body(patched)
+  } catch (e: any) {
+    return c.json({ error: "Client script not found", detail: e.message }, 500)
+  }
+})
+
+app.get("/api/install", (c) => {
+  try {
+    const script = readFileSync(resolve(binDir, "install.sh"), "utf-8")
+    const host = c.req.header("host") ?? `${env.HOST}:${env.PORT}`
+    const proto = c.req.header("x-forwarded-proto") ?? "http"
+    const patched = script.replace(
+      /SERVER="\$\{ARTEMIS_SERVER:-[^"]*\}"/,
+      `SERVER="\${ARTEMIS_SERVER:-${proto}://${host}}"`,
+    )
+    c.header("Content-Type", "text/plain; charset=utf-8")
+    return c.body(patched)
+  } catch (e: any) {
+    return c.json({ error: "Install script not found", detail: e.message }, 500)
+  }
+})
 
 // Convenience: project + config pass-through
 app.get("/api/project", async (c) => c.json(await client.currentProject()))
@@ -451,6 +574,15 @@ app.get("/api/paths", async (c) => c.json(await client.paths()))
 // Global error handler
 app.onError((err, c) => {
   console.error("[platform] unhandled error:", err)
+
+  // Zod validation errors → 400
+  if (err.constructor.name === "ZodError") {
+    return c.json(
+      { error: "ValidationError", message: err.message, issues: (err as any).issues },
+      400 as any,
+    )
+  }
+
   const status = "status" in err && typeof err.status === "number" ? err.status : 500
   return c.json(
     {
@@ -467,8 +599,24 @@ app.notFound((c) => c.json({ error: "not_found", message: `${c.req.method} ${c.r
 
 // ── Start ─────────────────────────────────────────────────────────────
 
+let serverPort = env.PORT
+
+// Auto-find a free port if requested (multi-user support)
+if (env.AUTO_PORT) {
+  const { findFreePort } = await import("../config/env")
+  try {
+    serverPort = findFreePort(env.PORT, env.HOST)
+    if (serverPort !== env.PORT) {
+      console.log(`[platform] Port ${env.PORT} busy — using ${serverPort}`)
+    }
+  } catch (e: any) {
+    console.error(`[platform] ${e.message}`)
+    process.exit(1)
+  }
+}
+
 const server = Bun.serve({
-  port: env.PORT,
+  port: serverPort,
   hostname: env.HOST,
   fetch: app.fetch,
   idleTimeout: 0,
@@ -483,4 +631,13 @@ console.log(`
 └─────────────────────────────────────────────────┘
 `)
 
-export { app }
+/** Gracefully stop the platform server and services */
+async function shutdownPlatform() {
+  console.log("[platform] Shutting down server...")
+  try { server.stop(true) } catch {}
+  try { scalableQueue.stop() } catch {}
+  try { audit.dispose() } catch {}
+  console.log("[platform] Server stopped.")
+}
+
+export { app, server, shutdownPlatform }

@@ -1,11 +1,12 @@
 // ---------------------------------------------------------------------------
 // Budget routes — /api/budget
-// View and manage per-user budget limits and usage
+// Budget checking, usage summary, and limit management.
 // ---------------------------------------------------------------------------
 
 import { Hono } from "hono"
 import z from "zod"
-import type { BudgetManager, BudgetWindow } from "../../services/budget-manager"
+import { ulid } from "ulid"
+import type { BudgetManager } from "../../services/budget-manager"
 
 const SetLimitsBody = z.object({
   window: z.enum(["hour", "day", "month", "total"]),
@@ -15,51 +16,65 @@ const SetLimitsBody = z.object({
   hardLimit: z.boolean().optional(),
 })
 
+const RecordBody = z.object({
+  tokensInput: z.number().min(0),
+  tokensOutput: z.number().min(0),
+  costCents: z.number().min(0).optional(),
+  modelID: z.string().optional(),
+  sessionID: z.string().optional(),
+  taskID: z.string().optional(),
+})
+
 export function budgetRoutes(budget: BudgetManager) {
   return new Hono()
-    // Check budget for a user
+
+    // Check if user is within budget
     .get("/check", async (c) => {
       const userID = c.req.query("userID") ?? "default"
-      const result = budget.check(userID)
-      return c.json(result)
+      return c.json(budget.check(userID))
     })
 
-    // Get budget summary for a user
+    // Get usage summary by window
     .get("/summary", async (c) => {
       const userID = c.req.query("userID") ?? "default"
-      const summary = budget.summary(userID)
-      return c.json(summary)
+      return c.json(budget.summary(userID))
     })
 
-    // Set budget limits for a user
+    // Set budget limits
     .put("/limits", async (c) => {
-      const body = SetLimitsBody.parse(await c.req.json())
       const userID = c.req.query("userID") ?? "default"
-      budget.setLimit({
-        id: (await import("ulid")).ulid(),
+      const body = SetLimitsBody.parse(await c.req.json())
+      const limit = budget.setLimit({
+        id: ulid(),
         userID,
-        window: body.window as BudgetWindow,
+        window: body.window,
         maxTokens: body.maxTokens,
         maxRequests: body.maxRequests,
         maxCostCents: body.maxCostCents,
-        hardLimit: body.hardLimit ?? false,
+        hardLimit: body.hardLimit ?? true,
       })
-      return c.json({ ok: true })
+      return c.json(limit)
     })
 
-    // Record usage (internal, but exposed for observability)
+    // Get user's limits
+    .get("/limits", async (c) => {
+      const userID = c.req.query("userID") ?? "default"
+      return c.json(budget.getLimits(userID))
+    })
+
+    // Record usage (usually called internally)
     .post("/record", async (c) => {
-      const body = z.object({
-        userID: z.string(),
-        tokens: z.number(),
-        costCents: z.number().optional(),
-      }).parse(await c.req.json())
+      const userID = c.req.query("userID") ?? "default"
+      const body = RecordBody.parse(await c.req.json())
       budget.recordUsage({
-        userID: body.userID,
-        tokensInput: body.tokens,
-        tokensOutput: 0,
-        costCents: body.costCents,
+        userID,
+        tokensInput: body.tokensInput,
+        tokensOutput: body.tokensOutput,
+        costCents: body.costCents ?? 0,
+        modelID: body.modelID,
+        sessionID: body.sessionID,
+        taskID: body.taskID,
       })
-      return c.json({ ok: true })
+      return c.json({ recorded: true })
     })
 }

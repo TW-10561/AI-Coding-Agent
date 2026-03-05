@@ -260,7 +260,8 @@ export class OpenCodeClient {
   }
 
   async projects(): Promise<ProjectInfo[]> {
-    return this.request("GET", "/project")
+    const current = await this.request<ProjectInfo>("GET", "/project")
+    return [current]  // OpenCode only has one project at a time
   }
 
   async files(dir?: string): Promise<FileNode[]> {

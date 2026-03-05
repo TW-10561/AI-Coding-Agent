@@ -13,7 +13,7 @@ import * as ui from "./ui"
 import * as h from "./handlers"
 import type { TuiState } from "./handlers"
 import * as readline from "readline"
-import { execSync } from "child_process"
+// child_process no longer needed — graceful shutdown uses Bun APIs
 
 // ── Config ───────────────────────────────────────────────────────────
 
@@ -41,6 +41,7 @@ const rl = readline.createInterface({
       "/status", "/model",
       "/registry", "/registry refresh",
       "/apikey",
+      "/skills", "/skills reload", "/skill",
       "/files", "/project", "/vcs", "/tasks",
       "/agents", "/build", "/plan", "/explore", "/general",
       "/audit", "/audit stats", "/budget", "/budget check", "/budget set",
@@ -67,28 +68,41 @@ const state: TuiState = {
 
 let processing = false
 
-// ── Port cleanup on exit ─────────────────────────────────────────────
+// ── Graceful shutdown ────────────────────────────────────────────────
 
-function cleanupPorts() {
-  const ports = [3100, 4096]
-  for (const port of ports) {
-    try {
-      execSync(`fuser -k ${port}/tcp 2>/dev/null`, { stdio: "ignore" })
-    } catch {
-      // fuser not found or no process — fine
-    }
-  }
-}
+let isShuttingDown = false
 
-function gracefulExit(code = 0) {
-  console.log(`\n  ${C.muted("Cleaning up ports...")}`)
-  cleanupPorts()
+async function gracefulExit(code = 0) {
+  if (isShuttingDown) return  // prevent double shutdown
+  isShuttingDown = true
+
+  console.log(`\n  ${C.muted("Shutting down...")}`)
+
+  // 1. Close readline first so no more input is processed
+  try { rl.close() } catch {}
+
+  // 2. Stop the platform server gracefully (releases port 3100)
+  try {
+    const { shutdownPlatform } = await import("../../src/server/index")
+    await shutdownPlatform()
+    console.log(`  ${C.dim("Platform server stopped")}`)
+  } catch {}
+
+  // 3. Stop OpenCode process gracefully (releases port 4096)
+  try {
+    const { opencode } = await import("../../src/services/opencode-process")
+    await opencode.stop()
+    console.log(`  ${C.dim("OpenCode stopped")}`)
+  } catch {}
+
   console.log(`  ${C.muted("Goodbye!")}\n`)
-  process.exit(code)
+
+  // Give a brief moment for I/O flush, then exit
+  setTimeout(() => process.exit(code), 100)
 }
 
-process.on("SIGINT", () => gracefulExit(0))
-process.on("SIGTERM", () => gracefulExit(0))
+process.on("SIGINT", () => { gracefulExit(0) })
+process.on("SIGTERM", () => { gracefulExit(0) })
 
 // ── Prompt Setup ─────────────────────────────────────────────────────
 
@@ -137,12 +151,19 @@ function showHelp() {
       ["/explore",       "Switch to Explore agent (codebase search)"],
       ["/general",       "Switch to General agent (multi-step tasks)"],
     ]],
+    ["Skills", [
+      ["/skills",          "List all skills grouped by category"],
+      ["/skills <query>",  "Search skills by keyword"],
+      ["/skill <name>",    "Read full skill content"],
+      ["/skills reload",   "Reload skills from disk"],
+    ]],
     ["Backend Features", [
       ["/audit",            "Recent audit log entries"],
       ["/audit stats",      "Aggregate audit statistics"],
       ["/budget",           "Token/request usage summary"],
       ["/budget check",     "Check if budget permits requests"],
       ["/budget set <n>",   "Set hourly token limit"],
+      ["/policies",         "Security policy status & config"],
       ["/workspaces",       "List workspaces"],
       ["/workspace new",    "Create a workspace (interactive)"],
       ["/workspace switch", "Switch active workspace"],
@@ -255,6 +276,18 @@ async function handleInput(line: string) {
         await h.showRegistry(state, arg || undefined)
         break
 
+      case "/skills":
+        await h.showSkills(state, arg || undefined)
+        break
+      case "/skill":
+        if (!arg) { ui.warnMsg("Usage: /skill <skill-name>"); break }
+        await h.showSkillDetail(state, arg)
+        break
+
+      case "/policies":
+        await h.showPolicies(state)
+        break
+
       case "/audit":
         await h.showAudit(state, arg || undefined)
         break
@@ -302,7 +335,8 @@ async function handleInput(line: string) {
         showHelp()
         break
       case "/quit": case "/exit": case "/q":
-        gracefulExit(0)
+        await gracefulExit(0)
+        return
       default:
         ui.warnMsg(`Unknown command: ${cmd}`)
         console.log(`    ${C.dim("Type /help for available commands.")}`)
@@ -341,7 +375,7 @@ async function main() {
   // Show system status — our registry (local vLLM + cloud catalogue)
   await h.showStatus(state)
 
-  // Auto-resume or create session
+  // Auto-resume or create session (needs OpenCode — graceful if unavailable)
   try {
     const sessions = await sdk.listSessions({ limit: 1 })
     if (sessions.length > 0) {
@@ -352,7 +386,13 @@ async function main() {
       await h.createNewSession(state)
     }
   } catch {
-    await h.createNewSession(state)
+    try {
+      await h.createNewSession(state)
+    } catch {
+      console.log()
+      console.log(`  ${C.dim("OpenCode engine unavailable — running in direct chat mode.")}`)
+      console.log(`  ${C.dim("Chat works via local vLLM. Session features require OpenCode.")}`)
+    }
   }
 
   // Auto-select the fastest local model
@@ -372,7 +412,7 @@ async function main() {
   }
 
   console.log()
-  ui.footerHints(["/model pick model", "/registry providers", "/apikey cloud keys", "/help commands", "/quit exit"])
+  ui.footerHints(["/model pick model", "/skills knowledge", "/registry providers", "/apikey cloud keys", "/help commands", "/quit exit"])
 
   // ── Input loop ───────────────────────────────────────────────
 

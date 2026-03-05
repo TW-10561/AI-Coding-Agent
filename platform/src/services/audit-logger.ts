@@ -43,6 +43,7 @@ export type AuditAction =
   | "system.startup"
   | "system.shutdown"
   | "system.error"
+  | "policy.evaluate"
 
 export interface AuditEntry {
   id: string
@@ -208,7 +209,7 @@ export class AuditLogger {
   }
 
   /** Get aggregate stats */
-  stats(opts?: { since?: number; userID?: string }): {
+  stats(opts?: { since?: number; until?: number; userID?: string }): {
     total: number
     byAction: Record<string, number>
     errors: number
@@ -220,6 +221,10 @@ export class AuditLogger {
     if (opts?.since) {
       conditions.push("timestamp >= ?")
       params.push(opts.since)
+    }
+    if (opts?.until) {
+      conditions.push("timestamp <= ?")
+      params.push(opts.until)
     }
     if (opts?.userID) {
       conditions.push("user_id = ?")

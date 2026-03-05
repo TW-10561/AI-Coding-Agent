@@ -14,7 +14,10 @@ const WINDOW_MS = 60_000
 const MAX_REQUESTS = 120
 
 export async function rateLimitMiddleware(c: Context, next: Next) {
-  const ip = c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? "unknown"
+  const forwarded = c.req.header("x-forwarded-for")
+  const ip = (forwarded ? forwarded.split(",")[0]?.trim() : undefined)
+    ?? c.req.header("x-real-ip")
+    ?? "unknown"
   const now = Date.now()
 
   let win = windows.get(ip)
@@ -36,10 +39,21 @@ export async function rateLimitMiddleware(c: Context, next: Next) {
   return next()
 }
 
-// Periodic cleanup (every 5 min)
+// Periodic cleanup (every 5 min) — cap map size to prevent memory leak under DDoS
+const MAX_TRACKED_IPS = 10_000
 setInterval(() => {
   const now = Date.now()
   for (const [ip, win] of windows) {
     if (now > win.resetAt) windows.delete(ip)
+  }
+  // Hard cap: if still over limit, drop oldest entries
+  if (windows.size > MAX_TRACKED_IPS) {
+    const excess = windows.size - MAX_TRACKED_IPS
+    let deleted = 0
+    for (const key of windows.keys()) {
+      if (deleted >= excess) break
+      windows.delete(key)
+      deleted++
+    }
   }
 }, 300_000)

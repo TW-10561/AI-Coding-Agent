@@ -1,0 +1,440 @@
+#!/usr/bin/env bash
+# ── Artemis CLI — AI Coding Assistant ─────────────────────────────────
+# Lightweight client for end users. No project folder needed.
+# Just needs: bash, curl, python3 (or jq).
+#
+# Install:
+#   curl -fsSL http://ARTEMIS_SERVER/api/install | bash
+#   # or manually:
+#   wget -O ~/.local/bin/artemis http://ARTEMIS_SERVER/api/client
+#   chmod +x ~/.local/bin/artemis
+#
+# Usage:
+#   artemis "Write a Python function that reverses a string"
+#   artemis chat                     # interactive mode
+#   artemis models                   # list available models
+#   artemis health                   # check server status
+#   artemis --no-save "explain X"    # don't auto-save code files
+#   artemis --model MODEL_ID "question"   # use specific model
+# ─────────────────────────────────────────────────────────────────────
+set -euo pipefail
+
+VERSION="1.0.0"
+
+# ── Config ─────────────────────────────────────────────────────────────
+# Set ARTEMIS_SERVER in your shell profile, or it defaults to this:
+ARTEMIS_SERVER="${ARTEMIS_SERVER:-http://172.30.140.142}"
+ARTEMIS_SAVE="${ARTEMIS_SAVE:-true}"   # auto-save code blocks to files
+
+# ── Colors ─────────────────────────────────────────────────────────────
+if [[ -t 1 ]]; then
+  BOLD='\033[1m'
+  DIM='\033[2m'
+  GREEN='\033[0;32m'
+  CYAN='\033[0;36m'
+  YELLOW='\033[1;33m'
+  MAGENTA='\033[0;35m'
+  RED='\033[0;31m'
+  NC='\033[0m'
+else
+  BOLD='' DIM='' GREEN='' CYAN='' YELLOW='' MAGENTA='' RED='' NC=''
+fi
+
+# ── Helpers ────────────────────────────────────────────────────────────
+
+die()  { echo -e "${RED}Error:${NC} $1" >&2; exit 1; }
+info() { echo -e "${DIM}$1${NC}" >&2; }
+
+check_deps() {
+  command -v curl >/dev/null 2>&1 || die "curl is required. Install: sudo apt install curl"
+  command -v python3 >/dev/null 2>&1 || die "python3 is required. Install: sudo apt install python3"
+}
+
+# JSON field extractor via python3
+json_field() {
+  local json="$1" field="$2"
+  python3 -c "
+import sys, json
+try:
+    d = json.loads(sys.argv[1])
+    val = d.get('$field', '')
+    if isinstance(val, (dict, list)):
+        print(json.dumps(val))
+    else:
+        print(val if val is not None else '')
+except: pass
+" "$json" 2>/dev/null
+}
+
+# Properly JSON-encode a string (handles quotes, newlines, unicode)
+json_encode() {
+  python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$1" 2>/dev/null
+}
+
+# ── Extract and save code blocks from AI response ────────────────────
+save_code_blocks() {
+  local text="$1"
+  local save_dir="${2:-.}"
+
+  python3 << 'PYEOF' "$text" "$save_dir"
+import sys, re, os, json
+
+text = sys.argv[1]
+save_dir = sys.argv[2]
+
+# Find all code blocks with language tags
+blocks = re.findall(r'```(\w+)\n(.*?)```', text, re.DOTALL)
+
+# Language to extension
+ext_map = {
+    'python': '.py', 'py': '.py',
+    'javascript': '.js', 'js': '.js',
+    'typescript': '.ts', 'ts': '.ts',
+    'bash': '.sh', 'sh': '.sh', 'shell': '.sh',
+    'html': '.html', 'css': '.css',
+    'json': '.json', 'yaml': '.yaml', 'yml': '.yaml',
+    'rust': '.rs', 'go': '.go', 'java': '.java',
+    'c': '.c', 'cpp': '.cpp', 'h': '.h',
+    'ruby': '.rb', 'php': '.php', 'sql': '.sql',
+    'dockerfile': 'Dockerfile', 'docker': 'Dockerfile',
+    'makefile': 'Makefile', 'make': 'Makefile',
+    'toml': '.toml', 'xml': '.xml', 'md': '.md',
+}
+
+saved = []
+seen = set()
+
+for lang, code in blocks:
+    lang_lower = lang.lower()
+    ext = ext_map.get(lang_lower)
+    if not ext:
+        continue
+
+    code = code.strip()
+    if not code or len(code) < 10:
+        continue
+
+    # Try to detect filename from code
+    filename = None
+    first_line = code.split('\n')[0].strip()
+
+    # Check for filename patterns in first comment
+    for pattern in [
+        r'^(?:#|//|/\*)\s*(?:file(?:name)?[:=]?\s*)(.+?)(?:\s*\*/)?$',
+        r'^(?:#|//)\s*(\S+\.\w+)\s*$',
+    ]:
+        m = re.match(pattern, first_line, re.IGNORECASE)
+        if m:
+            candidate = m.group(1).strip()
+            # Basic sanity: no weird chars, has extension
+            if re.match(r'^[\w./-]+$', candidate):
+                filename = candidate
+                break
+
+    # Try to extract name from def/class/function
+    if not filename:
+        if lang_lower in ('python', 'py'):
+            m = re.search(r'^(?:def|class)\s+(\w+)', code, re.MULTILINE)
+            if m:
+                filename = m.group(1).lower() + ext
+        elif lang_lower in ('javascript', 'js', 'typescript', 'ts'):
+            m = re.search(r'(?:function|class|export\s+(?:default\s+)?(?:function|class))\s+(\w+)', code)
+            if m:
+                filename = m.group(1).lower() + ext
+
+    # Fallback name
+    if not filename:
+        idx = len([s for s in saved if s.endswith(ext)]) + 1
+        name = lang_lower if lang_lower not in ('py',) else 'script'
+        filename = f'{name}_{idx}{ext}' if idx > 1 else f'{name}{ext}'
+
+    # Deduplicate
+    if filename in seen:
+        base = filename.rsplit('.', 1)
+        if len(base) == 2:
+            filename = f'{base[0]}_{len(seen)+1}.{base[1]}'
+        else:
+            filename = f'{filename}_{len(seen)+1}'
+    seen.add(filename)
+
+    # Save
+    path = os.path.join(save_dir, filename)
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(path, 'w') as f:
+        f.write(code + '\n')
+    saved.append(filename)
+
+# Output saved filenames
+for f in saved:
+    print(f)
+PYEOF
+}
+
+# ── Format the AI response for terminal display ──────────────────────
+format_response() {
+  local text="$1"
+
+  python3 << 'PYEOF' "$text"
+import sys, re
+
+text = sys.argv[1]
+
+# Simple markdown → terminal formatting
+text = re.sub(r'\*\*(.+?)\*\*', '\033[1m\\1\033[0m', text)
+text = re.sub(r'`([^`\n]+)`', '\033[36m\\1\033[0m', text)
+text = re.sub(r'^(#{1,6})\s+(.+)$', '\033[1;35m\\2\033[0m', text, flags=re.MULTILINE)
+text = re.sub(r'```(\w*)\n', '\033[2m───\033[0m \033[33m\\1\033[0m\n', text)
+text = re.sub(r'```', '\033[2m───\033[0m', text)
+text = re.sub(r'^(\s*)[-*]\s', '\\1• ', text, flags=re.MULTILINE)
+text = re.sub(r'^>\s*(.+)$', '\033[2m│\033[0m \\1', text, flags=re.MULTILINE)
+
+print(text.strip())
+PYEOF
+}
+
+# ── API call ──────────────────────────────────────────────────────────
+artemis_chat() {
+  local message="$1"
+  local model="${2:-}"
+
+  local json_msg
+  json_msg=$(json_encode "$message")
+
+  local body="{\"message\": ${json_msg}"
+  if [[ -n "$model" ]]; then
+    local json_model
+    json_model=$(json_encode "$model")
+    body="${body}, \"modelID\": ${json_model}"
+  fi
+  body="${body}}"
+
+  info "Thinking..."
+
+  local response
+  response=$(curl -sS --max-time 180 \
+    -X POST "${ARTEMIS_SERVER}/api/chat" \
+    -H "Content-Type: application/json" \
+    -d "$body" \
+    2>&1) || die "Failed to reach Artemis at ${ARTEMIS_SERVER}\nIs the server running? Check: curl ${ARTEMIS_SERVER}/health"
+
+  # Check for error
+  local error
+  error=$(json_field "$response" "error")
+  if [[ -n "$error" && "$error" != "" ]]; then
+    die "Server error: $error"
+  fi
+
+  # Extract fields
+  local text model_name provider latency
+  text=$(json_field "$response" "text")
+  model_name=$(json_field "$response" "model")
+  provider=$(json_field "$response" "provider")
+  latency=$(json_field "$response" "latencyMs")
+
+  if [[ -z "$text" ]]; then
+    die "Empty response. Raw:\n$response"
+  fi
+
+  # Display formatted response
+  echo ""
+  format_response "$text"
+  echo ""
+
+  # Metadata line
+  echo -e "${DIM}── ${model_name} via ${provider} (${latency}ms) ──${NC}" >&2
+
+  # Auto-save code blocks to current directory
+  if [[ "$ARTEMIS_SAVE" == "true" ]]; then
+    local saved_files
+    saved_files=$(save_code_blocks "$text" "." 2>/dev/null) || true
+    if [[ -n "$saved_files" ]]; then
+      echo "" >&2
+      echo -e "${CYAN}━━━ Files saved to current directory ━━━${NC}" >&2
+      while IFS= read -r fname; do
+        echo -e "  ${GREEN}✓${NC} ${BOLD}${fname}${NC}" >&2
+      done <<< "$saved_files"
+    fi
+  fi
+}
+
+# ── Commands ──────────────────────────────────────────────────────────
+
+cmd_health() {
+  local response
+  response=$(curl -sS --max-time 10 "${ARTEMIS_SERVER}/health" 2>&1) || die "Cannot reach ${ARTEMIS_SERVER}"
+
+  local platform opencode uptime version
+  platform=$(json_field "$response" "platform")
+  opencode=$(json_field "$response" "opencode")
+  uptime=$(json_field "$response" "uptime")
+  version=$(json_field "$response" "version")
+
+  echo -e "${BOLD}Artemis Server${NC}  v${version}"
+  echo -e "  Server:   ${ARTEMIS_SERVER}"
+  if [[ "$platform" == "ok" ]]; then
+    echo -e "  Platform: ${GREEN}● Running${NC}"
+  else
+    echo -e "  Platform: ${RED}● Down${NC}"
+  fi
+  if [[ "$opencode" == "ok" ]]; then
+    echo -e "  OpenCode: ${GREEN}● Connected${NC}"
+  else
+    echo -e "  OpenCode: ${YELLOW}● Offline${NC} (chat still works)"
+  fi
+  if [[ -n "$uptime" && "$uptime" =~ ^[0-9]+$ ]]; then
+    local hours=$((uptime / 3600))
+    local mins=$(( (uptime % 3600) / 60 ))
+    echo -e "  Uptime:   ${hours}h ${mins}m"
+  fi
+}
+
+cmd_models() {
+  local response
+  response=$(curl -sS --max-time 10 "${ARTEMIS_SERVER}/api/registry" 2>&1) || die "Cannot reach ${ARTEMIS_SERVER}"
+
+  echo -e "${BOLD}Available AI Models${NC}"
+  echo ""
+
+  python3 << 'PYEOF' "$response"
+import sys, json
+
+data = json.loads(sys.argv[1])
+for category in ['local', 'cloud']:
+    providers = data.get(category, [])
+    for p in providers:
+        status_icon = '●' if p.get('status') == 'online' else '○'
+        color = '\033[32m' if p.get('status') == 'online' else '\033[31m'
+        print(f'  {color}{status_icon}\033[0m \033[1m{p["name"]}\033[0m')
+        for m in p.get('models', []):
+            ctx = m.get('contextLimit', '?')
+            mid = m['id']
+            print(f'      {mid}  (ctx: {ctx})')
+        print()
+PYEOF
+}
+
+cmd_interactive() {
+  echo -e "${BOLD}╔═══════════════════════════════════════╗${NC}"
+  echo -e "${BOLD}║  ◆ Artemis — AI Coding Assistant      ║${NC}"
+  echo -e "${BOLD}╚═══════════════════════════════════════╝${NC}"
+  echo ""
+  echo -e "${DIM}Type a question and press Enter.${NC}"
+  echo -e "${DIM}Commands: /help /models /health /save /nosave /quit${NC}"
+  echo -e "${DIM}Code files are auto-saved to your current directory.${NC}"
+  echo ""
+
+  while true; do
+    echo -ne "${CYAN}you → ${NC}"
+    read -r input || break
+    [[ -z "$input" ]] && continue
+    [[ "$input" == "exit" || "$input" == "quit" || "$input" == "/quit" || "$input" == "/exit" ]] && break
+    [[ "$input" == "/models" ]] && cmd_models && echo "" && continue
+    [[ "$input" == "/health" ]] && cmd_health && echo "" && continue
+    [[ "$input" == "/help" ]] && show_help && continue
+    [[ "$input" == "/clear" ]] && printf '\033[2J\033[H' && continue
+    [[ "$input" == "/nosave" ]] && ARTEMIS_SAVE="false" && echo -e "${DIM}Auto-save disabled${NC}" && continue
+    [[ "$input" == "/save" ]] && ARTEMIS_SAVE="true" && echo -e "${DIM}Auto-save enabled${NC}" && continue
+
+    artemis_chat "$input" "$MODEL"
+    echo ""
+  done
+  echo -e "\n${DIM}Goodbye!${NC}"
+}
+
+show_help() {
+  cat << EOF
+
+$(echo -e "${BOLD}Artemis CLI${NC}") — AI Coding Assistant (v${VERSION})
+
+$(echo -e "${BOLD}Usage:${NC}")
+  artemis "your question"              Ask the AI something
+  artemis chat                         Interactive chat mode
+  artemis models                       List available AI models
+  artemis health                       Check server status
+
+$(echo -e "${BOLD}Options:${NC}")
+  --model MODEL_ID                     Use a specific AI model
+  --no-save                            Don't auto-save code to files
+  --save                               Force auto-save (default: on)
+  --server URL                         Override server URL
+  -h, --help                           This help
+
+$(echo -e "${BOLD}Interactive commands:${NC}")
+  /models   /health   /save   /nosave   /clear   /help   /quit
+
+$(echo -e "${BOLD}Examples:${NC}")
+  artemis "Write a Python web scraper"
+  artemis "Create a REST API in Flask"
+  artemis --no-save "Explain Docker"
+  artemis chat
+
+$(echo -e "${BOLD}What happens with code:${NC}")
+  When the AI writes code, it's automatically saved as files
+  in your current directory. For example:
+    "Write a Python function" → saves reverse_string.py
+    "Create an HTML page"     → saves html.html
+
+$(echo -e "${BOLD}Config:${NC}")
+  ARTEMIS_SERVER   Server URL (current: ${ARTEMIS_SERVER})
+  ARTEMIS_SAVE     Auto-save code (current: ${ARTEMIS_SAVE})
+
+EOF
+}
+
+# ── Main ──────────────────────────────────────────────────────────────
+main() {
+  check_deps
+
+  MODEL=""
+  local CMD=""
+  local MSG=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help|help)
+        show_help; exit 0 ;;
+      -v|--version)
+        echo "artemis ${VERSION}"; exit 0 ;;
+      --model)
+        MODEL="$2"; shift 2 ;;
+      --save)
+        ARTEMIS_SAVE="true"; shift ;;
+      --no-save|--nosave)
+        ARTEMIS_SAVE="false"; shift ;;
+      --server)
+        ARTEMIS_SERVER="$2"; shift 2 ;;
+      chat)
+        CMD="chat"; shift ;;
+      models)
+        CMD="models"; shift ;;
+      health)
+        CMD="health"; shift ;;
+      --)
+        shift; MSG="$*"; break ;;
+      *)
+        if [[ -z "$MSG" ]]; then
+          MSG="$1"
+        else
+          MSG="$MSG $1"
+        fi
+        shift ;;
+    esac
+  done
+
+  case "$CMD" in
+    chat)   cmd_interactive ;;
+    models) cmd_models ;;
+    health) cmd_health ;;
+    *)
+      if [[ -n "$MSG" ]]; then
+        artemis_chat "$MSG" "$MODEL"
+      else
+        cmd_interactive
+      fi
+      ;;
+  esac
+}
+
+main "$@"

@@ -39,7 +39,7 @@ export interface PromptOptions {
 
 export interface TaskEnqueueOptions {
   prompt: string
-  directory?: string
+  directory: string
   agentID?: string
   modelID?: string
   providerID?: string
@@ -286,7 +286,9 @@ export class PlatformClient {
 
   // ── Budget ─────────────────────────────────────────────────────
 
-  async budgetCheck(userID?: string, tokens?: number): Promise<{ allowed: boolean; warnings: string[] }> {
+  async budgetCheck(userID?: string, tokens?: number): Promise<{
+    allowed: boolean; reason?: string; usage?: unknown; limit?: unknown; remaining?: unknown
+  }> {
     return this.request("GET", "/api/budget/check", undefined, {
       userID: userID ?? "default",
       tokens: tokens?.toString(),
@@ -433,8 +435,31 @@ export class PlatformClient {
 
   // ── Direct Chat (bypasses OpenCode, talks to vLLM directly) ─────
 
-  /** Direct chat with vLLM — no tools, no OpenCode system prompt, much faster */
+  /** Chat with AI agent (with tool calling by default) */
   async directChat(opts: {
+    message: string
+    modelID?: string
+    providerID?: string
+    system?: string
+    maxTokens?: number
+    temperature?: number
+    history?: Array<{ role: "user" | "assistant"; content: string }>
+    tools?: boolean           // default: true (enable tool calling)
+    maxToolRounds?: number    // default: 15
+  }): Promise<{
+    text: string
+    reasoning?: string
+    model: string
+    provider: string
+    tokens: { input: number; output: number }
+    latencyMs: number
+    toolCalls?: Array<{ tool: string; args: Record<string, any>; result: string; success: boolean }>
+  }> {
+    return this.request("POST", "/api/chat", opts)
+  }
+
+  /** Quick chat WITHOUT tools (fast path for simple questions) */
+  async quickChat(opts: {
     message: string
     modelID?: string
     providerID?: string
@@ -450,10 +475,10 @@ export class PlatformClient {
     tokens: { input: number; output: number }
     latencyMs: number
   }> {
-    return this.request("POST", "/api/chat", opts)
+    return this.request("POST", "/api/chat/direct", opts)
   }
 
-  /** List models available for direct chat */
+  /** List models available for chat */
   async chatModels(): Promise<{
     models: Array<{
       id: string; name: string; provider: string; providerName: string
@@ -462,6 +487,104 @@ export class PlatformClient {
     activeModel: string
   }> {
     return this.request("GET", "/api/chat/models")
+  }
+
+  /** List available tools */
+  async listTools(): Promise<{
+    tools: Array<{ name: string; description: string; parameters: Record<string, unknown> }>
+  }> {
+    return this.request("GET", "/api/chat/tools")
+  }
+
+  // ── Skills (contextual knowledge base) ──────────────────────────
+
+  /** List all available skills (metadata only) */
+  async listSkills(): Promise<Array<{
+    id: string; name: string; displayName: string; description: string
+    icon: string; category: string; tags: string[]
+  }>> {
+    return this.request("GET", "/api/skills")
+  }
+
+  /** Get skill grouped by category */
+  async skillsByCategory(): Promise<Record<string, Array<{
+    id: string; name: string; displayName: string; description: string
+    icon: string; category: string; tags: string[]
+  }>>> {
+    return this.request("GET", "/api/skills/categories")
+  }
+
+  /** Search skills by keyword */
+  async searchSkills(query: string): Promise<Array<{
+    skill: { id: string; name: string; displayName: string; description: string; icon: string; category: string; tags: string[] }
+    relevance: number; matchedOn: string
+  }>> {
+    return this.request("GET", "/api/skills/search", undefined, { q: query })
+  }
+
+  /** Get full skill content by ID */
+  async getSkill(id: string): Promise<{
+    id: string; name: string; displayName: string; description: string
+    icon: string; category: string; tags: string[]; content: string
+  }> {
+    return this.request("GET", `/api/skills/${id}`)
+  }
+
+  /** Reload skills from disk */
+  async reloadSkills(): Promise<{ ok: boolean; count: number }> {
+    return this.request("POST", "/api/skills/reload")
+  }
+
+  // ── Security Policies ───────────────────────────────────────────
+
+  /** Get full policy engine status */
+  async policyStatus(): Promise<{
+    enabled: boolean; executionMode: string
+    riskThresholds: { deny: number; ask: number }
+    networkMode: string
+    sensitiveFiles: { enabled: boolean; patternCount: number }
+    destructiveGuard: { enabled: boolean }
+    loopDetection: { enabled: boolean; currentScore: number }
+    skillTrust: { defaultLevel: string; registered: number }
+    rbac: { roles: string[] }
+    autonomy: { defaultMode: string; agents: Array<{ name: string; mode: string }> }
+  }> {
+    return this.request("GET", "/api/policies")
+  }
+
+  /** Evaluate an action against all policies */
+  async evaluatePolicy(ctx: {
+    command?: string; filePath?: string; url?: string
+    role?: string; permission?: string
+    agentName?: string; skillName?: string
+    isDelete?: boolean; diffSize?: number
+  }): Promise<{
+    decision: "allow" | "deny" | "ask"
+    riskAssessment?: { score: number; level: string; flags: string[] }
+    loopScore?: number
+    networkCheck?: { allowed: boolean; reason?: string }
+    reasons: string[]
+  }> {
+    return this.request("POST", "/api/policies/evaluate", ctx)
+  }
+
+  /** Check if a shell command is destructive */
+  async checkCommand(command: string): Promise<{
+    destructive: boolean; severity?: string; reason?: string
+  }> {
+    return this.request("POST", "/api/policies/check-command", { command })
+  }
+
+  /** Check if a file path is sensitive */
+  async checkFile(filePath: string): Promise<{ sensitive: boolean }> {
+    return this.request("POST", "/api/policies/check-file", { filePath })
+  }
+
+  /** Check RBAC permission for a role */
+  async checkPermission(role: string, permission: string): Promise<{
+    decision: "allow" | "deny" | "ask"; role: string; permission: string
+  }> {
+    return this.request("GET", `/api/policies/rbac/${role}/${permission}`)
   }
 }
 

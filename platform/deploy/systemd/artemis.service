@@ -1,0 +1,58 @@
+[Unit]
+Description=Artemis AI Coding Platform
+Documentation=https://github.com/your-org/artemis
+After=network.target
+
+[Service]
+Type=simple
+User=nvidia
+Group=nvidia
+WorkingDirectory=/home/nvidia/AI_Coding_Agent/Kadavuley/AI-Coding-Agent
+
+# Use the platform launch script
+ExecStart=/home/nvidia/.bun/bin/bun run platform/scripts/start-all.ts
+
+# Environment
+Environment=NODE_ENV=production
+Environment=PORT=3100
+Environment=HOST=127.0.0.1
+Environment=OPENCODE_DIR=/home/nvidia/AI_Coding_Agent/Kadavuley/AI-Coding-Agent
+Environment=OPENCODE_BIN=/home/nvidia/.opencode/bin/opencode
+Environment=LOG_LEVEL=info
+Environment=PATH=/home/nvidia/.opencode/bin:/home/nvidia/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=/home/nvidia
+
+# Load .env file for vLLM keys and other secrets
+EnvironmentFile=-/home/nvidia/AI_Coding_Agent/Kadavuley/AI-Coding-Agent/platform/.env
+
+# Process management
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=3
+StartLimitIntervalSec=60
+
+# Graceful shutdown — give the server time to drain connections
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+# ProtectHome=read-only — DISABLED: SQLite DBs live under $HOME/.platform
+#   and WAL mode needs write access to both .db and .db-wal/.db-shm files.
+ReadWritePaths=/home/nvidia/AI_Coding_Agent/Kadavuley/AI-Coding-Agent/.platform
+ReadWritePaths=/tmp
+PrivateTmp=yes
+
+# Resource limits
+LimitNOFILE=65536
+MemoryMax=4G
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=artemis
+
+[Install]
+WantedBy=multi-user.target

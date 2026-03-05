@@ -50,16 +50,25 @@ export function workspaceRoutes(workspaces: WorkspaceManager) {
     // Update workspace
     .patch("/:id", async (c) => {
       const body = UpdateBody.parse(await c.req.json())
-      const ws = workspaces.update(c.req.param("id"), body)
-      if (!ws) return c.json({ error: "not_found" }, 404)
-      return c.json(ws)
+      try {
+        const ws = workspaces.update(c.req.param("id"), body)
+        return c.json(ws)
+      } catch (e: any) {
+        if (e?.message?.includes("not found")) return c.json({ error: "not_found" }, 404)
+        throw e
+      }
     })
 
     // Switch to workspace
     .post("/:id/switch", async (c) => {
-      const ws = workspaces.switchTo(c.req.param("id"))
-      if (!ws) return c.json({ error: "not_found" }, 404)
-      return c.json(ws)
+      try {
+        const ws = workspaces.switchTo(c.req.param("id"))
+        return c.json(ws)
+      } catch (e: any) {
+        if (e?.message?.includes("not found")) return c.json({ error: "not_found" }, 404)
+        if (e?.message?.includes("no longer exists")) return c.json({ error: "directory_missing", message: e.message }, 400)
+        throw e
+      }
     })
 
     // Delete workspace
@@ -71,6 +80,8 @@ export function workspaceRoutes(workspaces: WorkspaceManager) {
 
     // Workspace stats
     .get("/:id/stats", async (c) => {
+      const ws = workspaces.get(c.req.param("id"))
+      if (!ws) return c.json({ error: "not_found" }, 404)
       const stats = workspaces.stats()
       return c.json(stats)
     })

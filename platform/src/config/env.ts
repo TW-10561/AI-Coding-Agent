@@ -1,6 +1,16 @@
 // ---------------------------------------------------------------------------
 // Platform configuration — single source of truth for env / defaults
 // ---------------------------------------------------------------------------
+// Multi-user support:
+//   Set ARTEMIS_PORT_OFFSET=N to shift both Platform and OpenCode ports.
+//   Example: ARTEMIS_PORT_OFFSET=10  →  Platform :3110, OpenCode :4106
+//   This lets multiple developers run Artemis on the same host.
+//
+//   Alternatively set PORT and OPENCODE_URL explicitly per user.
+//
+//   When AUTO_PORT=true and the default PORT is busy, the platform
+//   will probe up to 20 consecutive ports to find a free one.
+// ---------------------------------------------------------------------------
 
 import z from "zod"
 
@@ -8,6 +18,14 @@ const Schema = z.object({
   // ── Platform server ────────────────────────────────────────────────
   PORT: z.coerce.number().default(3100),
   HOST: z.string().default("0.0.0.0"),
+
+  // ── Multi-user port offset ─────────────────────────────────────────
+  // Add this number to both PORT and the OpenCode port.
+  // E.g. ARTEMIS_PORT_OFFSET=10 → Platform=3110, OpenCode=4106
+  ARTEMIS_PORT_OFFSET: z.coerce.number().default(0),
+
+  // When true, automatically find a free port if PORT is occupied
+  AUTO_PORT: z.coerce.boolean().default(true),
 
   // ── OpenCode engine ────────────────────────────────────────────────
   OPENCODE_URL: z.string().url().default("http://127.0.0.1:4096"),
@@ -58,7 +76,51 @@ function load(): PlatformEnv {
     console.error("Invalid platform configuration:", result.error!.format())
     process.exit(1)
   }
-  return result.data!
+
+  const cfg = result.data!
+
+  // ── Apply port offset for multi-user ────────────────────────────
+  if (cfg.ARTEMIS_PORT_OFFSET > 0) {
+    cfg.PORT += cfg.ARTEMIS_PORT_OFFSET
+
+    // Shift OpenCode URL port by the same offset (only if using default)
+    const ocUrl = new URL(cfg.OPENCODE_URL)
+    const defaultOcPort = 4096
+    if (Number(ocUrl.port) === defaultOcPort) {
+      ocUrl.port = String(defaultOcPort + cfg.ARTEMIS_PORT_OFFSET)
+      cfg.OPENCODE_URL = ocUrl.toString().replace(/\/$/, "")
+    }
+  }
+
+  return cfg
 }
 
 export const env = load()
+
+/**
+ * Probe whether a port is available on the given host.
+ * Returns true if the port is free.
+ */
+export function isPortFree(port: number, host = "127.0.0.1"): boolean {
+  try {
+    const probe = Bun.serve({ port, hostname: host, fetch: () => new Response() })
+    probe.stop(true)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Find a free port starting from `start`, scanning up to `maxAttempts` ports.
+ * Returns the first available port, or throws if none found.
+ */
+export function findFreePort(start: number, host = "0.0.0.0", maxAttempts = 20): number {
+  for (let i = 0; i < maxAttempts; i++) {
+    if (isPortFree(start + i, host)) return start + i
+  }
+  throw new Error(
+    `No free port found in range ${start}–${start + maxAttempts - 1}.\n` +
+    `Other Artemis instances may be running. Use ARTEMIS_PORT_OFFSET=N to shift ports.`
+  )
+}

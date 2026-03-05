@@ -339,7 +339,7 @@ export class ParallelExecutionManager {
       let text = ""
       const parts = (response as any).parts ?? (response as any).message?.parts ?? []
       for (const part of parts) {
-        if (part.type === "text" && part.content) text += part.content
+        if (part.type === "text" && part.text) text += part.text
       }
 
       task.result = text
@@ -371,7 +371,7 @@ export class ParallelExecutionManager {
       let text = ""
       const parts = (response as any).parts ?? (response as any).message?.parts ?? []
       for (const part of parts) {
-        if (part.type === "text" && part.content) text += part.content
+        if (part.type === "text" && part.text) text += part.text
       }
 
       exec.aggregatedResult = text

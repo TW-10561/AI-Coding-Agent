@@ -160,6 +160,9 @@ export class BudgetManager {
       }
     }
 
+    // Check all limits — hard limits always win over soft limits
+    let softDenial: BudgetCheckResult | null = null
+
     for (const limit of limits) {
       const windowStart = this.windowStart(limit.window)
       const usage = this.getUsage(userID, windowStart)
@@ -170,34 +173,37 @@ export class BudgetManager {
         costCents: limit.maxCostCents !== undefined ? limit.maxCostCents - usage.costCents : undefined,
       }
 
-      if (limit.maxTokens !== undefined && usage.tokensUsed >= limit.maxTokens) {
-        return {
-          allowed: !limit.hardLimit,
-          reason: `Token limit exceeded for ${limit.window} window (${usage.tokensUsed}/${limit.maxTokens})`,
-          usage: { ...usage, window: limit.window, windowStart },
-          limit,
-          remaining,
-        }
+      const exceeded =
+        (limit.maxTokens !== undefined && usage.tokensUsed >= limit.maxTokens) ||
+        (limit.maxRequests !== undefined && usage.requestCount >= limit.maxRequests) ||
+        (limit.maxCostCents !== undefined && usage.costCents >= limit.maxCostCents)
+
+      if (!exceeded) continue
+
+      const reason =
+        limit.maxTokens !== undefined && usage.tokensUsed >= limit.maxTokens
+          ? `Token limit exceeded for ${limit.window} window (${usage.tokensUsed}/${limit.maxTokens})`
+          : limit.maxRequests !== undefined && usage.requestCount >= limit.maxRequests
+            ? `Request limit exceeded for ${limit.window} window (${usage.requestCount}/${limit.maxRequests})`
+            : `Cost limit exceeded for ${limit.window} window (${usage.costCents}/${limit.maxCostCents} cents)`
+
+      const result: BudgetCheckResult = {
+        allowed: !limit.hardLimit,
+        reason,
+        usage: { ...usage, window: limit.window, windowStart },
+        limit,
+        remaining,
       }
-      if (limit.maxRequests !== undefined && usage.requestCount >= limit.maxRequests) {
-        return {
-          allowed: !limit.hardLimit,
-          reason: `Request limit exceeded for ${limit.window} window (${usage.requestCount}/${limit.maxRequests})`,
-          usage: { ...usage, window: limit.window, windowStart },
-          limit,
-          remaining,
-        }
-      }
-      if (limit.maxCostCents !== undefined && usage.costCents >= limit.maxCostCents) {
-        return {
-          allowed: !limit.hardLimit,
-          reason: `Cost limit exceeded for ${limit.window} window (${usage.costCents}/${limit.maxCostCents} cents)`,
-          usage: { ...usage, window: limit.window, windowStart },
-          limit,
-          remaining,
-        }
-      }
+
+      // Hard limit exceeded → immediate deny
+      if (limit.hardLimit) return result
+
+      // Remember the first soft denial (but keep checking for hard limits)
+      if (!softDenial) softDenial = result
     }
+
+    // If we had soft denials but no hard denials, return the first soft denial (allowed: true with warning)
+    if (softDenial) return softDenial
 
     // All checks passed
     const usage = this.getUsage(userID, 0)

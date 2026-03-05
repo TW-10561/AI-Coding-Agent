@@ -24,13 +24,18 @@ export function orchestrationRoutes(orchestrator: SubagentOrchestrator) {
     // Start an orchestration
     .post("/", async (c) => {
       const body = PlanBody.parse(await c.req.json())
+
+      // Build label → temp-ID map so the orchestrator can resolve deps
+      const labelToTempID = new Map<string, string>()
+      body.tasks.forEach((t, i) => labelToTempID.set(t.label, `t${i + 1}`))
+
       const orch = await orchestrator.start({
         name: body.name,
         userID: "default",
         tasks: body.tasks.map((t) => ({
           agentID: t.agentID ?? "default",
           prompt: t.prompt,
-          dependsOn: t.dependsOn,
+          dependsOn: t.dependsOn?.map(dep => labelToTempID.get(dep) ?? dep),
           maxRetries: t.retries,
         })),
       })

@@ -110,6 +110,7 @@ export class ScalableQueue {
     agentID?: string
     modelID?: string
     priority?: number
+    maxRetries?: number
     type?: TrackedTask["type"]
     metadata?: Record<string, unknown>
   }): TrackedTask {
@@ -136,6 +137,7 @@ export class ScalableQueue {
       agentID: opts.agentID,
       modelID: opts.modelID,
       priority: opts.priority ?? 5,
+      maxRetries: opts.maxRetries,
       metadata: opts.metadata,
     })
 
@@ -247,7 +249,7 @@ export class ScalableQueue {
       let result = ""
       const parts = response.parts ?? (response as any).message?.parts ?? []
       for (const part of parts) {
-        if (part.type === "text" && part.content) result += part.content
+        if (part.type === "text" && part.text) result += part.text
       }
 
       this.tracker.transition(task.id, "completed", { result, progress: 100 })
@@ -286,7 +288,10 @@ export class ScalableQueue {
 
         setTimeout(() => {
           try {
-            this.tracker.transition(task.id, "queued")
+            // retrying → running is valid, then re-execute
+            this.tracker.transition(task.id, "running")
+            task.retries++
+            this.startWorker(task)
           } catch {}
         }, backoff)
       } else {

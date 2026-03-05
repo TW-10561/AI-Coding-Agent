@@ -44,6 +44,7 @@ export function auditRoutes(audit: AuditLogger) {
       const to = c.req.query("to")
       const stats = audit.stats({
         since: from ? new Date(from).getTime() : undefined,
+        until: to ? new Date(to).getTime() : undefined,
       })
       return c.json(stats)
     })

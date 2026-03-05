@@ -19,7 +19,7 @@ export function eventRoutes(client: OpenCodeClient, queue: TaskQueue) {
         stream.writeSSE({
           event: event.type,
           data: JSON.stringify(event),
-        })
+        }).catch(() => {})
       })
 
       // 2. Forward task queue updates
@@ -27,7 +27,7 @@ export function eventRoutes(client: OpenCodeClient, queue: TaskQueue) {
         stream.writeSSE({
           event: "task.updated",
           data: JSON.stringify({ type: "task.updated", properties: run, timestamp: Date.now() }),
-        })
+        }).catch(() => {})
       })
 
       // 3. Heartbeat
@@ -35,14 +35,14 @@ export function eventRoutes(client: OpenCodeClient, queue: TaskQueue) {
         stream.writeSSE({
           event: "heartbeat",
           data: JSON.stringify({ type: "heartbeat", timestamp: Date.now() }),
-        })
+        }).catch(() => {})
       }, 15_000)
 
       // Send connected event
       stream.writeSSE({
         event: "connected",
         data: JSON.stringify({ type: "platform.connected", timestamp: Date.now() }),
-      })
+      }).catch(() => {})
 
       await new Promise<void>((resolve) => {
         stream.onAbort(() => {

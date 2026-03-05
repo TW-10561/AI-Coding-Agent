@@ -3,7 +3,7 @@
 // server as a child process of the platform.
 // ---------------------------------------------------------------------------
 
-import { env } from "../config/env"
+import { env, findFreePort, isPortFree } from "../config/env"
 import { OpenCodeClient } from "./opencode-client"
 
 export class OpenCodeProcess {
@@ -30,20 +30,28 @@ export class OpenCodeProcess {
   }): Promise<string> {
     if (this._ready) return this.url
 
-    const port = opts?.port ?? new URL(env.OPENCODE_URL).port ?? "4096"
+    let port = Number(opts?.port ?? new URL(env.OPENCODE_URL).port ?? "4096")
     const hostname = opts?.hostname ?? "127.0.0.1"
     const dir = opts?.directory ?? env.OPENCODE_DIR
 
     // ── Pre-check: is the port already in use? ──────────────────
-    try {
-      const probe = Bun.serve({ port: Number(port), hostname, fetch: () => new Response() })
-      probe.stop(true)
-    } catch {
-      throw new Error(
-        `Port ${port} is already in use. Kill the stale process:\n` +
-        `  lsof -i :${port}  # find PID\n` +
-        `  kill <PID>         # then re-launch`
-      )
+    if (!isPortFree(port, hostname)) {
+      if (env.AUTO_PORT) {
+        // Auto-find a free port starting from the default
+        const freePort = findFreePort(port, hostname, 20)
+        console.log(`[opencode-process] Port ${port} busy — auto-switching to ${freePort}`)
+        port = freePort
+        // Update env so platform client / index.ts uses the correct URL
+        const newUrl = `http://${hostname}:${port}`
+        ;(env as any).OPENCODE_URL = newUrl
+      } else {
+        throw new Error(
+          `Port ${port} is already in use. Another Artemis instance may be running.\n` +
+          `  Option 1: ARTEMIS_PORT_OFFSET=10 bun run start   (shift all ports)\n` +
+          `  Option 2: AUTO_PORT=true bun run start            (auto-find free ports)\n` +
+          `  Option 3: lsof -i :${port}  →  kill <PID>`
+        )
+      }
     }
 
     const envVars: Record<string, string> = {
