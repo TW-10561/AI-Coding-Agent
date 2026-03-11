@@ -386,3 +386,71 @@ description: A skill in the .opencode/skills directory.
     },
   })
 })
+
+// ------------------------------------------------
+// additional tests for matching and prompt injection
+// ------------------------------------------------
+
+import { findRelevantSkills, formatSkillBlock } from "../../src/skill/matcher"
+import { SessionPrompt } from "../../src/session/prompt"
+
+
+test("skill matcher selects based on name and description", async () => {
+  const fakeSkills: Skill.Info[] = [
+    { name: "foo", description: "handles foo tasks", location: "", content: "FOO" },
+    { name: "bar", description: "useful for bar operations", location: "", content: "BAR" },
+  ]
+
+  let result = await findRelevantSkills("please foo something", fakeSkills)
+  expect(result.map((s) => s.name)).toEqual(["foo"])
+
+  result = await findRelevantSkills("bar and foo together", fakeSkills)
+  expect(result.map((s) => s.name)).toEqual(["foo", "bar"])
+
+  result = await findRelevantSkills("unrelated prompt", fakeSkills)
+  expect(result).toEqual([])
+})
+
+
+test("injectSkills helper adds matching skill blocks to system prompt", async () => {
+  await using tmp = await tmpdir({
+    git: true,
+    init: async (dir) => {
+      const skillDir = path.join(dir, ".opencode", "skill", "auto-skill")
+      await Bun.write(
+        path.join(skillDir, "SKILL.md"),
+        `---
+name: auto-skill
+description: Skill about automation.
+---
+
+# Auto Skill
+
+Instructions for auto skill.
+`,
+      )
+    },
+  })
+
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const skills = await Skill.all()
+      expect(skills.find((s) => s.name === "auto-skill")).toBeDefined()
+
+      // create a fake user message mentioning automation
+      const userMsg: any = {
+        info: { role: "user", id: "1" },
+        parts: [{ type: "text", text: "please help with automation" }],
+      }
+
+      const baseSystem = [] as string[]
+      const result = await SessionPrompt.injectSkills(baseSystem, [userMsg])
+      const joined = result.system.join("\n")
+      expect(result.injected).toContain("auto-skill")
+      expect(joined).toContain("<skill_auto_injection>")
+      expect(joined).toContain("<skill_content name=\"auto-skill\">")
+      expect(joined).toContain("Instructions for auto skill")
+    },
+  })
+})

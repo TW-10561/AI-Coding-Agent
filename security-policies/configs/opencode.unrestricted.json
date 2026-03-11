@@ -1,0 +1,43 @@
+{
+  "security": {
+    "enabled": true,
+    "execution_mode": "host",
+    "risk_policy": "static",
+    "risk_thresholds": {
+      "deny": 90,
+      "ask": 70
+    },
+    "sandbox": {
+      "enabled": false
+    },
+    "network": {
+      "enabled": false,
+      "mode": "allow"
+    },
+    "sensitive_files": {
+      "enabled": false
+    },
+    "destructive_commands": {
+      "enabled": true,
+      "require_approval": true,
+      "pre_check": true
+    },
+    "loop_detection": {
+      "enabled": false
+    },
+    "skill_trust": {
+      "default_level": "trusted"
+    },
+    "audit_logging": {
+      "enabled": false
+    },
+    "user_role": "admin"
+  },
+  "agent_autonomy": {
+    "enabled": true,
+    "mode": "fully_autonomous",
+    "max_iterations": 20,
+    "require_approval_on_high_risk": false,
+    "require_approval_on_loop_detection": false
+  }
+}

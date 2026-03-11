@@ -1167,6 +1167,68 @@ export namespace Config {
             .describe("Timeout in milliseconds for model context protocol (MCP) requests"),
         })
         .optional(),
+      security: z
+        .object({
+          execution_mode: z.enum(["host", "sandbox"]).default("host").describe("Execution mode for bash commands - 'host' for direct execution or 'sandbox' for Docker isolation"),
+          risk_policy: z.enum(["static", "dynamic", "hybrid"]).default("static").describe("Permission policy mode - 'static' for basic rules, 'dynamic' for risk scoring, 'hybrid' for both"),
+          risk_thresholds: z
+            .object({
+              deny: z.number().int().min(0).max(100).optional().describe("Risk score threshold for auto-deny (default: 80)"),
+              ask: z.number().int().min(0).max(100).optional().describe("Risk score threshold for asking user (default: 40)"),
+            })
+            .optional(),
+          network: z
+            .object({
+              mode: z.enum(["allow", "deny", "allowlist"]).default("allow").describe("Network access mode"),
+              allow_domains: z.array(z.string()).optional().describe("Allowed domains in allowlist mode"),
+            })
+            .optional(),
+          sandbox: z
+            .object({
+              memory_limit: z.string().optional().describe("Memory limit for sandboxed execution (e.g., '512m')"),
+              cpu_limit: z.string().optional().describe("CPU limit for sandboxed execution (e.g., '1')"),
+              image_tag: z.string().optional().describe("Docker image for sandbox execution (default: 'node:20-alpine')"),
+            })
+            .optional(),
+          skill_trust: z
+            .record(z.string(), z.enum(["trusted", "restricted", "untrusted"]))
+            .optional()
+            .describe("Trust levels for individual skills"),
+          loop_detection: z
+            .object({
+              enabled: z.boolean().default(true).describe("Enable loop detection"),
+              threshold: z.number().int().min(0).max(100).optional().describe("Loop score threshold to trigger approval (default: 50)"),
+              window_ms: z.number().int().positive().optional().describe("Time window for loop detection in milliseconds (default: 60000)"),
+            })
+            .optional(),
+          audit_logging: z
+            .object({
+              enabled: z.boolean().default(false).describe("Enable audit logging (enterprise feature)"),
+              directory: z.string().optional().describe("Directory for audit logs (default: .opencode/audit)"),
+            })
+            .optional(),
+          user_role: z
+            .enum(["admin", "developer", "readonly", "autonomous_agent"])
+            .default("developer")
+            .describe("User role for RBAC (role-based access control)"),
+        })
+        .optional()
+        .describe("Security and sandbox configuration"),
+      agent_autonomy: z
+        .object({
+          mode: z
+            .enum(["supervised", "semi_autonomous", "fully_autonomous"])
+            .default("semi_autonomous")
+            .describe("Agent autonomy level - 'supervised' requires frequent approval, 'fully_autonomous' operates independently"),
+          max_iterations: z
+            .number()
+            .int()
+            .positive()
+            .optional()
+            .describe("Override default max iterations for agents"),
+        })
+        .optional()
+        .describe("Agent autonomy and operation modes"),
     })
     .strict()
     .meta({

@@ -1,0 +1,62 @@
+{
+  "security": {
+    "enabled": true,
+    "execution_mode": "sandbox",
+    "risk_policy": "hybrid",
+    "risk_thresholds": {
+      "deny": 70,
+      "ask": 40
+    },
+    "sandbox": {
+      "memory_limit": "512m",
+      "cpu_limit": "1",
+      "image_tag": "node:20-alpine",
+      "enabled": true
+    },
+    "network": {
+      "enabled": true,
+      "mode": "allowlist",
+      "allow_domains": [
+        "github.com",
+        "npmjs.com",
+        "api.github.com",
+        "registry.npmjs.org"
+      ],
+      "deny_internal": true
+    },
+    "sensitive_files": {
+      "enabled": true,
+      "block_on_detect": true,
+      "patterns_count": 54
+    },
+    "destructive_commands": {
+      "enabled": true,
+      "require_approval": true,
+      "pre_check": true
+    },
+    "loop_detection": {
+      "enabled": true,
+      "threshold": 40,
+      "window_ms": 60000,
+      "max_repetitions": 3
+    },
+    "skill_trust": {
+      "default_level": "untrusted",
+      "require_approval_for_restricted": true
+    },
+    "audit_logging": {
+      "enabled": true,
+      "directory": ".opencode/audit",
+      "verify_integrity": true,
+      "retention_days": 90
+    },
+    "user_role": "readonly"
+  },
+  "agent_autonomy": {
+    "enabled": true,
+    "mode": "supervised",
+    "max_iterations": 5,
+    "require_approval_on_high_risk": true,
+    "require_approval_on_loop_detection": true
+  }
+}

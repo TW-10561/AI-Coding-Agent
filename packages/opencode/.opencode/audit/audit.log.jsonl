@@ -1,0 +1,8 @@
+{"id":"undefined_cb7467a5c001isHqTpbE1wtOg5","timestamp":1772601375324,"type":"permission_decision","action":"bash_command","resource":"ls -la","result":"allow","prevHash":""}
+{"id":"undefined_cb7467a5d001Rd7qvNSY8HQibw","timestamp":1772601375325,"type":"file_access","action":"read","resource":"config.json","result":"allow","prevHash":""}
+{"id":"undefined_cb7467a5e0017Pe3md35CYjQO7","timestamp":1772601375326,"type":"sensitive_file_access","action":"write","resource":".env","result":"deny","prevHash":""}
+{"id":"undefined_cb7467a5e002eMI2wKXKqjyed0","timestamp":1772601375326,"type":"loop_detected","action":"infinite_loop","resource":"npm install","riskScore":75,"prevHash":""}
+{"id":"undefined_cb7467a5f001CCB07Qn8Kq0qSS","timestamp":1772601375327,"type":"command_execution","action":"test_command","resource":"test","prevHash":""}
+{"id":"undefined_cb7467a61001ujPPWHYSnOMuQS","timestamp":1772601375329,"type":"command_execution","action":"destructive_command","resource":"rm -rf /","result":"deny","prevHash":""}
+{"id":"undefined_cb7467a61002ele3mV2NYRrDTv","timestamp":1772601375329,"type":"permission_decision","action":"risk_based_check","resource":"npm install","riskScore":45,"prevHash":"h1a44960aa"}
+{"id":"undefined_cb7467a610036uEJW20p0ELsIR","timestamp":1772601375329,"type":"loop_detected","action":"repeated_command","resource":"same cmd","riskScore":60,"prevHash":"h1d2146cf7"}

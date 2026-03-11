@@ -17,6 +17,8 @@ import { Bus } from "../bus"
 import { ProviderTransform } from "../provider/transform"
 import { SystemPrompt } from "./system"
 import { InstructionPrompt } from "./instruction"
+import { Skill } from "../skill"
+import { findRelevantSkills, formatSkillBlock } from "../skill/matcher"
 import { Plugin } from "../plugin"
 import PROMPT_PLAN from "../session/prompt/plan.txt"
 import BUILD_SWITCH from "../session/prompt/build-switch.txt"
@@ -86,6 +88,62 @@ export namespace SessionPrompt {
   export function assertNotBusy(sessionID: string) {
     const match = state()[sessionID]
     if (match) throw new Session.BusyError(sessionID)
+  }
+
+  /**
+   * Given a partially constructed system prompt and the full conversation
+   * messages, determine if any skills should be automatically injected.
+   *
+   * This looks at user text, finds relevant skills via the matcher, and
+   * ignores skills that have already been loaded earlier in the conversation
+   * (the `<skill_content>` tag is used by the normal skill tool).  The helper
+   * is exported primarily for unit tests.
+   *
+   * Returns both the updated system array and a list of injected skill names
+   * for visibility/logging purposes.
+   */
+  export async function injectSkills(system: string[], msgs: MessageV2[]): Promise<{ system: string[]; injected: string[] }> {
+    // collect all existing skill names referenced in the conversation so we
+    // don't duplicate them
+    const existing = new Set<string>()
+    const regex = /<skill_content name="([^"]+)">/g
+    for (const m of msgs) {
+      for (const part of m.parts) {
+        if (part.type !== "text") continue
+        let match
+        while ((match = regex.exec(part.text))) {
+          existing.add(match[1])
+        }
+      }
+    }
+
+    // build a string of user text to run through the matcher
+    const userText = msgs
+      .filter((m) => m.info.role === "user")
+      .flatMap((m) => m.parts)
+      .filter((p) => p.type === "text")
+      .map((p) => p.text)
+      .join("\n")
+
+    if (!userText.trim()) return { system, injected: [] }
+
+    const skills = await Skill.all()
+    const relevant = await findRelevantSkills(userText, skills)
+    const injected: string[] = []
+    
+    for (const skill of relevant) {
+      if (existing.has(skill.name)) continue
+      system.push(formatSkillBlock(skill))
+      injected.push(skill.name)
+    }
+
+    // Add a note at the top of the system prompt about which skills were injected
+    if (injected.length > 0) {
+      const note = `<skill_auto_injection>Auto-detected and loaded skills: ${injected.join(", ")}</skill_auto_injection>`
+      system.unshift(note)
+    }
+    
+    return { system, injected }
   }
 
   export const PromptInput = z.object({
@@ -648,7 +706,12 @@ export namespace SessionPrompt {
       await Plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
 
       // Build system prompt, adding structured output instruction if needed
-      const system = [...(await SystemPrompt.environment(model)), ...(await InstructionPrompt.system())]
+      let system = [...(await SystemPrompt.environment(model)), ...(await InstructionPrompt.system())]
+
+      // automatically detect and inject relevant skills based on user text
+      const { system: systemWithSkills } = await SessionPrompt.injectSkills(system, msgs)
+      system = systemWithSkills
+
       const format = lastUser.format ?? { type: "text" }
       if (format.type === "json_schema") {
         system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)

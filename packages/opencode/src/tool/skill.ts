@@ -25,6 +25,8 @@ export const SkillTool = Tool.define("skill", async (ctx) => {
       : [
           "Load a specialized skill that provides domain-specific instructions and workflows.",
           "",
+          "Relevant skills may also be automatically injected into the system prompt based on the user message; you can still invoke this tool to load a skill manually.",
+          "",
           "When you recognize that a task matches one of the available skills listed below, use this tool to load the full skill instructions.",
           "",
           "The skill will inject detailed instructions, workflows, and access to bundled resources (scripts, references, templates) into the conversation context.",

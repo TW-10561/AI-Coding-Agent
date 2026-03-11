@@ -1,0 +1,194 @@
+{
+  "version": 1,
+  "skills": {
+    "find-skills": {
+      "source": "local",
+      "sourceType": "installed",
+      "category": "Core",
+      "enabled": true
+    },
+    "vercel-react-best-practices": {
+      "source": "vercel-labs/agent-skills",
+      "sourceType": "github",
+      "category": "Core",
+      "enabled": true,
+      "computedHash": "3462ec83f862abb2d532953df33a4dbf87f4616849da5d4b5cc7c13601aaf997"
+    },
+    "web-design-guidelines": {
+      "source": "vercel-labs/agent-skills",
+      "sourceType": "github",
+      "category": "Core",
+      "enabled": true,
+      "computedHash": "a6a44d5498f7e8f68289902f3dedfc6f38ae0cee1e96527c80724cf27f727c2a"
+    },
+    "frontend-design": {
+      "source": "local",
+      "sourceType": "installed",
+      "category": "Core",
+      "enabled": true
+    },
+    "vercel-composition-patterns": {
+      "source": "vercel-labs/agent-skills",
+      "sourceType": "github",
+      "category": "Core",
+      "enabled": true,
+      "computedHash": "f98931159fa9c7fed043bcd18a891a46dcf89ababa38df13a4c5b7b30dc0ce07"
+    },
+    "ui-ux-pro-max": {
+      "source": "local",
+      "sourceType": "installed",
+      "category": "Core",
+      "enabled": true
+    },
+    "react-native-best-practices": {
+      "source": "local",
+      "sourceType": "installed",
+      "category": "Development",
+      "enabled": true
+    },
+    "nodejs-backend-patterns": {
+      "source": "local",
+      "sourceType": "installed",
+      "category": "Development",
+      "enabled": true
+    },
+    "architecture-patterns": {
+      "source": "local",
+      "sourceType": "installed",
+      "category": "Development",
+      "enabled": true
+    },
+    "api-design-principles": {
+      "source": "local",
+      "sourceType": "installed",
+      "category": "Development",
+      "enabled": true
+    },
+    "python-performance-optimization": {
+      "source": "local",
+      "sourceType": "installed",
+      "category": "Development",
+      "enabled": true
+    },
+    "typescript-advanced-types": {
+      "source": "local",
+      "sourceType": "installed",
+      "category": "Development",
+      "enabled": true
+    },
+    "webapp-testing": {
+      "source": "local",
+      "sourceType": "installed",
+      "category": "Testing",
+      "enabled": true
+    },
+    "test-driven-development": {
+      "source": "local",
+      "sourceType": "installed",
+      "category": "Testing",
+      "enabled": true
+    },
+    "systematic-debugging": {
+      "source": "local",
+      "sourceType": "installed",
+      "category": "Testing",
+      "enabled": true
+    },
+    "requesting-code-review": {
+      "source": "local",
+      "sourceType": "installed",
+      "category": "Testing",
+      "enabled": true
+    },
+    "receiving-code-review": {
+      "source": "local",
+      "sourceType": "installed",
+      "category": "Testing",
+      "enabled": true
+    },
+    "verification-before-completion": {
+      "source": "local",
+      "sourceType": "installed",
+      "category": "Testing",
+      "enabled": true
+    },
+    "azure-ai": {
+      "source": "local",
+      "sourceType": "installed",
+      "category": "Cloud",
+      "enabled": true
+    },
+    "azure-observability": {
+      "source": "local",
+      "sourceType": "installed",
+      "category": "Cloud",
+      "enabled": true
+    },
+    "azure-cost-optimization": {
+      "source": "local",
+      "sourceType": "installed",
+      "category": "Cloud",
+      "enabled": true
+    },
+    "azure-storage": {
+      "source": "local",
+      "sourceType": "installed",
+      "category": "Cloud",
+      "enabled": true
+    },
+    "azure-diagnostics": {
+      "source": "local",
+      "sourceType": "installed",
+      "category": "Cloud",
+      "enabled": true
+    },
+    "azure-deploy": {
+      "source": "local",
+      "sourceType": "installed",
+      "category": "Cloud",
+      "enabled": true
+    },
+    "mcp-builder": {
+      "source": "local",
+      "sourceType": "installed",
+      "category": "Cloud",
+      "enabled": true
+    },
+    "pdf": {
+      "source": "local",
+      "sourceType": "installed",
+      "category": "Documentation",
+      "enabled": true
+    },
+    "docx": {
+      "source": "local",
+      "sourceType": "installed",
+      "category": "Documentation",
+      "enabled": true
+    },
+    "xlsx": {
+      "source": "local",
+      "sourceType": "installed",
+      "category": "Documentation",
+      "enabled": true
+    },
+    "pptx": {
+      "source": "local",
+      "sourceType": "installed",
+      "category": "Documentation",
+      "enabled": true
+    },
+    "brand-guidelines": {
+      "source": "local",
+      "sourceType": "installed",
+      "category": "Documentation",
+      "enabled": true
+    },
+    "internal-comms": {
+      "source": "local",
+      "sourceType": "installed",
+      "category": "Documentation",
+      "enabled": true
+    }
+  }
+}
