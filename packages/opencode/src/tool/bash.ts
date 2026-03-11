@@ -96,7 +96,7 @@ export const BashTool = Tool.define("bash", async () => {
       const timeout = params.timeout ?? DEFAULT_TIMEOUT
 
       // Load security configuration
-      const config = await Config.state()
+      const config = (await Config.state()) as any
       const securityConfig = config.security || {}
       const autonomyConfig = config.agent_autonomy || { mode: "semi_autonomous" }
 
@@ -117,6 +117,7 @@ export const BashTool = Tool.define("bash", async () => {
         await ctx.ask({
           permission: "bash",
           patterns: [params.command],
+          always: [],
           metadata: {
             security_reason: "destructive_guard",
             command: params.command,
@@ -142,6 +143,7 @@ export const BashTool = Tool.define("bash", async () => {
         await ctx.ask({
           permission: "bash",
           patterns: [params.command],
+          always: [],
           metadata: {
             security_reason: "sensitive_file_protection",
             workdir: cwd,
@@ -172,12 +174,13 @@ export const BashTool = Tool.define("bash", async () => {
         log.debug("Risk assessment", { command: params.command, score: assessment.score, level: assessment.level })
 
         // Apply autonomy mode multipliers to thresholds
-        const AUTONOMY_MULTIPLIERS = {
+        const AUTONOMY_MULTIPLIERS: Record<string, number> = {
           supervised: 1.5,
           semi_autonomous: 1.0,
           fully_autonomous: 0.7,
         }
-        const multiplier = AUTONOMY_MULTIPLIERS[autonomyConfig.mode || "semi_autonomous"] || 1.0
+        const mode = autonomyConfig.mode || "semi_autonomous"
+        const multiplier = AUTONOMY_MULTIPLIERS[mode] || 1.0
         const adjustedAskThreshold = (securityConfig.risk_thresholds?.ask || 40) * multiplier
 
         if (assessment.score >= adjustedAskThreshold) {
@@ -190,12 +193,13 @@ export const BashTool = Tool.define("bash", async () => {
           await ctx.ask({
             permission: "bash",
             patterns: [params.command],
+            always: [],
             metadata: {
               security_reason: "risk_based_permission",
               risk_score: assessment.score,
               risk_level: assessment.level,
               risk_factors: assessment.factors,
-              autonomy_mode: autonomyConfig.mode,
+              autonomy_mode: mode,
               command: params.command,
             },
           })
@@ -223,6 +227,7 @@ export const BashTool = Tool.define("bash", async () => {
           await ctx.ask({
             permission: "bash",
             patterns: [params.command],
+            always: [],
             metadata: {
               security_reason: "doom_loop_v2",
               loop_score: loopScore,

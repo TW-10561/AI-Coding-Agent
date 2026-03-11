@@ -51,7 +51,7 @@ export class HostRunner implements SandboxRunner {
       return {
         stdout: result.stdout || "",
         stderr: result.stderr || "",
-        exitCode: result.exitCode,
+        exitCode: result.exitCode ?? 0,
         command: cmd,
         executedIn: "host",
       }
@@ -110,7 +110,7 @@ export class DockerRunner implements SandboxRunner {
       return {
         stdout: result.stdout || "",
         stderr: result.stderr || "",
-        exitCode: result.exitCode,
+        exitCode: result.exitCode ?? 0,
         command: cmd,
         executedIn: "sandbox",
       }

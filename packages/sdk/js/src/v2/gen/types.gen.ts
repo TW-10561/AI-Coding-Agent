@@ -1496,6 +1496,100 @@ export type Config = {
      */
     mcp_timeout?: number
   }
+  /**
+   * Security and sandbox configuration
+   */
+  security?: {
+    /**
+     * Execution mode for bash commands - 'host' for direct execution or 'sandbox' for Docker isolation
+     */
+    execution_mode?: "host" | "sandbox"
+    /**
+     * Permission policy mode - 'static' for basic rules, 'dynamic' for risk scoring, 'hybrid' for both
+     */
+    risk_policy?: "static" | "dynamic" | "hybrid"
+    risk_thresholds?: {
+      /**
+       * Risk score threshold for auto-deny (default: 80)
+       */
+      deny?: number
+      /**
+       * Risk score threshold for asking user (default: 40)
+       */
+      ask?: number
+    }
+    network?: {
+      /**
+       * Network access mode
+       */
+      mode?: "allow" | "deny" | "allowlist"
+      /**
+       * Allowed domains in allowlist mode
+       */
+      allow_domains?: Array<string>
+    }
+    sandbox?: {
+      /**
+       * Memory limit for sandboxed execution (e.g., '512m')
+       */
+      memory_limit?: string
+      /**
+       * CPU limit for sandboxed execution (e.g., '1')
+       */
+      cpu_limit?: string
+      /**
+       * Docker image for sandbox execution (default: 'node:20-alpine')
+       */
+      image_tag?: string
+    }
+    /**
+     * Trust levels for individual skills
+     */
+    skill_trust?: {
+      [key: string]: "trusted" | "restricted" | "untrusted"
+    }
+    loop_detection?: {
+      /**
+       * Enable loop detection
+       */
+      enabled?: boolean
+      /**
+       * Loop score threshold to trigger approval (default: 50)
+       */
+      threshold?: number
+      /**
+       * Time window for loop detection in milliseconds (default: 60000)
+       */
+      window_ms?: number
+    }
+    audit_logging?: {
+      /**
+       * Enable audit logging (enterprise feature)
+       */
+      enabled?: boolean
+      /**
+       * Directory for audit logs (default: .opencode/audit)
+       */
+      directory?: string
+    }
+    /**
+     * User role for RBAC (role-based access control)
+     */
+    user_role?: "admin" | "developer" | "readonly" | "autonomous_agent"
+  }
+  /**
+   * Agent autonomy and operation modes
+   */
+  agent_autonomy?: {
+    /**
+     * Agent autonomy level - 'supervised' requires frequent approval, 'fully_autonomous' operates independently
+     */
+    mode?: "supervised" | "semi_autonomous" | "fully_autonomous"
+    /**
+     * Override default max iterations for agents
+     */
+    max_iterations?: number
+  }
 }
 
 export type BadRequestError = {

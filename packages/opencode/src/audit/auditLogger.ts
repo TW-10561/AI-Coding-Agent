@@ -34,7 +34,7 @@ export const AuditEvent = z.object({
   resource: z.string().optional(),
   result: z.enum(["allow", "deny", "ask"]).optional(),
   riskScore: z.number().optional(),
-  details: z.record(z.any()).optional(),
+  details: z.record(z.string(), z.any()).optional(),
 })
 export type AuditEvent = z.infer<typeof AuditEvent>
 
@@ -80,7 +80,8 @@ export class AuditLogger {
   private async loadExistingLog(): Promise<void> {
     try {
       const logFile = path.join(this.auditDir, "audit.log.jsonl")
-      if (!fs.stat(logFile)) return
+      const stat = await fs.stat(logFile).catch(() => null)
+      if (!stat) return
 
       const content = await fs.readFile(logFile, "utf-8")
       const lines = content.trim().split("\n")
@@ -121,7 +122,7 @@ export class AuditLogger {
    */
   async logEvent(event: Omit<AuditEvent, "id" | "timestamp">): Promise<void> {
     const auditEvent: AuditEvent = {
-      id: Identifier.ascending("audit"),
+      id: Identifier.ascending("message"),
       timestamp: Date.now(),
       ...event,
     }

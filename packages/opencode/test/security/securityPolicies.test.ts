@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test"
-import { RiskEngine, RiskContext, RiskAssessment } from "../../src/permission/riskEngine"
+import { RiskEngine } from "../../src/permission/riskEngine"
+import type { RiskContext, RiskAssessment } from "../../src/permission/riskEngine"
 import { LoopGuard } from "../../src/agent/loopGuard"
 import { isSensitive, getSensitivePatterns } from "../../src/security/sensitiveFiles"
 import { isDestructive, getSeverityLevel } from "../../src/security/destructiveGuard"
 import { NetworkGuard, type NetworkPolicy } from "../../src/security/networkGuard"
 import { SkillTrustManager, type SkillTrustLevel } from "../../src/security/skillTrust"
-import { RBACEngine, type Role } from "../../src/security/rbac"
+import { RBACEngine, type Role, type RolePolicy } from "../../src/security/rbac"
 import { AuditLogger } from "../../src/audit/auditLogger"
 import { DockerRunner, HostRunner } from "../../src/sandbox/sandboxRunner"
 import { AgentAutonomyController } from "../../src/agent/autonomy"
@@ -407,7 +408,7 @@ describe("Security Policies Implementation Tests", () => {
     })
 
     it("should support custom policies per role", () => {
-      const customPolicy = { bash: "deny", edit: "ask" }
+      const customPolicy: Partial<RolePolicy> = { bash: "deny", edit: "ask" }
       rbac.setCustomPolicy("developer", customPolicy)
 
       const policy = rbac.getPolicy("developer")
@@ -606,7 +607,7 @@ describe("Security Policies Implementation Tests", () => {
         path: "/home/user",
       })
 
-      const supervisedBehavior =autonomyController.getAutonomyBehavior("supervised")
+      const supervisedBehavior = autonomyController.getAutonomyBehavior("supervised")
       const autonomousBehavior = autonomyController.getAutonomyBehavior("fully_autonomous")
 
       // Supervised requires higher threshold
