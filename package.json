@@ -69,8 +69,9 @@
   },
   "devDependencies": {
     "@actions/artifact": "5.0.1",
-    "@tsconfig/bun": "catalog:",
+    "@tsconfig/bun": "1.0.10",
     "@types/mime-types": "3.0.1",
+    "@types/node": "22.13.9",
     "glob": "13.0.5",
     "husky": "9.1.7",
     "prettier": "3.6.2",
@@ -83,7 +84,8 @@
     "@opencode-ai/plugin": "workspace:*",
     "@opencode-ai/script": "workspace:*",
     "@opencode-ai/sdk": "workspace:*",
-    "typescript": "catalog:"
+    "@opentui/solid": "0.1.87",
+    "typescript": "5.9.3"
   },
   "repository": {
     "type": "git",

@@ -4,6 +4,7 @@
 // ---------------------------------------------------------------------------
 
 import { env } from "../config/env"
+import { ResponseEvaluator } from "./response-evaluator"
 import type {
   SessionInfo,
   MessageWithParts,
@@ -21,6 +22,7 @@ import type {
 export class OpenCodeClient {
   private base: string
   private headers: Record<string, string>
+  private evaluator: ResponseEvaluator
 
   constructor(opts?: { url?: string; directory?: string; username?: string; password?: string }) {
     this.base = (opts?.url ?? env.OPENCODE_URL).replace(/\/$/, "")
@@ -36,6 +38,8 @@ export class OpenCodeClient {
       const pass = opts?.password ?? env.OPENCODE_SERVER_PASSWORD ?? ""
       this.headers["authorization"] = `Basic ${btoa(`${user}:${pass}`)}`
     }
+    // Initialize response evaluator
+    this.evaluator = new ResponseEvaluator()
   }
 
   // ── Low-level helpers ────────────────────────────────────────────
@@ -148,13 +152,35 @@ export class OpenCodeClient {
   }
 
   /**
-   * Send a prompt and get the full streamed response body.
-   * For raw SSE streaming, use `promptStream()`.
+   * Send a prompt and get the full response with self-evaluation.
+   * Automatically evaluates the response for quality, confidence, and learning.
    */
   async prompt(sessionID: string, input: PromptInput): Promise<MessageWithParts> {
     // OpenCode expects { parts: [{ type: "text", text: "..." }] }
     const body = this.toOpenCodePrompt(input)
-    return this.request("POST", `/session/${sessionID}/message`, body)
+    const response = await this.request<MessageWithParts>("POST", `/session/${sessionID}/message`, body)
+    
+    // Extract response text for evaluation
+    const responseText = response.parts?.map(p => (p as any).text || (p as any).content || '').join('\n') || ''
+    
+    // Evaluate the response
+    const evaluation = await this.evaluator.evaluate(
+      input.content,
+      responseText,
+      {
+        agentID: input.agentID,
+        modelID: input.modelID,
+      }
+    )
+    
+    // Add evaluation metrics to response
+    if (!response.parts) response.parts = []
+    response.parts.push({
+      type: "evaluation",
+      evaluation: evaluation.evaluation,
+    } as any)
+    
+    return response
   }
 
   /**

@@ -471,17 +471,46 @@ app.notFound((c) => c.json({ error: "not_found", message: `${c.req.method} ${c.r
 
 // ── Start ─────────────────────────────────────────────────────────────
 
-const server = Bun.serve({
-  port: env.PORT,
-  hostname: env.HOST,
-  fetch: app.fetch,
-  idleTimeout: 0,
-})
+let server
+let finalPort = env.PORT
+
+try {
+  server = Bun.serve({
+    port: env.PORT,
+    hostname: env.HOST,
+    fetch: app.fetch,
+    idleTimeout: 0,
+  })
+} catch (err: any) {
+  // If port is in use, try alternative ports
+  if (err.code === "EADDRINUSE") {
+    console.warn(`Port ${env.PORT} is in use, trying alternative ports...`)
+    for (let offset = 1; offset <= 10; offset++) {
+      const altPort = env.PORT + offset
+      try {
+        server = Bun.serve({
+          port: altPort,
+          hostname: env.HOST,
+          fetch: app.fetch,
+          idleTimeout: 0,
+        })
+        finalPort = altPort
+        console.log(`✓ Started on alternative port ${altPort}`)
+        break
+      } catch {}
+    }
+    if (!server) {
+      throw new Error(`Could not find available port starting from ${env.PORT}`)
+    }
+  } else {
+    throw err
+  }
+}
 
 console.log(`
 ┌─────────────────────────────────────────────────┐
 │  Kadavuley AI Coding Platform                   │
-│  Platform  →  http://${server.hostname}:${server.port}            │
+│  Platform  →  http://${server.hostname}:${finalPort}            │
 │  OpenCode  →  ${env.OPENCODE_URL}               │
 │  Env       →  ${env.NODE_ENV}                   │
 └─────────────────────────────────────────────────┘

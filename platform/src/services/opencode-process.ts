@@ -35,15 +35,17 @@ export class OpenCodeProcess {
     const dir = opts?.directory ?? env.OPENCODE_DIR
 
     // ── Pre-check: is the port already in use? ──────────────────
+    // If port is already in use, assume it's a previous OpenCode instance
+    // and connect to it instead of erroring out
+    let portAvailable = true
     try {
       const probe = Bun.serve({ port: Number(port), hostname, fetch: () => new Response() })
       probe.stop(true)
+      portAvailable = true
     } catch {
-      throw new Error(
-        `Port ${port} is already in use. Kill the stale process:\n` +
-        `  lsof -i :${port}  # find PID\n` +
-        `  kill <PID>         # then re-launch`
-      )
+      // Port is already in use - check if OpenCode is actually running there
+      portAvailable = false
+      console.log(`[opencode-process] Port ${port} already in use, attempting to reuse existing instance...`)
     }
 
     const envVars: Record<string, string> = {
@@ -59,8 +61,34 @@ export class OpenCodeProcess {
     const opencodeConfig = opts?.config ?? buildVllmConfig()
     envVars.OPENCODE_CONFIG_CONTENT = JSON.stringify(opencodeConfig)
 
+    // Find opencode binary - try env first, then common locations
+    let opencodeBin = env.OPENCODE_BIN
+    const locations = [
+      opencodeBin,
+      process.env.OPENCODE_BIN,
+      `${process.env.HOME}/.local/bin/opencode`,
+      "/usr/local/bin/opencode",
+      new URL("../../packages/opencode/dist/opencode-linux-arm64/bin/opencode", import.meta.url).pathname,
+    ].filter(Boolean) as string[]
+    
+    let binFound = false
+    for (const loc of locations) {
+      try {
+        const test = Bun.spawnSync([loc, "--version"], { stdio: ["ignore", "ignore", "ignore"] })
+        if (test.exitCode === 0) {
+          opencodeBin = loc
+          binFound = true
+          break
+        }
+      } catch {}
+    }
+    
+    if (!binFound) {
+      throw new Error(`opencode binary not found. Tried: ${locations.join(", ")}. Build with: cd packages/opencode && bun run build -- --single`)
+    }
+
     const args = [
-      env.OPENCODE_BIN,
+      opencodeBin,
       "serve",
       `--port=${port}`,
       `--hostname=${hostname}`,

@@ -7,6 +7,10 @@
 import { env } from "../src/config/env"
 import { opencode } from "../src/services/opencode-process"
 
+declare global {
+  var opencodeAvailable: boolean | undefined
+}
+
 const LOGO = `
   ╔══════════════════════════════════════════╗
   ║   ◆  K A D A V U L E Y                  ║
@@ -33,29 +37,59 @@ async function preflight() {
   const bunProc = Bun.spawnSync(["bun", "--version"])
   if (bunProc.exitCode !== 0) die("bun is not installed or not in PATH. Install: curl -fsSL https://bun.sh/install | bash")
 
-  // Check that opencode binary is available
-  const ocProc = Bun.spawnSync([env.OPENCODE_BIN, "--version"])
-  if (ocProc.exitCode !== 0) {
+  // Auto-cleanup: Aggressively kill any stale opencode/bun processes on ports 4096 and 3100
+  try {
+    log("preflight", "Cleaning up stale processes on ports 4096 and 3100...")
+    const cleanup = `
+      pkill -9 -f "opencode serve" 2>/dev/null
+      pkill -9 -f "opencode" 2>/dev/null
+      pkill -9 -f "bun run" 2>/dev/null
+      pkill -9 -f "bun run scripts/launch" 2>/dev/null
+      pkill -9 -f "platform" 2>/dev/null
+      sleep 2
+      lsof -i :4096,:3100 2>/dev/null | awk 'NR>1 {print $2}' | xargs -r kill -9 2>/dev/null
+      sleep 1
+    `
+    Bun.spawnSync(["sh", "-c", cleanup], { 
+      stdio: ["ignore", "ignore", "ignore"]
+    })
+  } catch {}
+
+  // Check that opencode binary is available (non-blocking)
+  let opencodeFound = false
+  try {
+    const ocProc = Bun.spawnSync([env.OPENCODE_BIN, "--version"])
+    if (ocProc.exitCode === 0) {
+      opencodeFound = true
+      log("preflight", `opencode found at ${env.OPENCODE_BIN}`)
+    }
+  } catch {}
+  
+  if (!opencodeFound) {
     // Try common locations
     const locations = [
       `${process.env.HOME}/.local/bin/opencode`,
       "/usr/local/bin/opencode",
       new URL("../../packages/opencode/dist/opencode-linux-arm64/bin/opencode", import.meta.url).pathname,
     ]
-    let found = false
     for (const loc of locations) {
       try {
         const check = Bun.spawnSync([loc, "--version"])
         if (check.exitCode === 0) {
           process.env.OPENCODE_BIN = loc
-          found = true
+          opencodeFound = true
           log("preflight", `Found opencode at ${loc}`)
           break
         }
       } catch {}
     }
-    if (!found) die(`opencode binary not found. Build it: cd packages/opencode && bun run build -- --single`)
+    if (!opencodeFound) {
+      log("preflight", "\x1b[33m⚠ opencode binary not found. Skipping OpenCode engine. Build: cd packages/opencode && bun run build -- --single\x1b[0m")
+    }
   }
+  
+  // Store whether opencode was found for later
+  globalThis.opencodeAvailable = opencodeFound
 
   // Check vLLM is reachable (non-blocking warning)
   try {
@@ -77,10 +111,15 @@ async function main() {
   log("launch", "Running pre-flight checks...")
   await preflight()
 
-  // 1) Start OpenCode engine
-  log("launch", "Starting OpenCode engine...")
-  const ocUrl = await opencode.start({ directory: env.OPENCODE_DIR })
-  log("launch", `OpenCode ready → ${ocUrl}`)
+  // 1) Start OpenCode engine (optional)
+  let ocUrl = null
+  if (globalThis.opencodeAvailable) {
+    log("launch", "Starting OpenCode engine...")
+    ocUrl = await opencode.start({ directory: env.OPENCODE_DIR })
+    log("launch", `OpenCode ready → ${ocUrl}`)
+  } else {
+    log("launch", "Skipping OpenCode engine (not available)")
+  }
 
   // 2) Start Platform backend
   log("launch", "Starting Platform backend...")
@@ -97,7 +136,9 @@ async function main() {
   // ── Graceful shutdown ───────────────────────────────────────────
   const shutdown = async () => {
     console.log("\n  Shutting down...")
-    await opencode.stop()
+    if (globalThis.opencodeAvailable) {
+      await opencode.stop()
+    }
     process.exit(0)
   }
   process.on("SIGINT", shutdown)

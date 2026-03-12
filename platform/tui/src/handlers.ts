@@ -312,6 +312,7 @@ export async function sendPrompt(state: TuiState, content: string): Promise<void
     // Extract parts
     let text = ""
     let reasoning = ""
+    let evaluation = null
     const toolCalls: string[] = []
     const parts = response.parts ?? (response as any).message?.parts ?? []
 
@@ -322,6 +323,8 @@ export async function sendPrompt(state: TuiState, content: string): Promise<void
         text += part.text ?? part.content
       } else if (part.type === "reasoning" && part.text) {
         reasoning += part.text
+      } else if (part.type === "evaluation") {
+        evaluation = (part as any).evaluation
       } else if (part.type === "tool-invocation") {
         toolCalls.push((part as any).toolName ?? "tool")
       } else if (part.type === "tool-result") {
@@ -351,6 +354,55 @@ export async function sendPrompt(state: TuiState, content: string): Promise<void
       ui.assistantMessage(text, tokenStr)
     } else if (toolCalls.length === 0) {
       ui.emptyState("(empty response)")
+    }
+
+    // Show self-evaluation if present
+    if (evaluation) {
+      console.log()
+      console.log(`\n${C.primary("╔════════════════════════════════════════════════════════════════╗")}`)
+      console.log(`${C.primary("║")}                    ${C.accent("🤖 SELF-EVALUATION REPORT")}                  ${C.primary("║")}`)
+      console.log(`${C.primary("╚════════════════════════════════════════════════════════════════╝")}`)
+      console.log()
+
+      const confPct = Math.round(evaluation.confidenceScore * 100)
+      const compPct = Math.round(evaluation.completenessScore * 100)
+      const cohPct = Math.round(evaluation.coherenceScore * 100)
+      const relPct = Math.round(evaluation.relevanceScore * 100)
+
+      console.log(`  ${C.muted("📊 Metrics:")}`)
+      console.log(`    • ${C.accent("Confidence")}:            ${confPct}% ${confPct >= 80 ? "🟢" : confPct >= 60 ? "🟡" : "🔴"}`)
+      console.log(`    • ${C.accent("Quality")}:               ${evaluation.quality.toUpperCase()}`)
+      console.log(`    • ${C.accent("Completeness")}:          ${compPct}%`)
+      console.log(`    • ${C.accent("Coherence")}:             ${cohPct}%`)
+      console.log(`    • ${C.accent("Relevance")}:             ${relPct}%`)
+      console.log()
+
+      if (evaluation.toolsUsed.length > 0) {
+        console.log(`  ${C.muted("🔧 Tools Used:")}`)
+        for (const tool of evaluation.toolsUsed.slice(0, 5)) {
+          console.log(`    • ${tool}`)
+        }
+        console.log()
+      }
+
+      if (evaluation.concerns.length > 0) {
+        console.log(`  ${C.muted("⚠️  Concerns:")}`)
+        for (const concern of evaluation.concerns.slice(0, 3)) {
+          console.log(`    • ${concern}`)
+        }
+        console.log()
+      }
+
+      if (evaluation.suggestedImprovements.length > 0) {
+        console.log(`  ${C.muted("💡 Suggested Improvements:")}`)
+        for (const improvement of evaluation.suggestedImprovements.slice(0, 3)) {
+          console.log(`    • ${improvement}`)
+        }
+        console.log()
+      }
+
+      console.log(`  ${C.muted("✅ Learned")}:         ${evaluation.learned ? "Yes" : "No"}`)
+      console.log(`${C.primary("╚════════════════════════════════════════════════════════════════╝")}\n`)
     }
 
   } catch (e) {

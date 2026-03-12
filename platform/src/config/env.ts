@@ -17,12 +17,13 @@ const Schema = z.object({
   OPENCODE_SERVER_PASSWORD: z.string().optional(),
 
   // ── Local LLM (vLLM) ──────────────────────────────────────────────
-  //VLLM_BASE_URL: z.string().url().default(""),
-  //VLLM_API_KEY: z.string().default(""),
-  //VLLM_MODEL_ID: z.string().default(""),
-  //VLLM_MODEL_NAME: z.string().default(""),
-  //VLLM_CONTEXT_LIMIT: z.coerce.number().default(30000),
-  //VLLM_OUTPUT_LIMIT: z.coerce.number().default(4096),
+ // ── Local LLM (vLLM) ──────────────────────────────────────────────
+VLLM_BASE_URL: z.string().url().default(""),
+VLLM_API_KEY: z.string().default(""),
+VLLM_MODEL_ID: z.string().default(""),
+VLLM_MODEL_NAME: z.string().default(""),
+VLLM_CONTEXT_LIMIT: z.coerce.number().default(30000),
+VLLM_OUTPUT_LIMIT: z.coerce.number().default(4096),
 
   // ── Platform auth ──────────────────────────────────────────────────
   PLATFORM_API_KEY: z.string().optional(),
