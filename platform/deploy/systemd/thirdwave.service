@@ -1,6 +1,6 @@
 [Unit]
-Description=Artemis AI Coding Platform
-Documentation=https://github.com/your-org/artemis
+Description=Thirdwave AI Coding Platform
+Documentation=https://github.com/your-org/thirdwave
 After=network.target
 
 [Service]
@@ -19,6 +19,9 @@ Environment=HOST=127.0.0.1
 Environment=OPENCODE_DIR=/home/nvidia/AI_Coding_Agent/Kadavuley/AI-Coding-Agent
 Environment=OPENCODE_BIN=/home/nvidia/.opencode/bin/opencode
 Environment=LOG_LEVEL=info
+# Disable AUTO_PORT in systemd — if :3100 is busy, fail loudly instead of
+# silently shifting to :3101 (which breaks nginx proxy)
+Environment=AUTO_PORT=false
 Environment=PATH=/home/nvidia/.opencode/bin:/home/nvidia/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=HOME=/home/nvidia
 
@@ -52,7 +55,7 @@ MemoryMax=4G
 # Logging
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=artemis
+SyslogIdentifier=thirdwave
 
 [Install]
 WantedBy=multi-user.target

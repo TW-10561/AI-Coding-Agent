@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ── Artemis Deploy Script ─────────────────────────────────────────────
+# ── Thirdwave Deploy Script ─────────────────────────────────────────────
 # Sets up nginx reverse proxy + systemd service for small testing.
 #
 # Usage:
@@ -24,10 +24,10 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-info()  { echo -e "${BLUE}[artemis]${NC} $1"; }
-ok()    { echo -e "${GREEN}[artemis]${NC} $1"; }
-warn()  { echo -e "${YELLOW}[artemis]${NC} $1"; }
-fail()  { echo -e "${RED}[artemis]${NC} $1"; exit 1; }
+info()  { echo -e "${BLUE}[thirdwave]${NC} $1"; }
+ok()    { echo -e "${GREEN}[thirdwave]${NC} $1"; }
+warn()  { echo -e "${YELLOW}[thirdwave]${NC} $1"; }
+fail()  { echo -e "${RED}[thirdwave]${NC} $1"; exit 1; }
 
 # ── Pre-flight ────────────────────────────────────────────────────────
 check_prerequisites() {
@@ -78,8 +78,8 @@ setup_nginx() {
   rm -f /etc/nginx/sites-enabled/default
 
   # Copy our config
-  cp "$SCRIPT_DIR/nginx/artemis.conf" /etc/nginx/sites-available/artemis
-  ln -sf /etc/nginx/sites-available/artemis /etc/nginx/sites-enabled/artemis
+  cp "$SCRIPT_DIR/nginx/thirdwave.conf" /etc/nginx/sites-available/thirdwave
+  ln -sf /etc/nginx/sites-available/thirdwave /etc/nginx/sites-enabled/thirdwave
 
   # Test config
   if nginx -t 2>&1; then
@@ -91,7 +91,7 @@ setup_nginx() {
   # Reload nginx
   systemctl enable nginx
   systemctl reload nginx || systemctl start nginx
-  ok "nginx running and proxying to Artemis on :3100"
+  ok "nginx running and proxying to Thirdwave on :3100"
 }
 
 # ── Install systemd service ──────────────────────────────────────────
@@ -99,14 +99,14 @@ setup_systemd() {
   info "Setting up systemd service..."
 
   # Copy service file
-  cp "$SCRIPT_DIR/systemd/artemis.service" /etc/systemd/system/artemis.service
+  cp "$SCRIPT_DIR/systemd/thirdwave.service" /etc/systemd/system/thirdwave.service
 
   # Patch paths for this specific installation
-  sed -i "s|WorkingDirectory=.*|WorkingDirectory=$PROJECT_DIR|" /etc/systemd/system/artemis.service
-  sed -i "s|ExecStart=.*|ExecStart=/home/nvidia/.bun/bin/bun run $PLATFORM_DIR/scripts/start-all.ts|" /etc/systemd/system/artemis.service
-  sed -i "s|EnvironmentFile=.*|EnvironmentFile=-$PLATFORM_DIR/.env|" /etc/systemd/system/artemis.service
-  sed -i "s|ReadWritePaths=.*/.platform|ReadWritePaths=$PROJECT_DIR/.platform|" /etc/systemd/system/artemis.service
-  sed -i "s|Environment=OPENCODE_DIR=.*|Environment=OPENCODE_DIR=$PROJECT_DIR|" /etc/systemd/system/artemis.service
+  sed -i "s|WorkingDirectory=.*|WorkingDirectory=$PROJECT_DIR|" /etc/systemd/system/thirdwave.service
+  sed -i "s|ExecStart=.*|ExecStart=/home/nvidia/.bun/bin/bun run $PLATFORM_DIR/scripts/start-all.ts|" /etc/systemd/system/thirdwave.service
+  sed -i "s|EnvironmentFile=.*|EnvironmentFile=-$PLATFORM_DIR/.env|" /etc/systemd/system/thirdwave.service
+  sed -i "s|ReadWritePaths=.*/.platform|ReadWritePaths=$PROJECT_DIR/.platform|" /etc/systemd/system/thirdwave.service
+  sed -i "s|Environment=OPENCODE_DIR=.*|Environment=OPENCODE_DIR=$PROJECT_DIR|" /etc/systemd/system/thirdwave.service
 
   # Ensure data directory exists (SQLite DBs live at project root .platform/)
   mkdir -p "$PROJECT_DIR/.platform"
@@ -114,14 +114,14 @@ setup_systemd() {
 
   # Reload and enable
   systemctl daemon-reload
-  systemctl enable artemis.service
+  systemctl enable thirdwave.service
   ok "systemd service installed and enabled"
 }
 
 # ── Start the service ─────────────────────────────────────────────────
 start_service() {
-  info "Starting Artemis service..."
-  systemctl start artemis.service
+  info "Starting Thirdwave service..."
+  systemctl start thirdwave.service
 
   # Wait for health
   info "Waiting for platform to become healthy..."
@@ -135,17 +135,17 @@ start_service() {
     attempts=$((attempts + 1))
   done
 
-  warn "Platform not responding after 30s — check: journalctl -u artemis -f"
+  warn "Platform not responding after 30s — check: journalctl -u thirdwave -f"
 }
 
 # ── Status check ──────────────────────────────────────────────────────
 show_status() {
   echo ""
-  info "═══ Artemis Deployment Status ═══"
+  info "═══ Thirdwave Deployment Status ═══"
   echo ""
 
   # systemd
-  if systemctl is-active --quiet artemis 2>/dev/null; then
+  if systemctl is-active --quiet thirdwave 2>/dev/null; then
     ok "Service:  RUNNING"
   else
     warn "Service:  STOPPED"
@@ -177,28 +177,64 @@ show_status() {
 
   # Recent logs
   info "Recent logs (last 5 lines):"
-  journalctl -u artemis --no-pager -n 5 2>/dev/null || echo "  (no logs yet)"
+  journalctl -u thirdwave --no-pager -n 5 2>/dev/null || echo "  (no logs yet)"
   echo ""
 }
 
 # ── Stop ──────────────────────────────────────────────────────────────
 stop_all() {
-  info "Stopping Artemis..."
-  systemctl stop artemis.service 2>/dev/null || true
-  ok "Service stopped"
+  info "Stopping Thirdwave service..."
+  systemctl stop thirdwave.service 2>/dev/null || true
+  ok "Thirdwave service stopped"
+
+  # Verify ports are released (belt-and-suspenders)
+  sleep 1
+  for PORT in 3100 4096; do
+    PIDS=$(lsof -t -i :"$PORT" 2>/dev/null || true)
+    if [ -n "$PIDS" ]; then
+      warn "Port $PORT still held by PID(s) $PIDS — force-releasing"
+      kill -9 $PIDS 2>/dev/null || true
+    fi
+  done
+  ok "Ports 3100 and 4096 released"
+}
+
+# ── Stop including nginx ───────────────────────────────────────────────
+stop_all_services() {
+  stop_all
+  info "Stopping nginx..."
+  systemctl stop nginx 2>/dev/null || true
+  ok "nginx stopped"
+}
+
+# ── Restart ────────────────────────────────────────────────────────────
+restart_service() {
+  info "Restarting Thirdwave..."
+  systemctl restart thirdwave.service 2>/dev/null || true
+  info "Waiting for platform to become healthy..."
+  local attempts=0
+  while [[ $attempts -lt 20 ]]; do
+    if curl -sf http://127.0.0.1:3100/health >/dev/null 2>&1; then
+      ok "Thirdwave restarted and healthy!"
+      return 0
+    fi
+    sleep 1
+    attempts=$((attempts + 1))
+  done
+  warn "Platform not responding after 20s — check: journalctl -u thirdwave -f"
 }
 
 # ── Uninstall ─────────────────────────────────────────────────────────
 uninstall() {
-  warn "Removing Artemis deployment..."
-  systemctl stop artemis.service 2>/dev/null || true
-  systemctl disable artemis.service 2>/dev/null || true
-  rm -f /etc/systemd/system/artemis.service
-  rm -f /etc/nginx/sites-enabled/artemis
-  rm -f /etc/nginx/sites-available/artemis
+  warn "Removing Thirdwave deployment..."
+  systemctl stop thirdwave.service 2>/dev/null || true
+  systemctl disable thirdwave.service 2>/dev/null || true
+  rm -f /etc/systemd/system/thirdwave.service
+  rm -f /etc/nginx/sites-enabled/thirdwave
+  rm -f /etc/nginx/sites-available/thirdwave
   systemctl daemon-reload
   systemctl reload nginx 2>/dev/null || true
-  ok "Artemis deployment removed (source code untouched)"
+  ok "Thirdwave deployment removed (source code untouched)"
 }
 
 # ── Main ──────────────────────────────────────────────────────────────
@@ -218,6 +254,12 @@ case "${1:-full}" in
   --stop)
     stop_all
     ;;
+  --stop-all)
+    stop_all_services
+    ;;
+  --restart)
+    restart_service
+    ;;
   --uninstall)
     uninstall
     ;;
@@ -230,7 +272,7 @@ case "${1:-full}" in
     show_status
     ;;
   *)
-    echo "Usage: sudo bash deploy.sh [--full|--nginx|--systemd|--status|--stop|--uninstall]"
+    echo "Usage: sudo bash deploy.sh [--full|--nginx|--systemd|--status|--stop|--stop-all|--restart|--uninstall]"
     exit 1
     ;;
 esac

@@ -1,6 +1,6 @@
 import { Log } from "../util/log"
-import { isSensitive } from "../security/sensitiveFiles"
-import { isDestructive, getSeverityLevel } from "../security/destructiveGuard"
+import { isSensitive } from "./sensitiveFiles"
+import { isDestructive, getSeverityLevel } from "./destructiveGuard"
 
 const log = Log.create({ service: "risk-engine" })
 

@@ -1,4 +1,4 @@
-# Artemis Platform — Full Implementation Guide
+# Thirdwave Platform — Full Implementation Guide
 
 This document explains what is implemented in the `platform/` folder, how pieces fit together, and why each file exists.
 
@@ -6,7 +6,7 @@ This document explains what is implemented in the `platform/` folder, how pieces
 
 ## 1) What this platform is
 
-Artemis platform is a **local AI coding backend + CLI/TUI** that wraps a self-hosted OpenCode engine.
+Thirdwave platform is a **local AI coding backend + CLI/TUI** that wraps a self-hosted OpenCode engine.
 
 High-level runtime:
 
@@ -22,7 +22,7 @@ High-level runtime:
 - `src/` — backend API server, routes, services, SDK, middleware, shared types
 - `tui/` — terminal UI client (`bun run tui/src/main.ts`)
 - `scripts/` — launch/start orchestration scripts
-- `bin/` — global CLI wrapper script (`artemis`)
+- `bin/` — global CLI wrapper script (`thirdwave`)
 - `docker/` — Dockerfile + Compose deployment
 - `docs/diagrams/` — Mermaid architecture/flow/deployment docs
 - `tests/` — integration and unit tests
@@ -228,7 +228,7 @@ High-level runtime:
   - **What**: starts only OpenCode
   - **Why**: split deployment/testing modes.
 
-- `bin/artemis`
+- `bin/thirdwave`
   - **What**: shell wrapper exposed as global CLI
   - **Why**: run from anywhere; supports `--headless`, `--tui-only`, default full-stack.
 
@@ -289,7 +289,7 @@ Based on the implemented code and recent changes, these are the major pieces I a
    - prompt/session forwarding with `agentID`
 5. **Launcher and distribution flow**
    - `scripts/launch.ts`
-   - `bin/artemis`
+   - `bin/thirdwave`
 6. **Docker packaging and compose setup**
 7. **Documentation enhancements**
    - detailed `platform/README.md`
@@ -315,5 +315,5 @@ If you remember only this:
 - `src/server/routes/*` = HTTP surface
 - `src/sdk/*` = typed client surface
 - `tui/src/*` = human-facing CLI UX
-- `scripts/*` + `bin/artemis` = startup/distribution
+- `scripts/*` + `bin/thirdwave` = startup/distribution
 - `docker/*` = container deployment

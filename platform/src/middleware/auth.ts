@@ -8,6 +8,12 @@
 
 import type { Context, Next } from "hono"
 import { env } from "../config/env"
+import { timingSafeEqual } from "crypto"
+
+function safeCompare(a: string, b: string): boolean {
+  if (a.length !== b.length) return false
+  return timingSafeEqual(Buffer.from(a), Buffer.from(b))
+}
 
 export async function authMiddleware(c: Context, next: Next) {
   // Open mode — no key configured, allow everything
@@ -17,7 +23,7 @@ export async function authMiddleware(c: Context, next: Next) {
   const header = c.req.header("x-api-key")
   const key = bearer ?? header
 
-  if (!key || key !== env.PLATFORM_API_KEY) {
+  if (!key || !safeCompare(key, env.PLATFORM_API_KEY)) {
     return c.json(
       { error: "unauthorized", message: "Invalid or missing API key" },
       401,

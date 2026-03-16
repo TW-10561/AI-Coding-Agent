@@ -1,0 +1,212 @@
+{
+  "name": "thirdwave-ai",
+  "displayName": "Thirdwave AI Platform",
+  "description": "AI coding assistant powered by the Thirdwave platform — chat, tool calling, multi-agent orchestration",
+  "version": "0.1.0",
+  "publisher": "thirdwave-platform",
+  "engines": {
+    "vscode": "^1.93.0"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "ai",
+    "chat",
+    "coding",
+    "vllm",
+    "agent"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/local/thirdwave-ai"
+  },
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "chatParticipants": [
+      {
+        "id": "thirdwave.chat.participant",
+        "fullName": "Thirdwave AI",
+        "name": "thirdwave",
+        "description": "AI coding assistant powered by local vLLM — chat, explain, fix, test, review code",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "explain",
+            "description": "Explain the selected code or concept"
+          },
+          {
+            "name": "fix",
+            "description": "Fix issues in the selected code"
+          },
+          {
+            "name": "test",
+            "description": "Generate tests for the selected code"
+          },
+          {
+            "name": "review",
+            "description": "Review code for issues and improvements"
+          },
+          {
+            "name": "models",
+            "description": "List available AI models"
+          },
+          {
+            "name": "skills",
+            "description": "Browse or search the skills library"
+          }
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "command": "thirdwave.openChat",
+        "title": "Thirdwave: Open Chat",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "thirdwave.newSession",
+        "title": "Thirdwave: New Session",
+        "icon": "$(add)"
+      },
+      {
+        "command": "thirdwave.selectModel",
+        "title": "Thirdwave: Select Model",
+        "icon": "$(server)"
+      },
+      {
+        "command": "thirdwave.selectAgent",
+        "title": "Thirdwave: Select Agent",
+        "icon": "$(robot)"
+      },
+      {
+        "command": "thirdwave.refreshSessions",
+        "title": "Thirdwave: Refresh Sessions",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "thirdwave.deleteSession",
+        "title": "Delete Session",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "thirdwave.showRegistry",
+        "title": "Thirdwave: Show Model Registry"
+      },
+      {
+        "command": "thirdwave.showBudget",
+        "title": "Thirdwave: Show Budget"
+      },
+      {
+        "command": "thirdwave.showAudit",
+        "title": "Thirdwave: Show Audit Log"
+      },
+      {
+        "command": "thirdwave.showPolicies",
+        "title": "Thirdwave: Show Security Policies"
+      },
+      {
+        "command": "thirdwave.refreshRegistry",
+        "title": "Thirdwave: Refresh Model Registry"
+      },
+      {
+        "command": "thirdwave.viewSkill",
+        "title": "Thirdwave: View Skill"
+      },
+      {
+        "command": "thirdwave.searchSkills",
+        "title": "Thirdwave: Search Skills",
+        "icon": "$(search)"
+      },
+      {
+        "command": "thirdwave.refreshSkills",
+        "title": "Thirdwave: Refresh Skills",
+        "icon": "$(refresh)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "thirdwave",
+          "title": "Thirdwave AI",
+          "icon": "$(hubot)"
+        }
+      ]
+    },
+    "views": {
+      "thirdwave": [
+        {
+          "id": "thirdwave.chat",
+          "name": "Thirdwave AI",
+          "type": "webview"
+        }
+      ]
+    },
+    "menus": {},
+
+    "configuration": {
+      "title": "Thirdwave AI",
+      "properties": {
+        "thirdwave.platformUrl": {
+          "type": "string",
+          "default": "http://localhost:3100",
+          "description": "URL of the Thirdwave platform backend"
+        },
+        "thirdwave.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key for authentication (optional)",
+          "order": 1
+        },
+        "thirdwave.defaultModel": {
+          "type": "string",
+          "default": "",
+          "description": "Default model ID to use for chat (leave empty for auto-select)"
+        },
+        "thirdwave.defaultAgent": {
+          "type": "string",
+          "default": "build",
+          "enum": [
+            "build",
+            "plan",
+            "explore",
+            "general"
+          ],
+          "description": "Default agent mode"
+        },
+        "thirdwave.maxTokens": {
+          "type": "number",
+          "default": 8192,
+          "description": "Maximum output tokens per request"
+        },
+        "thirdwave.temperature": {
+          "type": "number",
+          "default": 0.3,
+          "description": "Temperature for AI responses (0.0 - 1.0)"
+        },
+        "thirdwave.enableTools": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable tool calling for agentic responses"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.93.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "marked": "^15.0.0"
+  }
+}

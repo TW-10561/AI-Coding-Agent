@@ -187,10 +187,25 @@ const MAX_OUTPUT = 50_000 // 50 KB per tool call
 const DEFAULT_TIMEOUT = 30_000
 const MAX_TIMEOUT = 120_000
 const PROJECT_DIR = env.OPENCODE_DIR
+const AGENT_WORKSPACE = env.AGENT_WORKSPACE_DIR ?? `${PROJECT_DIR}/.agent-workspace`
+
+// Ensure the agent workspace directory exists on startup
+try {
+  const { mkdirSync } = require("fs")
+  mkdirSync(AGENT_WORKSPACE, { recursive: true })
+} catch {}
 
 function resolvePath(p: string): string {
-  if (p.startsWith("/")) return p
-  return `${PROJECT_DIR}/${p}`
+  const resolved = p.startsWith("/") ? p : `${PROJECT_DIR}/${p}`
+  const { resolve: pathResolve } = require("path")
+  const { realpathSync, existsSync } = require("fs")
+  const normalized = pathResolve(resolved)
+  // Resolve symlinks to prevent traversal via symlinked paths
+  const real = existsSync(normalized) ? realpathSync(normalized) : normalized
+  if (!real.startsWith(PROJECT_DIR) && !real.startsWith(AGENT_WORKSPACE) && !real.startsWith("/tmp")) {
+    throw new Error(`Path traversal denied: ${p} resolves outside project root`)
+  }
+  return real
 }
 
 function truncateOutput(s: string, max = MAX_OUTPUT): { text: string; truncated: boolean } {
@@ -205,7 +220,7 @@ function truncateOutput(s: string, max = MAX_OUTPUT): { text: string; truncated:
 
 async function execBash(args: { command: string; timeout?: number; workdir?: string }): Promise<ToolResult> {
   const command = args.command
-  const cwd = args.workdir ? resolvePath(args.workdir) : PROJECT_DIR
+  const cwd = args.workdir ? resolvePath(args.workdir) : AGENT_WORKSPACE
   const timeout = Math.min(args.timeout ?? DEFAULT_TIMEOUT, MAX_TIMEOUT)
 
   // Policy check: destructive commands
@@ -285,7 +300,11 @@ async function execReadFile(args: { path: string; startLine?: number; endLine?: 
 }
 
 async function execWriteFile(args: { path: string; content: string }): Promise<ToolResult> {
-  const filepath = resolvePath(args.path)
+  // For relative paths, write into the agent workspace directory.
+  // Absolute paths are resolved against the project root as before.
+  const filepath = args.path.startsWith("/")
+    ? resolvePath(args.path)
+    : resolvePath(`${AGENT_WORKSPACE}/${args.path}`)
 
   // Policy check: sensitive files
   try {
@@ -377,7 +396,7 @@ async function execWebFetch(args: { url: string; maxBytes?: number }): Promise<T
 
   try {
     const resp = await fetch(args.url, {
-      headers: { "User-Agent": "Artemis-AI/1.0" },
+      headers: { "User-Agent": "Thirdwave-AI/1.0" },
       signal: AbortSignal.timeout(15_000),
     })
     if (!resp.ok) {

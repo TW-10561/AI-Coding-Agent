@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// Artemis Platform SDK — lightweight client for the platform REST API.
+// Thirdwave Platform SDK — lightweight client for the platform REST API.
 // Ship this as a standalone package or import directly.
 // ---------------------------------------------------------------------------
 

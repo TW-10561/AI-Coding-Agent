@@ -1,12 +1,12 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "name": "@artemis/platform",
+  "name": "@thirdwave/platform",
   "version": "0.1.0",
   "description": "Production AI coding platform — slim backend + SDK over self-hosted OpenCode",
   "type": "module",
   "private": true,
   "bin": {
-    "artemis": "./bin/artemis"
+    "thirdwave": "./bin/thirdwave"
   },
   "scripts": {
     "dev": "bun run --watch src/server/index.ts",
@@ -19,7 +19,7 @@
     "typecheck": "tsc --noEmit",
     "generate:types": "bun run scripts/generate-types.ts",
     "tui": "bun run tui/src/main.ts",
-    "Artemis": "bun run tui/src/main.ts"
+    "Thirdwave": "bun run tui/src/main.ts"
   },
   "dependencies": {
     "hono": "4.10.7",

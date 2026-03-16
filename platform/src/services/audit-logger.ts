@@ -40,6 +40,7 @@ export type AuditAction =
   | "file.read"
   | "file.list"
   | "provider.list"
+  | "api.request"
   | "system.startup"
   | "system.shutdown"
   | "system.error"

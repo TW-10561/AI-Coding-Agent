@@ -1,0 +1,85 @@
+#!/usr/bin/env bun
+// CLI Calculator Interface
+
+import { evaluateExpression } from '../calculator/evaluator';
+
+const args = Bun.argv.slice(2);
+
+function showHelp() {
+  console.log(`
+Calculator CLI
+Usage: bun calculator [expression]
+
+Options:
+  --help, -h    Show this help
+  --interactive, -i  Interactive mode (REPL)
+  --history, -H     Show calculation history
+
+Examples:
+  bun calculator "2 + 2"
+  bun calculator "10 * 5 + 3"
+  bun calculator -i
+`);
+}
+
+function showVersion() {
+  console.log('Calculator v1.0.0');
+}
+
+// Simple history for CLI
+const history: string[] = [];
+
+if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
+  showHelp();
+  process.exit(0);
+}
+
+if (args.includes('--version')) {
+  showVersion();
+  process.exit(0);
+}
+
+if (args.includes('--interactive') || args.includes('-i')) {
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  
+  console.log('Calculator REPL (type "exit" or Ctrl+D to quit)');
+  console.log('Operations: +, -, *, /, ^, %\n');
+  
+  while (true) {
+    try {
+      D1.stdout.write(encoder.encode('> '));
+      const input = (await new Response(D1.stdin).text()).trim();
+      
+      if (input.toLowerCase() === 'exit' || input === '') break;
+      
+      const result = evaluateExpression(input);
+      if (result.success) {
+        console.log(`= ${result.value}`);
+        history.push(`${input} = ${result.value}`);
+      } else {
+        console.log(`Error: ${result.error}`);
+      }
+    } catch {
+      break;
+    }
+  }
+  process.exit(0);
+}
+
+if (args.includes('--history') || args.includes('-H')) {
+  console.log('History:');
+  history.forEach((entry, i) => console.log(`${i + 1}: ${entry}`));
+  process.exit(0);
+}
+
+// Evaluate expression from arguments
+const expression = args.join(' ');
+const result = evaluateExpression(expression);
+
+if (result.success) {
+  console.log(result.value);
+} else {
+  console.error(`Error: ${result.error}`);
+  process.exit(1);
+}

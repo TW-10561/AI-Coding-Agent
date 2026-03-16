@@ -80,7 +80,7 @@ export function isDestructive(context: DestructiveContext): boolean {
  * Get the severity level of a destructive command
  * Used to determine if it should be auto-denied or just require extra confirmation
  */
-export function getSeverityLevel(context: DestructiveContext): "critical" | "high" | "medium" | "low" | "none" {
+export function getSeverityLevel(context: DestructiveContext): "critical" | "high" | "medium" | "none" {
   const cmd = context.command.trim().toLowerCase()
 
   // Critical - system-wide destruction

@@ -402,7 +402,7 @@ export class PlatformClient {
     return this.request("POST", `/api/parallel/${id}/cancel`)
   }
 
-  // ── Provider Registry (Artemis Zen equivalento) ─────────────────────
+  // ── Provider Registry (Thirdwave Zen equivalento) ─────────────────────
 
   /** Full snapshot: local vLLM providers + cloud provider catalogue */
   async registry(refresh?: boolean): Promise<{

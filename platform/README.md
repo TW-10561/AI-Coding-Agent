@@ -1,14 +1,14 @@
-# Artemis AI Coding Platform
+# Thirdwave AI Coding Platform
 
 **Your own AI coding assistant — local, private, one command.**
 
-Artemis wraps a self-hosted [OpenCode](https://opencode.ai) engine with a production backend and a beautiful terminal UI. Point it at any OpenAI-compatible LLM (vLLM, Ollama, etc.) and start coding with AI — no cloud API keys required.
+Thirdwave wraps a self-hosted [OpenCode](https://opencode.ai) engine with a production backend and a beautiful terminal UI. Point it at any OpenAI-compatible LLM (vLLM, Ollama, etc.) and start coding with AI — no cloud API keys required.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  artemis                                                  │
+│  thirdwave                                                  │
 │                                                             │
-│    ◆ Artemis   AI Coding Platform — Terminal Client       │
+│    ◆ Thirdwave   AI Coding Platform — Terminal Client       │
 │    ─────────────────────────────────────────────────────     │
 │    ● Platform   connected                                   │
 │    ● OpenCode   connected                                   │
@@ -37,7 +37,7 @@ Artemis wraps a self-hosted [OpenCode](https://opencode.ai) engine with a produc
 
 ## Part 1: Run Locally (Developer)
 
-Step-by-step guide to run Artemis on your own machine.
+Step-by-step guide to run Thirdwave on your own machine.
 
 ### Prerequisites
 
@@ -58,8 +58,8 @@ bun --version      # should show 1.3.x or higher
 ### Step 2 — Clone the repository
 
 ```bash
-git clone https://github.com/sst/opencode.git artemis
-cd artemis
+git clone https://github.com/sst/opencode.git thirdwave
+cd thirdwave
 ```
 
 ### Step 3 — Install dependencies
@@ -143,14 +143,14 @@ Once started, you should see:
 
 ```
   ╔══════════════════════════════════════════╗
-  ║   ◆  A R T E M I S                  ║
+  ║   ◆  T H I R D W A V E                  ║
   ╚══════════════════════════════════════════╝
 
   [launch]  OpenCode ready → http://127.0.0.1:4096
   [launch]  Platform ready → http://0.0.0.0:3100
   [launch]  Starting TUI...
 
-    ◆ Artemis    AI Coding Platform — Terminal Client
+    ◆ Thirdwave    AI Coding Platform — Terminal Client
     ● Platform   connected
     ● OpenCode   connected
 ```
@@ -161,13 +161,13 @@ Type any text to send a prompt to your LLM. Type `/help` for all commands.
 
 ## Part 2: For Users (Global Distribution)
 
-How **other people** can install and use Artemis with a single command.
+How **other people** can install and use Thirdwave with a single command.
 
 ### Option A: One-line install (recommended)
 
 ```bash
-git clone https://github.com/sst/opencode.git artemis
-cd artemis
+git clone https://github.com/sst/opencode.git thirdwave
+cd thirdwave
 bash install.sh
 ```
 
@@ -175,7 +175,7 @@ The install script automatically:
 1. Installs Bun (if not present)
 2. Installs all dependencies
 3. Builds the OpenCode engine from source
-4. Links the `artemis` CLI to `~/.local/bin`
+4. Links the `thirdwave` CLI to `~/.local/bin`
 5. Adds PATH entries to `.bashrc` / `.zshrc`
 
 After install, users just edit one file and run one command:
@@ -185,7 +185,7 @@ After install, users just edit one file and run one command:
 nano platform/.env
 
 # Run!
-artemis
+thirdwave
 ```
 
 ### Option B: Docker (zero dependencies)
@@ -193,8 +193,8 @@ artemis
 Users who have Docker don't need Bun at all:
 
 ```bash
-git clone https://github.com/sst/opencode.git artemis
-cd artemis
+git clone https://github.com/sst/opencode.git thirdwave
+cd thirdwave
 
 # Start the headless backend in Docker
 cd platform/docker
@@ -202,22 +202,22 @@ VLLM_BASE_URL=http://your-gpu-server:8000/v1 docker compose up --build -d
 
 # Connect TUI locally (needs Bun and TUI deps)
 cd ../..
-ARTEMIS_URL=http://localhost:3100 bun run platform/tui/src/main.ts
+THIRDWAVE_URL=http://localhost:3100 bun run platform/tui/src/main.ts
 ```
 
 ### Launch modes
 
 | Command | What it does |
 |---------|-------------|
-| `artemis` | Full stack: OpenCode + Backend + TUI |
-| `artemis --headless` | Backend only (no TUI) — for API/SDK/Docker use |
-| `artemis --tui-only` | Connect TUI to an already-running backend |
+| `thirdwave` | Full stack: OpenCode + Backend + TUI |
+| `thirdwave --headless` | Backend only (no TUI) — for API/SDK/Docker use |
+| `thirdwave --tui-only` | Connect TUI to an already-running backend |
 
-### Using Artemis as an Agent
+### Using Thirdwave as an Agent
 
-Artemis can act as a **fully autonomous AI coding agent**. From the TUI:
+Thirdwave can act as a **fully autonomous AI coding agent**. From the TUI:
 
-1. **Start a session**: Run `artemis` — a session is auto-created
+1. **Start a session**: Run `thirdwave` — a session is auto-created
 2. **Give it a task**: Type `Refactor the auth module to use JWT tokens` and press Enter
 3. **Watch it work**: The AI reads your files, writes code, runs tests — all locally
 4. **Multi-agent mode**: Use `/orchestrate` to run complex DAG workflows:
@@ -234,7 +234,7 @@ Run the backend on a shared server:
 
 ```bash
 # On the server (start headless)
-artemis --headless
+thirdwave --headless
 # Or with Docker:
 docker compose up -d
 ```
@@ -243,7 +243,7 @@ Team members connect their TUIs:
 
 ```bash
 # On each developer's machine
-ARTEMIS_URL=http://team-server:3100 artemis --tui-only
+THIRDWAVE_URL=http://team-server:3100 thirdwave --tui-only
 ```
 
 ---
@@ -295,7 +295,7 @@ docker compose up --build
 └───────────────────────────────────────────────────┘
          ↕                        ↕
     User's TUI              vLLM / Ollama
-  (artemis --tui-only)    (GPU server)
+  (thirdwave --tui-only)    (GPU server)
 ```
 
 ### Docker healthcheck
@@ -303,7 +303,7 @@ docker compose up --build
 The container has a built-in healthcheck at `GET /health/ready`:
 
 ```bash
-docker inspect --format='{{.State.Health.Status}}' artemis
+docker inspect --format='{{.State.Health.Status}}' thirdwave
 # → "healthy"
 ```
 
@@ -412,7 +412,7 @@ VLLM_MODEL_NAME=GPT-4o
 ## Architecture
 
 ```
-  User → artemis CLI
+  User → thirdwave CLI
            │
            ├─→ OpenCode Engine (:4096)     # AI agent runtime
            │      Sessions · Agents · Tools · MCP · LSP
@@ -442,7 +442,7 @@ See [docs/diagrams/](docs/diagrams/) for full Mermaid diagrams:
 Connect from any TypeScript/JavaScript application:
 
 ```typescript
-import { PlatformClient } from "@artemis/platform/sdk"
+import { PlatformClient } from "@thirdwave/platform/sdk"
 
 const client = new PlatformClient({
   baseUrl: "http://localhost:3100",
@@ -494,7 +494,7 @@ const orch = await client.startOrchestration({
 
 ```
 platform/
-├── bin/artemis             # CLI entry point (run from anywhere)
+├── bin/thirdwave             # CLI entry point (run from anywhere)
 ├── scripts/
 │   ├── launch.ts             # Unified launcher (OpenCode + Backend + TUI)
 │   ├── start-all.ts          # OpenCode + Backend (headless)

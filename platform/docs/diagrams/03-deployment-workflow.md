@@ -1,4 +1,4 @@
-<!-- Artemis — Deployment Workflow -->
+<!-- Thirdwave — Deployment Workflow -->
 <!-- Render with any Mermaid viewer: https://mermaid.live -->
 
 ```mermaid
@@ -12,7 +12,7 @@ graph LR
     end
 
     subgraph Run["🚀 Running"]
-        G["artemis"] --> H["Pre-flight checks"]
+        G["thirdwave"] --> H["Pre-flight checks"]
         H --> I["Starts OpenCode :4096"]
         I --> J["Starts Backend :3100"]
         J --> K["Launches TUI"]
@@ -20,15 +20,15 @@ graph LR
     end
 
     subgraph Modes["🔧 Modes"]
-        M["artemis<br/>(full stack)"]
-        N["artemis --headless<br/>(API only)"]
-        O["artemis --tui-only<br/>(TUI connects to existing)"]
+        M["thirdwave<br/>(full stack)"]
+        N["thirdwave --headless<br/>(API only)"]
+        O["thirdwave --tui-only<br/>(TUI connects to existing)"]
     end
 
     subgraph Docker["🐳 Docker"]
         P["docker compose up"] --> Q["Builds image"]
         Q --> R["OpenCode + Backend<br/>in container"]
-        R --> S["Connect TUI externally<br/>ARTEMIS_URL=host:3100"]
+        R --> S["Connect TUI externally<br/>THIRDWAVE_URL=host:3100"]
     end
 
     F --> G

@@ -37,6 +37,7 @@ export interface SkillSearchResult {
   skill: SkillMeta
   relevance: number         // 0-1 score
   matchedOn: string         // what matched: "tag", "name", "description", "content"
+  _firstMatchIndex?: number // internal: earliest matching word position in query (for tiebreaking)
 }
 
 // ── Frontmatter parser ────────────────────────────────────────────────
@@ -193,21 +194,38 @@ export class SkillManager {
 
     const results: SkillSearchResult[] = []
 
+    // Track word positions for tiebreaking: when two skills score equally,
+    // prefer the one whose matching keyword appears earliest in the query
+    // (the user's primary intent is usually mentioned first).
+    const wordPositions = new Map<string, number>()
+    for (let i = 0; i < meaningful.length; i++) {
+      if (!wordPositions.has(meaningful[i])) wordPositions.set(meaningful[i], i)
+    }
+
     for (const skill of this.skills.values()) {
       let best = 0
       let matchedOn = ""
+      let firstMatchIndex = meaningful.length  // default: worst position
 
       // ── Exact tag match (highest) ─────────────────────────────
       for (const tag of skill.tags) {
         const tl = tag.toLowerCase()
         // Full query equals a tag, or a meaningful word equals a tag
         if (tl === q || meaningful.some(w => tl === w)) {
-          if (0.95 > best) { best = 0.95; matchedOn = "tag" }
+          if (0.95 > best) {
+            best = 0.95; matchedOn = "tag"
+            const mi = meaningful.findIndex(w => tl === w)
+            if (mi >= 0) firstMatchIndex = Math.min(firstMatchIndex, mi)
+          }
         }
         // A tag *starts with* a meaningful word (≥4 chars) — moderate match
         // This prevents "hi" matching "architecture" but allows "arch" → "architecture"
         else if (meaningful.some(w => w.length >= 4 && (tl.startsWith(w) || w.startsWith(tl)))) {
-          if (0.65 > best) { best = 0.65; matchedOn = "tag" }
+          if (0.65 > best) {
+            best = 0.65; matchedOn = "tag"
+            const mi = meaningful.findIndex(w => w.length >= 4 && (tl.startsWith(w) || w.startsWith(tl)))
+            if (mi >= 0) firstMatchIndex = Math.min(firstMatchIndex, mi)
+          }
         }
       }
 
@@ -215,20 +233,30 @@ export class SkillManager {
       const nameLower = skill.name.toLowerCase()
       const nameParts = nameLower.split(/[-_\s]+/)
       if (nameLower === q) {
-        if (1.0 > best) { best = 1.0; matchedOn = "name" }
+        if (1.0 > best) { best = 1.0; matchedOn = "name"; firstMatchIndex = 0 }
       } else {
         // Count how many meaningful words exactly match or prefix-match a name-part
         const exactNameHits = meaningful.filter(w => nameParts.some(np => np === w)).length
         const prefixNameHits = meaningful.filter(w => w.length >= 4 && nameParts.some(np => np !== w && np.startsWith(w))).length
 
+        // Track earliest matching word index
+        const updateNameMatchIndex = () => {
+          for (let i = 0; i < meaningful.length; i++) {
+            if (nameParts.some(np => np === meaningful[i] || (meaningful[i].length >= 4 && np.startsWith(meaningful[i])))) {
+              firstMatchIndex = Math.min(firstMatchIndex, i)
+              break
+            }
+          }
+        }
+
         if (exactNameHits >= 2) {
           // Multiple exact name-part hits → strong signal
-          if (0.9 > best) { best = 0.9; matchedOn = "name" }
+          if (0.9 > best) { best = 0.9; matchedOn = "name"; updateNameMatchIndex() }
         } else if (exactNameHits === 1 && prefixNameHits >= 1) {
-          if (0.85 > best) { best = 0.85; matchedOn = "name" }
+          if (0.85 > best) { best = 0.85; matchedOn = "name"; updateNameMatchIndex() }
         } else if (exactNameHits === 1) {
           // Single exact name-part hit (e.g. "python" in "python-performance-optimization")
-          if (0.8 > best) { best = 0.8; matchedOn = "name" }
+          if (0.8 > best) { best = 0.8; matchedOn = "name"; updateNameMatchIndex() }
         } else if (prefixNameHits >= 1) {
           // Only prefix match (e.g. "build" → "builder") — low score, below auto-inject threshold
           if (0.6 > best) { best = 0.6; matchedOn = "name" }
@@ -278,11 +306,16 @@ export class SkillManager {
           },
           relevance: best,
           matchedOn,
+          _firstMatchIndex: firstMatchIndex,
         })
       }
     }
 
-    return results.sort((a, b) => b.relevance - a.relevance)
+    // Sort by relevance (descending); on tie, prefer earliest keyword position
+    return results.sort((a, b) => {
+      if (b.relevance !== a.relevance) return b.relevance - a.relevance
+      return (a._firstMatchIndex ?? 999) - (b._firstMatchIndex ?? 999)
+    })
   }
 
   /**

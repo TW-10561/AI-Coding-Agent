@@ -1,7 +1,5 @@
-import { execa } from "execa"
+import execa from "execa"
 import { Log } from "../util/log"
-import path from "path"
-import os from "os"
 import z from "zod"
 
 const log = Log.create({ service: "sandbox" })

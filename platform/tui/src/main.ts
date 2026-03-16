@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // ---------------------------------------------------------------------------
-// Artemis TUI — Terminal UI for the AI Coding Platform
+// Thirdwave TUI — Terminal UI for the AI Coding Platform
 // ---------------------------------------------------------------------------
 // Single unified mode — all messages go through direct vLLM chat for speed.
 // OpenCode engine is used for session persistence, agent tools, and project
@@ -17,8 +17,8 @@ import * as readline from "readline"
 
 // ── Config ───────────────────────────────────────────────────────────
 
-const PLATFORM_URL = process.env.ARTEMIS_URL ?? "http://localhost:3100"
-const API_KEY = process.env.ARTEMIS_API_KEY ?? undefined
+const PLATFORM_URL = process.env.THIRDWAVE_URL ?? "http://localhost:3100"
+const API_KEY = process.env.THIRDWAVE_API_KEY ?? undefined
 
 // ── Init SDK ─────────────────────────────────────────────────────────
 
@@ -68,6 +68,59 @@ const state: TuiState = {
 
 let processing = false
 
+// ── Multiline / paste input ───────────────────────────────────────────
+// readline fires one 'line' event per \n in the input, including every
+// line of a pasted multi-line block.  We collect lines into a debounce
+// buffer: if more lines arrive within 80 ms we keep accumulating; once
+// 80 ms pass with no new input we submit everything as one message.
+//
+// This means:
+//   • Normal single-line Enter → submitted after 80 ms (imperceptible)
+//   • Paste of any size       → all lines collected, one submission
+//   • """...""")  block mode   → explicit block, submitted on closing """
+//   • line ending with \      → manual continuation (no debounce needed)
+let pasteBuffer: string[] = []
+let pasteTimer: ReturnType<typeof setTimeout> | null = null
+let multilineBuffer: string[] = []
+let inMultilineBlock = false
+// After a multi-line paste is detected, we wait for one more line (the
+// instruction) before submitting.  If no line arrives within 5 seconds
+// we submit anyway.
+let awaitingInstruction = false
+let instructionTimer: ReturnType<typeof setTimeout> | null = null
+let pendingPaste = ""
+
+// ── Gateway live status tracking ─────────────────────────────────────
+let _lastGatewayOnline: boolean | null = null
+
+/** Poll the registry every 30 s and print a status change if gateway flips. */
+function startGatewayStatusPoll() {
+  setInterval(async () => {
+    if (processing) return  // don't interrupt while AI is responding
+    try {
+      const reg = await state.sdk.registry().catch(() => null)
+      if (!reg) return
+      const gw = (reg.local as any[]).find((p: any) => p.isPrimary ?? p.endpoint)
+      const isOnline = gw?.status === "online"
+      if (_lastGatewayOnline === null) {
+        _lastGatewayOnline = isOnline
+        return  // skip the very first poll — no "changed" to report
+      }
+      if (isOnline !== _lastGatewayOnline) {
+        _lastGatewayOnline = isOnline
+        const models = gw?.models?.length ?? 0
+        if (isOnline) {
+          console.log(`\n  ${C.success("●")} ${C.muted("Gateway back online")} — ${C.accent(String(models))} model${models !== 1 ? "s" : ""} available`)
+        } else {
+          console.log(`\n  ${C.error("●")} ${C.muted("Gateway went offline")}`)
+        }
+        // Re-draw the prompt so the user knows something happened
+        if (!processing) showPrompt()
+      }
+    } catch {}
+  }, 30_000)
+}
+
 // ── Graceful shutdown ────────────────────────────────────────────────
 
 let isShuttingDown = false
@@ -81,19 +134,25 @@ async function gracefulExit(code = 0) {
   // 1. Close readline first so no more input is processed
   try { rl.close() } catch {}
 
-  // 2. Stop the platform server gracefully (releases port 3100)
-  try {
-    const { shutdownPlatform } = await import("../../src/server/index")
-    await shutdownPlatform()
-    console.log(`  ${C.dim("Platform server stopped")}`)
-  } catch {}
+  // 2. Stop the platform server gracefully (releases port) — only if WE started it.
+  //    When the TUI connects to a running systemd service, THIRDWAVE_BACKEND_MANAGED is
+  //    not set, so we leave the service alone.
+  if (process.env.THIRDWAVE_BACKEND_MANAGED === "1") {
+    try {
+      const { shutdownPlatform } = await import("../../src/server/index")
+      await shutdownPlatform()
+      console.log(`  ${C.dim("Platform server stopped")}`)
+    } catch {}
+  }
 
-  // 3. Stop OpenCode process gracefully (releases port 4096)
-  try {
-    const { opencode } = await import("../../src/services/opencode-process")
-    await opencode.stop()
-    console.log(`  ${C.dim("OpenCode stopped")}`)
-  } catch {}
+  // 3. Stop OpenCode process gracefully (releases port) — only if WE started it.
+  if (process.env.THIRDWAVE_OPENCODE_MANAGED === "1") {
+    try {
+      const { opencode } = await import("../../src/services/opencode-process")
+      await opencode.stop()
+      console.log(`  ${C.dim("OpenCode stopped")}`)
+    } catch {}
+  }
 
   console.log(`  ${C.muted("Goodbye!")}\n`)
 
@@ -124,7 +183,7 @@ function showPrompt() {
 function showHelp() {
   const w = (process.stdout.columns || 80) - 4
   console.log()
-  console.log(`  ${C.primaryBg("  ◆ Artemis  ")}  ${C.muted("Command Reference")}`)
+  console.log(`  ${C.primaryBg("  ◆ Thirdwave  ")}  ${C.muted("Command Reference")}`)
   console.log(`  ${C.dim(Box.h.repeat(w))}`)
 
   const groups: [string, [string, string][]][] = [
@@ -191,6 +250,8 @@ function showHelp() {
 
   console.log()
   console.log(`  ${C.dim("Type any text to send a prompt to the selected model.")}`)
+  console.log(`  ${C.dim('Multiline: paste code → you\'ll be prompted to add an instruction.')}`)
+  console.log(`  ${C.dim('Manual: end a line with \\ to continue, or type """ to enter/exit block mode.')}`)
   console.log()
 }
 
@@ -199,7 +260,7 @@ function showHelp() {
 async function showWelcome() {
   const w = (process.stdout.columns || 80) - 4
   console.log()
-  console.log(`  ${C.primaryBg("  ◆ Artemis  ")}  ${C.muted("AI Coding Platform")}`)
+  console.log(`  ${C.primaryBg("  ◆ Thirdwave  ")}  ${C.muted("AI Coding Platform")}`)
   console.log(`  ${C.dim(Box.h.repeat(w))}`)
   console.log()
   console.log(`  ${C.muted("Connecting to")} ${C.accent(PLATFORM_URL)}`)
@@ -368,7 +429,7 @@ async function main() {
     console.log()
     ui.errorMsg(`Cannot reach platform at ${PLATFORM_URL}`)
     console.log(`    ${C.dim("Make sure the backend is running: bun run start")}`)
-    console.log(`    ${C.dim("Set ARTEMIS_URL if using a different address")}\n`)
+    console.log(`    ${C.dim("Set THIRDWAVE_URL if using a different address")}\n`)
     process.exit(1)
   }
 
@@ -414,14 +475,19 @@ async function main() {
   console.log()
   ui.footerHints(["/model pick model", "/skills knowledge", "/registry providers", "/apikey cloud keys", "/help commands", "/quit exit"])
 
+  // Start background gateway status poll — notifies when gateway goes up/down
+  startGatewayStatusPoll()
+
   // ── Input loop ───────────────────────────────────────────────
 
-  rl.on("line", async (line) => {
+  // ── Submit helper (called by debounce timer or block-mode flush) ──
+  async function submitInput(text: string) {
+    if (!text.trim()) { showPrompt(); return }
     if (processing) return
     processing = true
     rl.pause()
     try {
-      await handleInput(line)
+      await handleInput(text)
     } catch (e: any) {
       ui.errorMsg(`Error: ${e?.message ?? e}`)
     } finally {
@@ -429,6 +495,124 @@ async function main() {
       rl.resume()
       showPrompt()
     }
+  }
+
+  rl.on("line", (line) => {
+    // ── Awaiting instruction after paste ──────────────────────────
+    // If we detected a multi-line paste and are waiting for an instruction
+    // line, this incoming line IS that instruction — concatenate and submit.
+    if (awaitingInstruction) {
+      awaitingInstruction = false
+      if (instructionTimer) { clearTimeout(instructionTimer); instructionTimer = null }
+      if (line.trim().startsWith("/")) {
+        // User typed a command — submit paste as-is, then handle the command
+        submitInput(pendingPaste)
+        pendingPaste = ""
+        // Re-inject the command line for normal processing after paste submission
+        // This is tricky since submitInput is async — queue it
+        setTimeout(() => {
+          pasteBuffer.push(line)
+          if (pasteTimer) clearTimeout(pasteTimer)
+          pasteTimer = setTimeout(() => {
+            pasteTimer = null
+            if (processing) { pasteBuffer = []; return }
+            const text = pasteBuffer.splice(0).join("\n")
+            submitInput(text)
+          }, 80)
+        }, 50)
+        return
+      }
+      if (line.trim()) {
+        // Append the instruction to the pending paste
+        submitInput(pendingPaste + "\n" + line)
+      } else {
+        // Empty line = user just hit Enter → submit paste as-is
+        submitInput(pendingPaste)
+      }
+      pendingPaste = ""
+      return
+    }
+
+    // ── Block mode: """ ─────────────────────────────────────────────
+    if (line.trim() === '"""') {
+      // Cancel any in-flight debounce — block mode takes over
+      if (pasteTimer) { clearTimeout(pasteTimer); pasteTimer = null; pasteBuffer = [] }
+      if (!inMultilineBlock) {
+        inMultilineBlock = true
+        multilineBuffer = []
+        process.stdout.write(`  ${C.dim('  (block mode — type """ alone on a new line to send)')}\n`)
+        rl.setPrompt("  … ")
+        rl.prompt()
+      } else {
+        inMultilineBlock = false
+        const full = multilineBuffer.join("\n")
+        multilineBuffer = []
+        submitInput(full)
+      }
+      return
+    }
+
+    // Inside block mode — just accumulate, no debounce
+    if (inMultilineBlock) {
+      multilineBuffer.push(line)
+      rl.setPrompt("  … ")
+      rl.prompt()
+      return
+    }
+
+    // ── \ continuation (manual) ──────────────────────────────────
+    if (line.endsWith("\\")) {
+      if (pasteTimer) { clearTimeout(pasteTimer); pasteTimer = null }
+      multilineBuffer.push(line.slice(0, -1))
+      rl.setPrompt("  … ")
+      rl.prompt()
+      return
+    }
+
+    // Flush \ buffer into the paste accumulator
+    if (multilineBuffer.length > 0) {
+      multilineBuffer.push(line)
+      pasteBuffer.push(multilineBuffer.join("\n"))
+      multilineBuffer = []
+    } else {
+      pasteBuffer.push(line)
+    }
+
+    // ── Debounce ─────────────────────────────────────────────────
+    // Restart the 80 ms timer on every new line.  Pasted code fires all
+    // lines within < 5 ms, so they all land in pasteBuffer before the
+    // timer ever fires.  Single typed Enter fires once then idles.
+    if (pasteTimer) clearTimeout(pasteTimer)
+    pasteTimer = setTimeout(() => {
+      pasteTimer = null
+      if (processing) { pasteBuffer = []; return }  // busy — discard
+      const text = pasteBuffer.splice(0).join("\n")
+
+      // ── Multi-line paste detection ──────────────────────────────
+      // If text has 3+ lines, it's likely a code paste.  Wait for
+      // one more line (the user's instruction like "fix bugs") before
+      // submitting.  Show a hint so the user knows to type.
+      const lineCount = text.split("\n").length
+      if (lineCount >= 3) {
+        pendingPaste = text
+        awaitingInstruction = true
+        process.stdout.write(`\n  ${C.dim("  (paste detected — type your instruction and press Enter, or just Enter to send as-is)")}\n`)
+        rl.setPrompt("  ❯ ")
+        rl.prompt()
+        // Safety timeout: if nothing arrives in 30s, submit paste as-is
+        instructionTimer = setTimeout(() => {
+          if (awaitingInstruction) {
+            awaitingInstruction = false
+            instructionTimer = null
+            submitInput(pendingPaste)
+            pendingPaste = ""
+          }
+        }, 30_000)
+        return
+      }
+
+      submitInput(text)
+    }, 80)
   })
 
   rl.on("close", () => gracefulExit(0))

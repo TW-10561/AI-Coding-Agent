@@ -1,15 +1,15 @@
 {
-  "name": "@artemis/tui",
+  "name": "@thirdwave/tui",
   "version": "0.1.0",
-  "description": "Terminal UI client for Artemis AI Coding Platform",
+  "description": "Terminal UI client for Thirdwave AI Coding Platform",
   "type": "module",
   "private": true,
   "bin": {
-    "artemis": "./src/main.ts"
+    "thirdwave": "./src/main.ts"
   },
   "scripts": {
     "start": "bun run src/main.ts",
-    "Artemis": "bun run src/main.ts",
+    "Thirdwave": "bun run src/main.ts",
     "dev": "bun run --watch src/main.ts"
   },
   "dependencies": {

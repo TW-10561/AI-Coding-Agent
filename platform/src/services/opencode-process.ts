@@ -46,8 +46,8 @@ export class OpenCodeProcess {
         ;(env as any).OPENCODE_URL = newUrl
       } else {
         throw new Error(
-          `Port ${port} is already in use. Another Artemis instance may be running.\n` +
-          `  Option 1: ARTEMIS_PORT_OFFSET=10 bun run start   (shift all ports)\n` +
+          `Port ${port} is already in use. Another Thirdwave instance may be running.\n` +
+          `  Option 1: THIRDWAVE_PORT_OFFSET=10 bun run start   (shift all ports)\n` +
           `  Option 2: AUTO_PORT=true bun run start            (auto-find free ports)\n` +
           `  Option 3: lsof -i :${port}  →  kill <PID>`
         )
@@ -200,6 +200,9 @@ export class OpenCodeProcess {
  */
 function buildVllmConfig(): Record<string, unknown> {
   const modelKey = env.VLLM_MODEL_NAME.replace(/\s+/g, "-")
+  // Prefer gateway URL over direct vLLM URL
+  const baseURL = env.VLLM_GATEWAY_URL ?? env.VLLM_BASE_URL ?? "http://localhost:8000/v1"
+  const apiKey = env.VLLM_GATEWAY_KEY ?? env.VLLM_API_KEY ?? ""
   return {
     "$schema": "https://opencode.ai/config.json",
     provider: {
@@ -208,8 +211,8 @@ function buildVllmConfig(): Record<string, unknown> {
         npm: "@ai-sdk/openai-compatible",
         env: [],
         options: {
-          baseURL: env.VLLM_BASE_URL,
-          apiKey: env.VLLM_API_KEY,
+          baseURL,
+          apiKey,
         },
         models: {
           [modelKey]: {

@@ -41,7 +41,7 @@ export async function rateLimitMiddleware(c: Context, next: Next) {
 
 // Periodic cleanup (every 5 min) — cap map size to prevent memory leak under DDoS
 const MAX_TRACKED_IPS = 10_000
-setInterval(() => {
+export const rateLimitCleanupInterval = setInterval(() => {
   const now = Date.now()
   for (const [ip, win] of windows) {
     if (now > win.resetAt) windows.delete(ip)

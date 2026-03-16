@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// ui.ts — Reusable UI rendering primitives for the Artemis TUI
+// ui.ts — Reusable UI rendering primitives for the Thirdwave TUI
 // Panels, tables, status bars, spinners, markdown rendering
 // ---------------------------------------------------------------------------
 
@@ -198,7 +198,7 @@ export function headerBar(opts: {
 }) {
   const w = TERM_WIDTH()
   console.log()
-  const brand = C.primaryBg("  ◆ Artemis  ")
+  const brand = C.primaryBg("  ◆ Thirdwave  ")
   const agentInfo = opts.agent ? `  ${C.textBold(opts.agent.charAt(0).toUpperCase() + opts.agent.slice(1))}` : ""
   const sessionInfo = opts.sessionId
     ? `  ${C.muted("session:")}${C.accent(opts.sessionId.slice(0, 8))}  ${C.muted(opts.sessionTitle || "(untitled)")}`

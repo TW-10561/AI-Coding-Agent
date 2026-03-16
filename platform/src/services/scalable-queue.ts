@@ -277,8 +277,12 @@ export class ScalableQueue {
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err)
 
-      // Retry logic with exponential backoff
-      if (task.retries < task.maxRetries) {
+      // If the task was already aborted (by user), skip retry/fail transitions
+      const current = this.tracker.get(task.id)
+      if (current && (current.state === "aborted" || current.state === "completed" || current.state === "failed")) {
+        // Terminal state — nothing to do
+      } else if (task.retries < task.maxRetries) {
+        // Retry logic with exponential backoff
         const backoff = Math.min(
           this.retryBackoffMs * Math.pow(2, task.retries),
           this.retryMaxBackoffMs,
@@ -288,14 +292,15 @@ export class ScalableQueue {
 
         setTimeout(() => {
           try {
-            // retrying → running is valid, then re-execute
             this.tracker.transition(task.id, "running")
             task.retries++
             this.startWorker(task)
           } catch {}
         }, backoff)
       } else {
-        this.tracker.transition(task.id, "failed", { error })
+        try {
+          this.tracker.transition(task.id, "failed", { error })
+        } catch {}
         this.audit?.log({
           action: "task.fail",
           userID: task.userID,

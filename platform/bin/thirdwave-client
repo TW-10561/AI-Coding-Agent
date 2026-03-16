@@ -6,16 +6,16 @@
 # Install:
 #   curl -fsSL http://ARTEMIS_SERVER/api/install | bash
 #   # or manually:
-#   wget -O ~/.local/bin/artemis http://ARTEMIS_SERVER/api/client
-#   chmod +x ~/.local/bin/artemis
+#   wget -O ~/.local/bin/art http://ARTEMIS_SERVER/api/client
+#   chmod +x ~/.local/bin/art
 #
 # Usage:
-#   artemis "Write a Python function that reverses a string"
-#   artemis chat                     # interactive mode
-#   artemis models                   # list available models
-#   artemis health                   # check server status
-#   artemis --no-save "explain X"    # don't auto-save code files
-#   artemis --model MODEL_ID "question"   # use specific model
+#   art "Write a Python function that reverses a string"
+#   art chat                     # interactive mode
+#   art models                   # list available models
+#   art health                   # check server status
+#   art --no-save "explain X"    # don't auto-save code files
+#   art --model MODEL_ID "question"   # use specific model
 # ─────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -76,7 +76,7 @@ save_code_blocks() {
   local text="$1"
   local save_dir="${2:-.}"
 
-  python3 << 'PYEOF' "$text" "$save_dir"
+  python3 - "$text" "$save_dir" << 'PYEOF'
 import sys, re, os, json
 
 text = sys.argv[1]
@@ -176,7 +176,7 @@ PYEOF
 format_response() {
   local text="$1"
 
-  python3 << 'PYEOF' "$text"
+  python3 - "$text" << 'PYEOF'
 import sys, re
 
 text = sys.argv[1]
@@ -191,6 +191,94 @@ text = re.sub(r'^(\s*)[-*]\s', '\\1• ', text, flags=re.MULTILINE)
 text = re.sub(r'^>\s*(.+)$', '\033[2m│\033[0m \\1', text, flags=re.MULTILINE)
 
 print(text.strip())
+PYEOF
+}
+
+# ── Extract files from tool call log (write_file calls) ──────────────
+save_from_tool_calls() {
+  local response="$1"
+  local save_dir="${2:-.}"
+
+  python3 - "$response" "$save_dir" << 'PYEOF'
+import sys, json, os
+
+response = sys.argv[1]
+save_dir = sys.argv[2]
+
+try:
+    data = json.loads(response)
+except:
+    sys.exit(0)
+
+tool_calls = data.get("toolCalls", [])
+if not tool_calls:
+    sys.exit(0)
+
+saved = []
+for tc in tool_calls:
+    if tc.get("tool") != "write_file" or not tc.get("success"):
+        continue
+    args = tc.get("args", {})
+    path = args.get("path", "")
+    content = args.get("content", "")
+    if not path or not content:
+        continue
+
+    # Use only the filename (strip any server-side absolute path)
+    filename = os.path.basename(path)
+    if not filename:
+        continue
+
+    dest = os.path.join(save_dir, filename)
+    parent = os.path.dirname(dest)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(dest, 'w') as f:
+        f.write(content)
+    saved.append(filename)
+
+for f in saved:
+    print(f)
+PYEOF
+}
+
+# ── Show tool usage summary ──────────────────────────────────────────
+show_tool_calls() {
+  local response="$1"
+
+  python3 - "$response" << 'PYEOF'
+import sys, json
+
+try:
+    data = json.loads(sys.argv[1])
+except:
+    sys.exit(0)
+
+tool_calls = data.get("toolCalls", [])
+if not tool_calls:
+    sys.exit(0)
+
+print("\033[2m── Agent tool calls ──\033[0m")
+for tc in tool_calls:
+    icon = "\033[32m✓\033[0m" if tc.get("success") else "\033[31m✗\033[0m"
+    tool = tc.get("tool", "?")
+    args = tc.get("args", {})
+    # Summarize args based on tool type
+    if tool == "bash":
+        detail = args.get("command", "")[:80]
+    elif tool == "write_file":
+        detail = args.get("path", "")
+    elif tool == "read_file":
+        detail = args.get("path", "")
+    elif tool == "grep_search":
+        detail = args.get("pattern", "")
+    elif tool == "web_fetch":
+        detail = args.get("url", "")[:80]
+    elif tool == "list_dir":
+        detail = args.get("path", ".")
+    else:
+        detail = str(args)[:60]
+    print(f"  {icon} {tool}: {detail}")
 PYEOF
 }
 
@@ -213,7 +301,7 @@ artemis_chat() {
   info "Thinking..."
 
   local response
-  response=$(curl -sS --max-time 180 \
+  response=$(curl -sS --max-time 300 \
     -X POST "${ARTEMIS_SERVER}/api/chat" \
     -H "Content-Type: application/json" \
     -d "$body" \
@@ -242,13 +330,39 @@ artemis_chat() {
   format_response "$text"
   echo ""
 
+  # Show tool usage summary
+  show_tool_calls "$response"
+
   # Metadata line
   echo -e "${DIM}── ${model_name} via ${provider} (${latency}ms) ──${NC}" >&2
 
-  # Auto-save code blocks to current directory
+  # Auto-save: first from tool calls (write_file), then from code blocks
   if [[ "$ARTEMIS_SAVE" == "true" ]]; then
-    local saved_files
-    saved_files=$(save_code_blocks "$text" "." 2>/dev/null) || true
+    local saved_files=""
+
+    # 1. Extract files from agent's write_file tool calls
+    local tool_files
+    tool_files=$(save_from_tool_calls "$response" "." 2>/dev/null) || true
+    if [[ -n "$tool_files" ]]; then
+      saved_files="$tool_files"
+    fi
+
+    # 2. Also extract inline code blocks (the model may show code in text too)
+    local code_files
+    code_files=$(save_code_blocks "$text" "." 2>/dev/null) || true
+    if [[ -n "$code_files" ]]; then
+      # Merge, skipping duplicates (files already saved by tool calls)
+      while IFS= read -r fname; do
+        if [[ -z "$saved_files" ]] || ! echo "$saved_files" | grep -qxF "$fname"; then
+          if [[ -z "$saved_files" ]]; then
+            saved_files="$fname"
+          else
+            saved_files="${saved_files}"$'\n'"${fname}"
+          fi
+        fi
+      done <<< "$code_files"
+    fi
+
     if [[ -n "$saved_files" ]]; then
       echo "" >&2
       echo -e "${CYAN}━━━ Files saved to current directory ━━━${NC}" >&2
@@ -297,7 +411,7 @@ cmd_models() {
   echo -e "${BOLD}Available AI Models${NC}"
   echo ""
 
-  python3 << 'PYEOF' "$response"
+  python3 - "$response" << 'PYEOF'
 import sys, json
 
 data = json.loads(sys.argv[1])
@@ -346,13 +460,13 @@ cmd_interactive() {
 show_help() {
   cat << EOF
 
-$(echo -e "${BOLD}Artemis CLI${NC}") — AI Coding Assistant (v${VERSION})
+$(echo -e "${BOLD}art${NC}") — Artemis AI Coding Assistant (v${VERSION})
 
 $(echo -e "${BOLD}Usage:${NC}")
-  artemis "your question"              Ask the AI something
-  artemis chat                         Interactive chat mode
-  artemis models                       List available AI models
-  artemis health                       Check server status
+  art "your question"                  Ask the AI something
+  art chat                             Interactive chat mode
+  art models                           List available AI models
+  art health                           Check server status
 
 $(echo -e "${BOLD}Options:${NC}")
   --model MODEL_ID                     Use a specific AI model
@@ -365,10 +479,10 @@ $(echo -e "${BOLD}Interactive commands:${NC}")
   /models   /health   /save   /nosave   /clear   /help   /quit
 
 $(echo -e "${BOLD}Examples:${NC}")
-  artemis "Write a Python web scraper"
-  artemis "Create a REST API in Flask"
-  artemis --no-save "Explain Docker"
-  artemis chat
+  art "Write a Python web scraper"
+  art "Create a REST API in Flask"
+  art --no-save "Explain Docker"
+  art chat
 
 $(echo -e "${BOLD}What happens with code:${NC}")
   When the AI writes code, it's automatically saved as files
@@ -396,7 +510,7 @@ main() {
       -h|--help|help)
         show_help; exit 0 ;;
       -v|--version)
-        echo "artemis ${VERSION}"; exit 0 ;;
+        echo "art ${VERSION}"; exit 0 ;;
       --model)
         MODEL="$2"; shift 2 ;;
       --save)

@@ -23,7 +23,7 @@ import { ScalableQueue } from "../services/scalable-queue"
 import { ParallelExecutionManager } from "../services/parallel-executor"
 import { authMiddleware } from "../middleware/auth"
 import { loggerMiddleware } from "../middleware/logger"
-import { rateLimitMiddleware } from "../middleware/rate-limit"
+import { rateLimitMiddleware, rateLimitCleanupInterval } from "../middleware/rate-limit"
 import { healthRoutes } from "./routes/health"
 import { sessionRoutes } from "./routes/sessions"
 import { taskRoutes } from "./routes/tasks"
@@ -42,7 +42,7 @@ import { skillRoutes } from "./routes/skills"
 import { policyRoutes } from "./routes/policies"
 import { SkillManager } from "../services/skill-manager"
 import { PolicyEngine } from "../services/policy-engine"
-import { buildRegistry } from "../services/provider-registry"
+import { buildRegistry, startRegistryPolling } from "../services/provider-registry"
 
 // ── Instantiate services ──────────────────────────────────────────────
 
@@ -101,6 +101,9 @@ defaultPolicyEngine.setAudit(audit)
 // Start the scalable queue
 scalableQueue.start()
 
+// Start gateway polling — probes every 30 s and logs status changes
+startRegistryPolling(30_000)
+
 // ── Build app ─────────────────────────────────────────────────────────
 
 const app = new Hono()
@@ -119,14 +122,14 @@ app.use("/api/*", async (c, next) => {
   try {
     await next()
     audit.log({
-      action: "api.request" as any,
+      action: "api.request",
       userID: "default",
       metadata: { method, path, status: c.res.status, duration: Date.now() - start },
       success: c.res.status < 400,
     })
   } catch (err) {
     audit.log({
-      action: "api.request" as any,
+      action: "api.request",
       userID: "default",
       metadata: { method, path, error: String(err), duration: Date.now() - start },
       success: false,
@@ -142,12 +145,15 @@ app.get("/", async (c) => {
   let registry: any = { local: [], cloud: [] }
   try { registry = await buildRegistry() } catch {}
 
+  // Escape HTML to prevent XSS from dynamic model/provider names
+  const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Artemis AI Coding Platform</title>
+  <title>Thirdwave AI Coding Platform</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: 'Inter', -apple-system, sans-serif; background: #0a0a0f; color: #e0e0e8; min-height: 100vh; }
@@ -189,7 +195,7 @@ app.get("/", async (c) => {
 </head>
 <body>
   <div class="container">
-    <h1>Artemis AI Coding Platform</h1>
+    <h1>Thirdwave AI Coding Platform</h1>
     <p class="subtitle">Self-hosted AI coding engine powered by local vLLM &mdash; no cloud APIs</p>
 
     <div class="grid">
@@ -291,13 +297,13 @@ app.get("/", async (c) => {
             <div style="margin-bottom:14px;padding:12px;background:#0e0e16;border:1px solid #1e1e2e;border-radius:8px">
               <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
                 <span class="dot ${p.status === 'online' ? 'ok' : 'err'}"></span>
-                <strong style="color:#e0e0e8">${p.name}</strong>
-                <span style="color:${p.status === 'online' ? '#22c55e' : '#ef4444'};font-size:0.85rem">${p.status}${p.latencyMs ? ' (' + p.latencyMs + 'ms)' : ''}</span>
+                <strong style="color:#e0e0e8">${esc(p.name)}</strong>
+                <span style="color:${p.status === 'online' ? '#22c55e' : '#ef4444'};font-size:0.85rem">${esc(p.status)}${p.latencyMs ? ' (' + p.latencyMs + 'ms)' : ''}</span>
               </div>
-              <div style="color:#666;font-size:0.8rem;margin-bottom:4px">${p.endpoint}</div>
+              <div style="color:#666;font-size:0.8rem;margin-bottom:4px">${esc(p.endpoint)}</div>
               ${p.models.map((m: any) => `
                 <div style="color:#a78bfa;font-size:0.85rem;padding:2px 0 2px 16px">
-                  → ${m.name || m.id} ${m.contextLimit ? '<span style="color:#555">ctx:' + Math.floor(m.contextLimit/1000) + 'k</span>' : ''} ${m.outputLimit ? '<span style="color:#555">out:' + m.outputLimit + '</span>' : ''}
+                  → ${esc(m.name || m.id)} ${m.contextLimit ? '<span style="color:#555">ctx:' + Math.floor(m.contextLimit/1000) + 'k</span>' : ''} ${m.outputLimit ? '<span style="color:#555">out:' + m.outputLimit + '</span>' : ''}
                 </div>
               `).join('')}
             </div>
@@ -308,13 +314,7 @@ app.get("/", async (c) => {
       <div class="card" style="margin-top:14px">
         <h3>Cloud Providers</h3>
         <div id="cloud-providers">
-          ${registry.cloud.map((p: any) => `
-            <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #111118">
-              <span style="color:${p.configured ? '#22c55e' : '#555'}">${p.configured ? '✓' : '○'}</span>
-              <span style="color:#e0e0e8">${p.name}</span>
-              <span style="color:${p.configured ? '#22c55e' : '#666'};font-size:0.82rem">${p.configured ? 'Configured' : 'No API key — use /apikey in TUI'}</span>
-            </div>
-          `).join('')}
+          <div style="color:#666;font-size:0.85rem">Loading...</div>
         </div>
       </div>
     </div>
@@ -353,7 +353,7 @@ app.get("/", async (c) => {
       </div>
     </div>
 
-    <div class="footer">Artemis v0.1.0 &mdash; OpenCode Engine &mdash; vLLM Local Inference</div>
+    <div class="footer">Thirdwave v0.1.0 &mdash; OpenCode Engine &mdash; vLLM Local Inference</div>
   </div>
 
   <script>
@@ -363,6 +363,7 @@ app.get("/", async (c) => {
       return res.json();
     }
     function pretty(obj) { return JSON.stringify(obj, null, 2); }
+    function esc(s) { const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
 
     // Tab switching
     document.querySelectorAll('.tab').forEach(tab => {
@@ -473,21 +474,24 @@ app.get("/", async (c) => {
           for (const p of reg.local) {
             const dot = p.status === 'online' ? '<span class="dot ok"></span>' : '<span class="dot err"></span>';
             html += '<div style="margin-bottom:12px;padding:10px;background:#0e0e16;border:1px solid #1e1e2e;border-radius:8px">';
-            html += '<div style="display:flex;align-items:center;gap:8px">' + dot + ' <strong>' + p.name + '</strong> <span style="color:' + (p.status==='online'?'#22c55e':'#ef4444') + '">' + p.status + '</span></div>';
-            html += '<div style="color:#555;font-size:0.8rem">' + p.endpoint + '</div>';
+            html += '<div style="display:flex;align-items:center;gap:8px">' + dot + ' <strong>' + esc(p.name) + '</strong> <span style="color:' + (p.status==='online'?'#22c55e':'#ef4444') + '">' + esc(p.status) + '</span></div>';
+            html += '<div style="color:#555;font-size:0.8rem">' + esc(p.endpoint) + '</div>';
             for (const m of p.models) {
-              html += '<div style="color:#a78bfa;padding:2px 0 2px 16px">→ ' + (m.name||m.id) + (m.contextLimit ? ' <span style="color:#555">ctx:'+Math.floor(m.contextLimit/1000)+'k</span>':'') + '</div>';
+              html += '<div style="color:#a78bfa;padding:2px 0 2px 16px">→ ' + esc(m.name||m.id) + (m.contextLimit ? ' <span style="color:#555">ctx:'+Math.floor(m.contextLimit/1000)+'k</span>':'') + '</div>';
             }
             html += '</div>';
           }
         } else { html += '<div style="color:#666">No local vLLM endpoints</div>'; }
-        html += '<h4 style="color:#888;margin:14px 0 8px">Cloud Providers</h4>';
+        document.getElementById('local-models').innerHTML = html;
+        // Cloud providers → separate container
+        let cloudHtml = '';
         if (reg.cloud) {
           for (const p of reg.cloud) {
-            html += '<div style="padding:4px 0;border-bottom:1px solid #111118"><span style="color:' + (p.configured?'#22c55e':'#555') + '">' + (p.configured?'✓':'○') + '</span> ' + p.name + ' — <span style="color:' + (p.configured?'#22c55e':'#666') + '">' + (p.configured?'Configured':'No API key') + '</span></div>';
+            cloudHtml += '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #111118"><span style="color:' + (p.configured?'#22c55e':'#555') + '">' + (p.configured?'✓':'○') + '</span> <span style="color:#e0e0e8">' + esc(p.name) + '</span> <span style="color:' + (p.configured?'#22c55e':'#666') + ';font-size:0.82rem">' + (p.configured?'Configured':'No API key — use /apikey in TUI') + '</span></div>';
           }
         }
-        document.getElementById('local-models').innerHTML = html;
+        if (!cloudHtml) cloudHtml = '<div style="color:#666">No cloud providers</div>';
+        document.getElementById('cloud-providers').innerHTML = cloudHtml;
       } catch(e) { document.getElementById('local-models').innerHTML = 'Error: ' + e; }
     }
 
@@ -503,7 +507,7 @@ app.get("/", async (c) => {
 // Mount routes
 app.route("/health", healthRoutes(client))
 app.route("/api/sessions", sessionRoutes(client))
-app.route("/api/tasks", taskRoutes(queue))
+app.route("/api/tasks", taskRoutes(queue, scalableQueue, taskTracker))
 app.route("/api/providers", providerRoutes(client))
 app.route("/api/files", fileRoutes(client))
 app.route("/api/events", eventRoutes(client, queue))
@@ -513,7 +517,7 @@ app.route("/api/audit", auditRoutes(audit))
 app.route("/api/budget", budgetRoutes(budget))
 app.route("/api/workspaces", workspaceRoutes(workspaces))
 app.route("/api/orchestrations", orchestrationRoutes(orchestrator))
-app.route("/api/queue", queueRoutes(scalableQueue))
+app.route("/api/queue", queueRoutes(scalableQueue, taskTracker))
 app.route("/api/parallel", parallelRoutes(parallelExecutor))
 app.route("/api/registry", registryRoutes())
 app.route("/api/chat", chatRoutes())
@@ -524,20 +528,20 @@ app.route("/api/policies", policyRoutes(policyEngine))
 // These serve the user-facing CLI tool. Users run:
 //   curl -fsSL http://SERVER/api/install | bash
 
-const binDir = resolve(import.meta.dir, "../../../bin")
+const binDir = resolve(import.meta.dir, "../../bin")
 
 app.get("/api/client", (c) => {
   try {
-    const script = readFileSync(resolve(binDir, "artemis-client"), "utf-8")
+    const script = readFileSync(resolve(binDir, "thirdwave-client"), "utf-8")
     // Patch the default server URL to this server's actual address
     const host = c.req.header("host") ?? `${env.HOST}:${env.PORT}`
     const proto = c.req.header("x-forwarded-proto") ?? "http"
     const patched = script.replace(
-      /ARTEMIS_SERVER="\$\{ARTEMIS_SERVER:-[^"]*\}"/,
-      `ARTEMIS_SERVER="\${ARTEMIS_SERVER:-${proto}://${host}}"`,
+      /THIRDWAVE_SERVER="\$\{THIRDWAVE_SERVER:-[^"]*\}"/,
+      `THIRDWAVE_SERVER="\${THIRDWAVE_SERVER:-${proto}://${host}}"`,
     )
     c.header("Content-Type", "text/plain; charset=utf-8")
-    c.header("Content-Disposition", 'attachment; filename="artemis"')
+    c.header("Content-Disposition", 'attachment; filename="art"')
     return c.body(patched)
   } catch (e: any) {
     return c.json({ error: "Client script not found", detail: e.message }, 500)
@@ -550,8 +554,8 @@ app.get("/api/install", (c) => {
     const host = c.req.header("host") ?? `${env.HOST}:${env.PORT}`
     const proto = c.req.header("x-forwarded-proto") ?? "http"
     const patched = script.replace(
-      /SERVER="\$\{ARTEMIS_SERVER:-[^"]*\}"/,
-      `SERVER="\${ARTEMIS_SERVER:-${proto}://${host}}"`,
+      /SERVER="\$\{THIRDWAVE_SERVER:-[^"]*\}"/,
+      `SERVER="\${THIRDWAVE_SERVER:-${proto}://${host}}"`,
     )
     c.header("Content-Type", "text/plain; charset=utf-8")
     return c.body(patched)
@@ -624,7 +628,7 @@ const server = Bun.serve({
 
 console.log(`
 ┌─────────────────────────────────────────────────┐
-│  Artemis AI Coding Platform                     │
+│  Thirdwave AI Coding Platform                     │
 │  Platform  →  http://${server.hostname}:${server.port}            │
 │  OpenCode  →  ${env.OPENCODE_URL}               │
 │  Env       →  ${env.NODE_ENV}                   │
@@ -637,7 +641,39 @@ async function shutdownPlatform() {
   try { server.stop(true) } catch {}
   try { scalableQueue.stop() } catch {}
   try { audit.dispose() } catch {}
+  try { taskTracker.dispose() } catch {}
+  try { workspaces.dispose() } catch {}
+  try { budget.dispose() } catch {}
+  try { clearInterval(rateLimitCleanupInterval) } catch {}
   console.log("[platform] Server stopped.")
 }
+
+// ── Process-level crash protection ───────────────────────────────────
+// Prevent silent exits from unhandled rejections and exceptions.
+process.on("uncaughtException", (err) => {
+  console.error("[platform] FATAL uncaughtException:", err)
+  audit.log({ action: "system.error", userID: "system", metadata: { error: String(err), stack: err.stack }, success: false })
+  // Flush audit before exiting
+  try { audit.dispose() } catch {}
+  process.exit(1)
+})
+
+process.on("unhandledRejection", (reason) => {
+  console.error("[platform] unhandledRejection:", reason)
+  // Log but don't crash — many libraries leave floating promises
+})
+
+// Handle SIGTERM gracefully (Docker, systemd, manual kill)
+process.on("SIGTERM", async () => {
+  console.log("[platform] Received SIGTERM — shutting down...")
+  await shutdownPlatform()
+  process.exit(0)
+})
+
+process.on("SIGINT", async () => {
+  console.log("[platform] Received SIGINT — shutting down...")
+  await shutdownPlatform()
+  process.exit(0)
+})
 
 export { app, server, shutdownPlatform }

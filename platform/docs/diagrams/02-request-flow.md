@@ -1,4 +1,4 @@
-<!-- Artemis — Request Flow -->
+<!-- Thirdwave — Request Flow -->
 <!-- Render with any Mermaid viewer: https://mermaid.live -->
 
 ```mermaid
@@ -9,9 +9,9 @@ sequenceDiagram
     participant OC as 🤖 OpenCode :4096
     participant LLM as 🧠 vLLM Server
 
-    Note over U,LLM: === artemis CLI Startup ===
+    Note over U,LLM: === thirdwave CLI Startup ===
     
-    U->>TUI: artemis
+    U->>TUI: thirdwave
     TUI->>TUI: Pre-flight checks
     TUI->>OC: Start (spawn process)
     OC-->>TUI: "listening on :4096"

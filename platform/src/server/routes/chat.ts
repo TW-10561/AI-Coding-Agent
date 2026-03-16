@@ -18,24 +18,159 @@ const ChatBody = z.object({
   modelID: z.string().optional(),
   providerID: z.string().optional(),
   system: z.string().optional(),
-  maxTokens: z.number().min(1).max(16384).optional(),
+  maxTokens: z.number().min(1).max(32768).optional(),
   temperature: z.number().min(0).max(2).optional(),
   history: z
     .array(z.object({ role: z.enum(["user", "assistant"]), content: z.string() }))
     .optional(),
   tools: z.boolean().optional(),           // enable tool calling (default: true)
   maxToolRounds: z.number().min(0).max(20).optional(),
+  timeoutMs: z.number().min(5000).max(600000).optional(), // per-round fetch timeout
 })
 
-const DEFAULT_SYSTEM = `You are Artemis, an expert AI coding assistant with access to tools.
+// Per-round timeout for model inference calls (not total request timeout).
+// Reasoning models (MiniMax) can take 60-180s per call; allow 5 min to be safe.
+const DEFAULT_INFERENCE_TIMEOUT_MS = 300_000  // 5 min per inference call
+
+const DEFAULT_SYSTEM = `You are Thirdwave, an expert AI coding assistant with access to tools.
 Use tools to help the user: execute commands, read/write files, search code, and fetch URLs.
 Be concise and give direct answers. Prefer using tools over guessing.
 When making file edits, always read the file first to understand its content.
 After running commands, report results clearly.`
 
-const DIRECT_SYSTEM = `You are Artemis, a helpful AI coding assistant. Be concise and give direct answers. When asked about code, provide clean, working solutions.`
+const DIRECT_SYSTEM = `You are Thirdwave, a helpful AI coding assistant. Always provide complete, thorough answers. Never say "I will explain" or "I'll do" — instead, actually explain and do it immediately. When asked about code, provide full working solutions with explanations. When asked to analyze or fix code, show the complete corrected code and explain every change. Do not be lazy or skip details.`
 
 const MAX_TOOL_ROUNDS = 15
+
+// ── Provider adapters ────────────────────────────────────────────────
+// Providers that aren't OpenAI-compatible need request/response translation.
+
+const OPENAI_COMPATIBLE = new Set(["openai", "groq", "together", "fireworks", "mistral", "deepseek", "openrouter"])
+
+/**
+ * Send a chat completion request, adapting to the provider's native API
+ * format for Anthropic and Google. OpenAI-compatible providers use the
+ * standard /chat/completions path as-is.
+ */
+async function providerFetch(
+  endpoint: string,
+  apiKey: string,
+  cloudProviderId: string | undefined,
+  body: Record<string, any>,
+  timeoutMs: number = DEFAULT_INFERENCE_TIMEOUT_MS,
+): Promise<Response> {
+  const signal = AbortSignal.timeout(timeoutMs)
+
+  // Default: OpenAI-compatible (local vLLM + 7 cloud providers)
+  if (!cloudProviderId || OPENAI_COMPATIBLE.has(cloudProviderId)) {
+    return fetch(`${endpoint}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify(body),
+      signal,
+    })
+  }
+
+  if (cloudProviderId === "anthropic") {
+    return fetchAnthropic(endpoint, apiKey, body, signal)
+  }
+
+  if (cloudProviderId === "google") {
+    return fetchGoogle(endpoint, apiKey, body, signal)
+  }
+
+  // Unknown provider — try OpenAI format as fallback
+  return fetch(`${endpoint}/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify(body),
+    signal,
+  })
+}
+
+/** Anthropic Messages API adapter → returns an OpenAI-shaped Response */
+async function fetchAnthropic(endpoint: string, apiKey: string, body: Record<string, any>, signal?: AbortSignal): Promise<Response> {
+  const messages = (body.messages ?? []) as Array<{ role: string; content: string }>
+  const systemMsg = messages.find(m => m.role === "system")?.content ?? ""
+  const nonSystem = messages.filter(m => m.role !== "system")
+
+  const anthropicBody: Record<string, any> = {
+    model: body.model,
+    max_tokens: body.max_tokens ?? 4096,
+    system: systemMsg,
+    messages: nonSystem.map(m => ({ role: m.role === "tool" ? "user" : m.role, content: m.content ?? "" })),
+  }
+  if (body.temperature != null) anthropicBody.temperature = body.temperature
+
+  const res = await fetch(`${endpoint}/v1/messages`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify(anthropicBody),
+    signal,
+  })
+
+  if (!res.ok) return res
+
+  const data = await res.json() as any
+  // Translate Anthropic response → OpenAI format
+  const text = (data.content ?? []).filter((b: any) => b.type === "text").map((b: any) => b.text).join("")
+  const openaiData = {
+    choices: [{ message: { role: "assistant", content: text }, finish_reason: data.stop_reason ?? "stop" }],
+    usage: {
+      prompt_tokens: data.usage?.input_tokens ?? 0,
+      completion_tokens: data.usage?.output_tokens ?? 0,
+    },
+  }
+  return new Response(JSON.stringify(openaiData), { status: 200, headers: { "Content-Type": "application/json" } })
+}
+
+/** Google Gemini API adapter → returns an OpenAI-shaped Response */
+async function fetchGoogle(endpoint: string, apiKey: string, body: Record<string, any>, signal?: AbortSignal): Promise<Response> {
+  const messages = (body.messages ?? []) as Array<{ role: string; content: string }>
+  const systemMsg = messages.find(m => m.role === "system")?.content
+  const nonSystem = messages.filter(m => m.role !== "system")
+
+  const contents = nonSystem.map(m => ({
+    role: m.role === "assistant" ? "model" : "user",
+    parts: [{ text: m.content ?? "" }],
+  }))
+
+  const geminiBody: Record<string, any> = { contents }
+  if (systemMsg) {
+    geminiBody.systemInstruction = { parts: [{ text: systemMsg }] }
+  }
+  geminiBody.generationConfig = {
+    maxOutputTokens: body.max_tokens ?? 4096,
+    temperature: body.temperature,
+  }
+
+  const model = body.model
+  const url = `${endpoint}/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(geminiBody),
+    signal,
+  })
+
+  if (!res.ok) return res
+
+  const data = await res.json() as any
+  const candidate = data.candidates?.[0]
+  const text = candidate?.content?.parts?.map((p: any) => p.text).join("") ?? ""
+  const openaiData = {
+    choices: [{ message: { role: "assistant", content: text }, finish_reason: candidate?.finishReason ?? "stop" }],
+    usage: {
+      prompt_tokens: data.usageMetadata?.promptTokenCount ?? 0,
+      completion_tokens: data.usageMetadata?.candidatesTokenCount ?? 0,
+    },
+  }
+  return new Response(JSON.stringify(openaiData), { status: 200, headers: { "Content-Type": "application/json" } })
+}
 
 export function chatRoutes() {
   return new Hono()
@@ -69,12 +204,13 @@ export function chatRoutes() {
         if (policyResult.decision === "ask" && policyResult.reasons.length > 0) {
           c.header("X-Policy-Warnings", policyResult.reasons.join("; "))
         }
-      } catch {
-        // Policy engine error — allow through (fail-open for chat)
+      } catch (policyErr) {
+        // Policy engine error — allow through (fail-open for chat) but log it
+        console.warn("[chat] Policy engine error:", policyErr)
       }
 
       const resolved = await resolveModel(body.modelID, body.providerID)
-      const { endpoint, modelApiId, modelName, providerName, apiKey } = resolved
+      const { endpoint, modelApiId, modelName, providerName, apiKey, cloudProviderId } = resolved
 
       // Build initial messages
       const useTools = body.tools !== false
@@ -88,9 +224,23 @@ export function chatRoutes() {
       }
       messages.push({ role: "user", content: body.message })
 
-      const maxTokens = body.maxTokens ?? 4096
+      // Clamp max_tokens to respect model limits and prevent OOM
+      const modelOutputLimit = resolved.outputLimit ?? 4096
+      const modelContextLimit = resolved.contextLimit ?? 32768
+      const requestedMaxTokens = body.maxTokens ?? 8192
+      // Leave headroom for input tokens (rough estimate: 4 chars ≈ 1 token)
+      const estimatedInputTokens = Math.ceil(
+        messages.reduce((acc, m) => acc + (typeof m.content === "string" ? m.content.length : 0), 0) / 4
+      ) + (useTools ? 800 : 0) // ~800 tokens for tool definitions
+      const safeOutputLimit = Math.min(
+        requestedMaxTokens,
+        modelOutputLimit,
+        Math.max(512, modelContextLimit - estimatedInputTokens - 256), // leave 256 buffer
+      )
+      const maxTokens = safeOutputLimit
       const temperature = body.temperature ?? 0.3
       const maxRounds = body.maxToolRounds ?? MAX_TOOL_ROUNDS
+      const inferenceTimeout = body.timeoutMs ?? DEFAULT_INFERENCE_TIMEOUT_MS
 
       const start = Date.now()
       let totalInput = 0
@@ -112,14 +262,22 @@ export function chatRoutes() {
           reqBody.tool_choice = "auto"
         }
 
-        const res = await fetch(`${endpoint}/chat/completions`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify(reqBody),
-        })
+        let res: Response
+        try {
+          res = await providerFetch(endpoint, apiKey, cloudProviderId, reqBody, inferenceTimeout)
+        } catch (fetchErr: any) {
+          // AbortSignal.timeout throws TimeoutError
+          if (fetchErr?.name === "TimeoutError" || fetchErr?.name === "AbortError") {
+            return c.json({
+              error: "Model inference timed out",
+              detail: `The model took longer than ${Math.round(inferenceTimeout / 1000)}s to respond. Try a simpler prompt or disable tool-calling.`,
+              model: modelName,
+              provider: providerName,
+              latencyMs: Date.now() - start,
+            }, 504)
+          }
+          throw fetchErr
+        }
 
         if (!res.ok) {
           // If tool calling fails (model doesn't support it), retry without tools
@@ -128,16 +286,33 @@ export function chatRoutes() {
             if (errText.includes("tool") || errText.includes("function") || errText.includes("not supported")) {
               delete reqBody.tools
               delete reqBody.tool_choice
-              const retryRes = await fetch(`${endpoint}/chat/completions`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-                body: JSON.stringify(reqBody),
-              })
+              const retryRes = await providerFetch(endpoint, apiKey, cloudProviderId, reqBody, inferenceTimeout)
               if (retryRes.ok) {
                 const data = (await retryRes.json()) as any
                 return formatFinalResponse(c, data, Date.now() - start, modelName, providerName, totalInput, totalOutput, toolLog)
               }
             }
+          }
+          // Rate-limited — surface 429 directly so clients can back off
+          if (res.status === 429) {
+            const errText = await res.text().catch(() => "")
+            const retryAfter = res.headers.get("retry-after")
+            const headers: Record<string, string> = {}
+            if (retryAfter) headers["retry-after"] = retryAfter
+            return c.json({ error: "Rate limited by model provider", detail: errText.slice(0, 300), retryAfterSeconds: retryAfter ? Number(retryAfter) : 30 }, 429)
+          }
+          // Gateway/provider temporarily unavailable — retry once after 2s
+          if ((res.status === 502 || res.status === 503) && round === 0) {
+            await new Promise(r => setTimeout(r, 2000))
+            try {
+              const retryRes = await providerFetch(endpoint, apiKey, cloudProviderId, reqBody, inferenceTimeout)
+              if (retryRes.ok) {
+                const data = (await retryRes.json()) as any
+                return formatFinalResponse(c, data, Date.now() - start, modelName, providerName, totalInput, totalOutput, toolLog)
+              }
+              const retryErrText = await retryRes.text().catch(() => "")
+              return c.json({ error: `${providerName} unavailable (${retryRes.status}) after retry`, detail: retryErrText.slice(0, 500) }, 503)
+            } catch {}
           }
           const errText = await res.text().catch(() => "")
           return c.json({ error: `${providerName} error (${res.status})`, detail: errText.slice(0, 500) }, 502)
@@ -204,7 +379,17 @@ export function chatRoutes() {
      */
     .post("/stream", async (c) => {
       const body = ChatBody.parse(await c.req.json())
-      const { endpoint, modelApiId, apiKey } = await resolveModel(body.modelID, body.providerID)
+
+      // Policy pre-flight (same as main /api/chat)
+      try {
+        const policyResult = defaultPolicyEngine.evaluate({ command: body.message, filePath: undefined })
+        if (policyResult.decision === "deny") {
+          return c.json({ error: "Policy violation", reasons: policyResult.reasons }, 403)
+        }
+      } catch {}
+
+      const resolved = await resolveModel(body.modelID, body.providerID)
+      const { endpoint, modelApiId, apiKey, cloudProviderId } = resolved
 
       const messages: Array<{ role: string; content: string }> = []
       messages.push({ role: "system", content: body.system ?? DIRECT_SYSTEM })
@@ -213,20 +398,30 @@ export function chatRoutes() {
       }
       messages.push({ role: "user", content: body.message })
 
-      const res = await fetch(`${endpoint}/chat/completions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({
+      // Streaming uses direct fetch (only for OpenAI-compatible providers)
+      const streamTimeout = body.timeoutMs ?? DEFAULT_INFERENCE_TIMEOUT_MS
+      let res: Response
+      try {
+        res = await providerFetch(endpoint, apiKey, cloudProviderId, {
           model: modelApiId,
           messages,
-          max_tokens: body.maxTokens ?? 2048,
+          max_tokens: body.maxTokens ?? 4096,
           temperature: body.temperature ?? 0.3,
-          stream: true,
-        }),
-      })
+          stream: !cloudProviderId || OPENAI_COMPATIBLE.has(cloudProviderId),
+        }, streamTimeout)
+      } catch (err: any) {
+        if (err?.name === "TimeoutError" || err?.name === "AbortError") {
+          return c.json({ error: "Stream timed out", detail: `Model did not start responding within ${Math.round(streamTimeout / 1000)}s` }, 504)
+        }
+        throw err
+      }
 
       if (!res.ok || !res.body) {
         const errText = await res.text().catch(() => "")
+        if (res.status === 429) {
+          const retryAfter = res.headers.get("retry-after")
+          return c.json({ error: "Rate limited by model provider", detail: errText.slice(0, 300), retryAfterSeconds: retryAfter ? Number(retryAfter) : 30 }, 429)
+        }
         return c.json({ error: `Stream error (${res.status})`, detail: errText.slice(0, 500) }, 502)
       }
 
@@ -245,8 +440,17 @@ export function chatRoutes() {
      */
     .post("/direct", async (c) => {
       const body = ChatBody.parse(await c.req.json())
+
+      // Policy pre-flight (same as main /api/chat)
+      try {
+        const policyResult = defaultPolicyEngine.evaluate({ command: body.message, filePath: undefined })
+        if (policyResult.decision === "deny") {
+          return c.json({ error: "Policy violation", reasons: policyResult.reasons }, 403)
+        }
+      } catch {}
+
       const resolved = await resolveModel(body.modelID, body.providerID)
-      const { endpoint, modelApiId, modelName, providerName, apiKey } = resolved
+      const { endpoint, modelApiId, modelName, providerName, apiKey, cloudProviderId } = resolved
 
       const messages: Array<{ role: string; content: string }> = []
       messages.push({ role: "system", content: body.system ?? DIRECT_SYSTEM })
@@ -256,19 +460,46 @@ export function chatRoutes() {
       messages.push({ role: "user", content: body.message })
 
       const start = Date.now()
-      const res = await fetch(`${endpoint}/chat/completions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({
+      const directTimeout = body.timeoutMs ?? DEFAULT_INFERENCE_TIMEOUT_MS
+      let res: Response
+      try {
+        res = await providerFetch(endpoint, apiKey, cloudProviderId, {
           model: modelApiId,
           messages,
-          max_tokens: body.maxTokens ?? 2048,
+          max_tokens: body.maxTokens ?? 8192,
           temperature: body.temperature ?? 0.3,
-        }),
-      })
+        }, directTimeout)
+      } catch (err: any) {
+        if (err?.name === "TimeoutError" || err?.name === "AbortError") {
+          return c.json({ error: "Model inference timed out", detail: `Took longer than ${Math.round(directTimeout / 1000)}s`, model: modelName, provider: providerName, latencyMs: Date.now() - start }, 504)
+        }
+        throw err
+      }
 
       if (!res.ok) {
         const errText = await res.text().catch(() => "")
+        if (res.status === 429) {
+          const retryAfter = res.headers.get("retry-after")
+          return c.json({ error: "Rate limited by model provider", detail: errText.slice(0, 300), retryAfterSeconds: retryAfter ? Number(retryAfter) : 30 }, 429)
+        }
+        // Retry once on 502/503
+        if (res.status === 502 || res.status === 503) {
+          await new Promise(r => setTimeout(r, 2000))
+          try {
+            const retryRes = await providerFetch(endpoint, apiKey, cloudProviderId, {
+              model: modelApiId,
+              messages,
+              max_tokens: body.maxTokens ?? 8192,
+              temperature: body.temperature ?? 0.3,
+            }, directTimeout)
+            if (retryRes.ok) {
+              const retryData = (await retryRes.json()) as any
+              return formatFinalResponse(c, retryData, Date.now() - start, modelName, providerName, 0, 0, [])
+            }
+            const retryErr = await retryRes.text().catch(() => "")
+            return c.json({ error: `${providerName} unavailable (${retryRes.status}) after retry`, detail: retryErr.slice(0, 500) }, 503)
+          } catch {}
+        }
         return c.json({ error: `${providerName} error (${res.status})`, detail: errText.slice(0, 500) }, 502)
       }
       const data = (await res.json()) as any
@@ -369,34 +600,52 @@ async function resolveModel(
   source: "local" | "cloud"
   apiKey: string
   cloudProviderId?: string
+  contextLimit?: number
+  outputLimit?: number
 }> {
   const reg = await buildRegistry()
+
+  // All local traffic routes through the gateway
+  const gwEndpoint = env.VLLM_GATEWAY_URL ?? ""
+  const gwKey      = env.VLLM_GATEWAY_KEY ?? ""
+
+  // Helper: resolve endpoint/apiKey for a local provider — always gateway
+  function localEndpoint(_p: typeof reg.local[0]) {
+    return {
+      endpoint: gwEndpoint || _p.endpoint,
+      apiKey: gwKey || "",
+    }
+  }
 
   // If no model specified, use the primary local vLLM
   if (!modelID) {
     const primary = reg.local.find((p) => p.isPrimary && p.status === "online")
     if (primary && primary.models.length > 0) {
       const m = primary.models[0]!
+      const { endpoint, apiKey } = localEndpoint(primary)
       return {
-        endpoint: primary.endpoint,
+        endpoint, apiKey,
         modelApiId: m.id,
         modelName: m.name,
         providerName: primary.name,
         source: "local",
-        apiKey: env.VLLM_API_KEY ?? "",
+        contextLimit: m.contextLimit,
+        outputLimit: m.outputLimit,
       }
     }
     // Fallback: any online local provider
     for (const p of reg.local) {
       if (p.status === "online" && p.models.length > 0) {
         const m = p.models[0]!
+        const { endpoint, apiKey } = localEndpoint(p)
         return {
-          endpoint: p.endpoint,
+          endpoint, apiKey,
           modelApiId: m.id,
           modelName: m.name,
           providerName: p.name,
           source: "local",
-          apiKey: env.VLLM_API_KEY ?? "",
+          contextLimit: m.contextLimit,
+          outputLimit: m.outputLimit,
         }
       }
     }
@@ -408,24 +657,26 @@ async function resolveModel(
     if (providerID && p.id !== providerID) continue
     for (const m of p.models) {
       if (m.id === modelID || m.name === modelID) {
+        const { endpoint, apiKey } = localEndpoint(p)
         return {
-          endpoint: p.endpoint,
+          endpoint, apiKey,
           modelApiId: m.id,
           modelName: m.name,
           providerName: p.name,
           source: "local",
-          apiKey: env.VLLM_API_KEY ?? "",
+          contextLimit: m.contextLimit,
+          outputLimit: m.outputLimit,
         }
       }
     }
   }
 
-  // Look in cloud providers — only OpenAI-compatible ones (OpenAI, Groq, Together, Fireworks, Mistral, DeepSeek)
-  const OPENAI_COMPATIBLE = new Set(["openai", "groq", "together", "fireworks", "mistral", "deepseek"])
+  // Look in cloud providers — all providers supported when API key is configured.
+  // OpenAI-compatible providers use /chat/completions directly.
+  // Anthropic and Google require adapter logic in the chat handler.
   for (const p of reg.cloud) {
     if (!p.configured) continue
     if (providerID && p.id !== providerID) continue
-    if (!OPENAI_COMPATIBLE.has(p.id)) continue   // Anthropic/Google use different APIs
     for (const m of p.models) {
       if (m.id === modelID || m.name === modelID) {
         return {
@@ -436,10 +687,12 @@ async function resolveModel(
           source: "cloud",
           apiKey: process.env[p.keyEnvVar] ?? "",
           cloudProviderId: p.id,
+          contextLimit: m.contextLimit,
+          outputLimit: m.outputLimit,
         }
       }
     }
   }
 
-  throw Object.assign(new Error(`Model "${modelID}" not found in registry (note: Anthropic & Google require their native SDKs)`), { status: 404 })
+  throw Object.assign(new Error(`Model "${modelID}" not found in registry or provider not configured`), { status: 404 })
 }

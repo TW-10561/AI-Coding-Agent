@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // Registry routes — /api/registry
-// Artemis unified provider + model catalogue (local vLLM + cloud providers)
+// Thirdwave unified provider + model catalogue (local vLLM + cloud providers)
 // ---------------------------------------------------------------------------
 
 import { Hono } from "hono"
@@ -32,6 +32,31 @@ export function registryRoutes() {
     .post("/refresh", async (c) => {
       const snapshot = await buildRegistry(true)
       return c.json({ ok: true, probed: snapshot.local.length, generatedAt: snapshot.generatedAt })
+    })
+
+    /** GET /api/registry/status — compact model fleet status summary */
+    .get("/status", async (c) => {
+      const snapshot = await buildRegistry()
+      const online  = snapshot.local.filter(p => p.status === "online")
+      const offline = snapshot.local.filter(p => p.status === "offline")
+      const totalModels = online.reduce((n, p) => n + p.models.length, 0)
+      const cloudConfigured = snapshot.cloud.filter(p => p.configured).length
+      return c.json({
+        online:  online.length,
+        offline: offline.length,
+        totalModels,
+        cloudConfigured,
+        cloudTotal: snapshot.cloud.length,
+        activeModel: snapshot.activeModel,
+        generatedAt: snapshot.generatedAt,
+        providers: snapshot.local.map(p => ({
+          id: p.id,
+          name: p.name,
+          status: p.status,
+          latencyMs: p.latencyMs,
+          modelCount: p.models.length,
+        })),
+      })
     })
 
     /** POST /api/registry/cloud/:id/key — store API key for a cloud provider */

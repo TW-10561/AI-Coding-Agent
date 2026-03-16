@@ -7,6 +7,14 @@
 import { opencode } from "../src/services/opencode-process"
 import { env } from "../src/config/env"
 
+// Port eviction is intentionally NOT done here:
+//  - Under systemd: ExecStartPre=/usr/local/bin/thirdwave-pre-start.sh handles eviction
+//    before this script runs. Double-eviction would risk killing legitimate processes.
+//  - Direct developer runs: AUTO_PORT=true in env.ts automatically finds the next
+//    free port without killing others' processes.
+// Killing processes here would create a SIGKILL cascade when developers and the
+// systemd service try to coexist on the same machine.
+
 async function main() {
   console.log("[start-all] Starting OpenCode engine...")
   try {

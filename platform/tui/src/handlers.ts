@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// handlers.ts — All command handlers for the Artemis TUI
+// handlers.ts — All command handlers for the Thirdwave TUI
 // Each function is self-contained and uses ui.ts for rendering
 // ---------------------------------------------------------------------------
 
@@ -59,6 +59,19 @@ export async function showStatus(state: TuiState) {
     const reg = await state.sdk.registry()
     if (reg) {
       const modelLines: string[] = []
+
+      // Fleet status summary — count models, not providers
+      let onlineModelCnt = 0
+      let offlineModelCnt = 0
+      for (const p of reg.local as any[]) {
+        const modelCount = (p.models as any[])?.length ?? 0
+        if (p.status === "online") onlineModelCnt += modelCount
+        else offlineModelCnt += modelCount
+      }
+      const cloudCnt   = (reg.cloud as any[]).filter((p: any) => p.configured).length
+      const activeModelName = state.currentModel ? state.currentModel.split("/").pop() : null
+      modelLines.push(`${C.muted("Fleet:")} ${C.success(String(onlineModelCnt) + " up")} ${offlineModelCnt > 0 ? C.error(String(offlineModelCnt) + " down") : C.dim("0 down")} ${C.dim(String(cloudCnt) + " cloud")}${activeModelName ? `  ${C.muted("Active:")} ${C.accent(activeModelName)}` : ""}`)
+      modelLines.push("")
 
       // ── Local models — flat list with server shown per model ──
       if (reg.local && reg.local.length > 0) {
@@ -265,6 +278,7 @@ export async function createNewSession(state: TuiState): Promise<SessionInfo | n
     })
     ui.stopSpinner()
     state.currentSession = session
+    _chatHistory = []  // Clear chat history for the new session
     ui.successMsg(`Session created: ${C.accent(session.id.slice(0, 8))}`)
     console.log(`    ${C.muted("Agent:")} ${agentLabel(state.currentAgent)}`)
     return session
@@ -317,6 +331,7 @@ export async function switchSession(state: TuiState, id: string) {
       return
     }
     state.currentSession = match
+    _chatHistory = []  // Clear chat history for the new session context
     ui.successMsg(`Switched to session ${C.accent(match.id.slice(0, 8))}`)
     console.log(`    ${C.muted("Title:")} ${C.text(match.title || "(untitled)")}`)
   } catch (e) {
@@ -400,13 +415,28 @@ export async function showHistory(state: TuiState) {
 let _chatHistory: Array<{ role: "user" | "assistant"; content: string }> = []
 
 /**
+ * Heuristic: does the message look like it needs coding tools (bash, files)?
+ * Simple conversational messages get routed without tools for speed.
+ */
+function needsTools(message: string): boolean {
+  const toolPatterns = /\b(run|exec|execute|install|build|test|create|write|edit|modify|fix|debug|implement|code|file|directory|folder|git|npm|pip|bun|docker|compile|deploy|lint|format|refactor|delete|remove|rename|move|copy|search|grep|find|curl|wget|fetch|api|endpoint|server|port|script|command|terminal|shell|bash|make)\b/i
+  // If it matches coding/tool keywords → use tools
+  if (toolPatterns.test(message)) return true
+  // Short conversational messages typically don't need tools
+  if (message.trim().split(/\s+/).length <= 8) return false
+  // Default: use tools for longer messages (they're likely task requests)
+  return true
+}
+
+/**
  * Send a user message through the direct vLLM chat route.
  * This is the ONLY chat path — no dual mode.
  * Automatically searches for a relevant skill and injects it as context.
  */
 export async function sendMessage(state: TuiState, content: string): Promise<void> {
   ui.userMessage(content)
-  ui.startSpinner("Thinking...")
+  const useTools = needsTools(content)
+  ui.startSpinner(useTools ? "Thinking (with tools)..." : "Thinking...")
 
   try {
     _chatHistory.push({ role: "user", content })
@@ -434,20 +464,24 @@ export async function sendMessage(state: TuiState, content: string): Promise<voi
       // Skill search failed — proceed without context
     }
 
-    const TIMEOUT_MS = 180_000  // 3 min for tool-calling loops
+    const TIMEOUT_MS = useTools ? 300_000 : 180_000  // 5 min with tools, 3 min without
     const result = await Promise.race([
       state.sdk.directChat({
         message: content,
         system: systemPrompt,
         modelID: state.currentModel || undefined,
         providerID: state.currentProvider || undefined,
-        maxTokens: 4096,
+        maxTokens: 8192,          // Higher for reasoning models (thinking consumes tokens)
         temperature: 0.3,
-        tools: true,             // enable tool calling
+        tools: useTools,
         history: _chatHistory.slice(0, -1),
       }),
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("Chat timed out after 180 s")), TIMEOUT_MS)
+        setTimeout(() => reject(new Error(
+          useTools
+            ? `Chat timed out after ${TIMEOUT_MS / 1000}s. Try a simpler prompt or the model may be under heavy load.`
+            : `Chat timed out after ${TIMEOUT_MS / 1000}s. The model may be under heavy load.`
+        )), TIMEOUT_MS)
       ),
     ])
     ui.stopSpinner()
@@ -766,7 +800,7 @@ export async function showModelSelector(state: TuiState): Promise<void> {
   }
 }
 
-// ── Provider Registry (Artemis model catalogue) ─────────────────────
+// ── Provider Registry (Thirdwave model catalogue) ─────────────────────
 
 export async function showRegistry(state: TuiState, sub?: string) {
   try {
@@ -829,6 +863,14 @@ export async function showRegistry(state: TuiState, sub?: string) {
     })
 
     console.log(`  ${C.dim("Active model:")} ${C.accent(reg.activeModel)}`)
+    let onlineN = 0, offlineN = 0
+    for (const p of reg.local as any[]) {
+      const mc = (p.models as any[])?.length ?? 0
+      if (p.status === "online") onlineN += mc; else offlineN += mc
+    }
+    const cloudN   = (reg.cloud as any[]).filter((p: any) => p.configured).length
+    console.log(`  ${C.dim("Fleet:")} ${C.success(String(onlineN) + " online")}  ${offlineN > 0 ? C.error(String(offlineN) + " offline") : C.dim("0 offline")}  ${C.dim(String(cloudN) + " cloud configured")}`)
+    console.log(`  ${C.dim("Last probed:")} ${C.dim(reg.generatedAt ? new Date(reg.generatedAt).toLocaleTimeString() : "unknown")}`)
     console.log(`  ${C.dim("Use /registry refresh to re-probe vLLM endpoints.")}`)
     console.log(`  ${C.dim("Use /apikey to configure cloud provider keys.")}`)
   } catch (e) {

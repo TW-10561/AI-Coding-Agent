@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// Policy Engine — Unified security policy enforcement for Artemis platform.
+// Policy Engine — Unified security policy enforcement for Thirdwave platform.
 //
 // Integrates the 10 enterprise security policies from platform/policies/:
 //   #1  Execution Sandbox     — host vs. Docker isolated execution
@@ -60,7 +60,7 @@ const DESTRUCTIVE_PATTERNS: RegExp[] = [
   /pkill\s+-9/i, /kill\s+-9\s+-1/i,
   /mkfs/i, /dd\s+if=.*of=/i,
   /npm\s+uninstall.*-g/i,
-  /drop\s+database/i, /truncate\s+table/i, /delete\s+from.*where/i,
+  /drop\s+database/i, /truncate\s+table/i, /delete\s+from/i,
   /iptables\s+-F/i,
 ]
 

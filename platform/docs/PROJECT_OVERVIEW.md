@@ -1,8 +1,8 @@
-# Artemis AI Coding Platform — Project Overview
+# Thirdwave AI Coding Platform — Project Overview
 
-## What Is Artemis?
+## What Is Thirdwave?
 
-Artemis is a **self-hosted AI coding assistant** that runs entirely on your local network. It uses local GPU-powered LLMs (via vLLM) to provide coding assistance — no data leaves your network. It combines a REST API server, a terminal UI client, and an SDK into a full AI coding platform.
+Thirdwave is a **self-hosted AI coding assistant** that runs entirely on your local network. It uses local GPU-powered LLMs (via vLLM) to provide coding assistance — no data leaves your network. It combines a REST API server, a terminal UI client, and an SDK into a full AI coding platform.
 
 ---
 
@@ -65,7 +65,7 @@ Artemis is a **self-hosted AI coding assistant** that runs entirely on your loca
    ┌──────────────┐ ┌───────────┐ ┌────────────────┐
    │  OpenCode    │ │  vLLM #1  │ │   vLLM #3      │
    │  Engine      │ │  MiniMax  │ │  Multi-model   │
-   │  (:4096)     │ │ (:8000)   │ │  (:11435)      │
+   │  (:4096)     │ │ (:8000)   │ │  (:31254)      │
    └──────────────┘ └───────────┘ └────────────────┘
 ```
 
@@ -127,7 +127,7 @@ Discovers and manages LLM providers:
 |--------|----------|--------|
 | Primary (MiniMax) | `172.30.140.91:8000/v1` | MiniMax-M2.1-REAP-50-W4A16 |
 | Extra (gpt-oss) | `localhost:8000/v1` | gpt-oss-120b |
-| Multi-model | `172.30.140.143:11435` | 5 models (Qwen, Mistral, etc.) |
+| Multi-model | `172.30.140.143:31254` | 5 models (Qwen, Mistral, etc.) |
 
 ### 5. Policy Engine (`src/services/policy-engine.ts`)
 Security layer with multiple components:
@@ -158,7 +158,7 @@ Loads 31 knowledge skills from the `skills/` directory. When users ask questions
 A TypeScript client library (600 lines) that wraps all REST APIs into typed methods. Used by the TUI and can be used by any TypeScript/JavaScript project:
 
 ```typescript
-import { PlatformClient } from "@artemis/sdk"
+import { PlatformClient } from "@thirdwave/sdk"
 
 const client = new PlatformClient({ baseUrl: "http://localhost:3100" })
 const result = await client.chat({ message: "Explain this code" })
@@ -270,8 +270,8 @@ platform/
 ├── skills/                     # 31 knowledge skill files
 ├── deploy/
 │   ├── deploy.sh               # Automated deployment script
-│   ├── nginx/artemis.conf      # nginx reverse proxy config
-│   └── systemd/artemis.service # systemd service unit
+│   ├── nginx/thirdwave.conf      # nginx reverse proxy config
+│   └── systemd/thirdwave.service # systemd service unit
 ├── .env                        # Environment configuration
 ├── package.json                # Dependencies
 └── docs/

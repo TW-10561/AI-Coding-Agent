@@ -146,7 +146,7 @@ export class WorkspaceManager {
     let rows: any[]
     if (opts?.tag) {
       rows = this.db.query("SELECT * FROM workspaces WHERE tags LIKE ? ORDER BY last_accessed_at DESC")
-        .all(`%"${opts.tag}"%`) as any[]
+        .all("%" + JSON.stringify(opts.tag).slice(0, 200) + "%") as any[]
     } else {
       rows = this.db.query("SELECT * FROM workspaces ORDER BY last_accessed_at DESC").all() as any[]
     }

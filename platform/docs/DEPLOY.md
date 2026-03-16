@@ -1,4 +1,4 @@
-# How to Deploy Artemis
+# How to Deploy Thirdwave
 
 This guide is for someone who has never deployed anything before.
 Follow each step in order. Copy-paste the commands exactly.
@@ -9,8 +9,8 @@ Follow each step in order. Copy-paste the commands exactly.
 
 You need **3 things** already working on your machine:
 
-1. **Bun** — the program that runs Artemis (already installed at `~/.bun/bin/bun`)
-2. **A GPU server running vLLM** — the AI brain that Artemis talks to
+1. **Bun** — the program that runs Thirdwave (already installed at `~/.bun/bin/bun`)
+2. **A GPU server running vLLM** — the AI brain that Thirdwave talks to
 3. **Terminal access** — you need to be able to open a terminal and type commands
 
 To check if you have Bun:
@@ -34,13 +34,13 @@ Open a terminal and type:
 cd /home/nvidia/AI_Coding_Agent/Kadavuley/AI-Coding-Agent
 ```
 
-This is where all of Artemis lives.
+This is where all of Thirdwave lives.
 
 ---
 
 ## STEP 2: Install packages
 
-Artemis needs some packages to work. Install them:
+Thirdwave needs some packages to work. Install them:
 ```bash
 cd platform
 ~/.bun/bin/bun install
@@ -77,7 +77,7 @@ OPENCODE_DIR=/home/nvidia/AI_Coding_Agent/Kadavuley/AI-Coding-Agent
 ```
 
 **What these mean:**
-- `PORT=3100` → Artemis runs on port 3100. You access it at `http://your-ip:3100`
+- `PORT=3100` → Thirdwave runs on port 3100. You access it at `http://your-ip:3100`
 - `VLLM_BASE_URL` → Where the AI model is running (the GPU server)
 - `OPENCODE_DIR` → Where your code project lives
 
@@ -85,7 +85,7 @@ If you need to change anything: `nano platform/.env` (then Ctrl+X to save)
 
 ---
 
-## STEP 4: Start Artemis
+## STEP 4: Start Thirdwave
 
 You have **3 ways** to start it. Pick one:
 
@@ -99,7 +99,7 @@ This opens a chat in your terminal where you can type to the AI:
 You'll see:
 ```
   ╔══════════════════════════════════════════╗
-  ║   ◆  A R T E M I S                       ║
+  ║   ◆  T H I R D W A V E                       ║
   ║   AI Coding Platform — Local & Private   ║
   ╚══════════════════════════════════════════╝
 ```
@@ -119,7 +119,7 @@ The server keeps running in the terminal. Press Ctrl+C to stop it.
 To connect to it from another terminal:
 ```bash
 cd /home/nvidia/AI_Coding_Agent/Kadavuley/AI-Coding-Agent/platform/tui
-ARTEMIS_URL=http://localhost:3100 ~/.bun/bin/bun run start
+THIRDWAVE_URL=http://localhost:3100 ~/.bun/bin/bun run start
 ```
 
 ### Way 3: Just the API Server (minimal — no OpenCode engine)
@@ -145,7 +145,7 @@ You should see a dark dashboard page showing:
 
 ### From the command line:
 ```bash
-# Health check (should return {"ok": true})
+# Health check (should return {"platform":"ok","opencode":"ok","uptime":...})
 curl http://localhost:3100/health
 
 # Send a test message (should return AI response)
@@ -161,7 +161,7 @@ curl http://localhost:3100/api/registry
 
 ## STEP 6 (Optional): Run as a system service
 
-If you want Artemis to **start automatically when the machine boots**, and run in the background forever:
+If you want Thirdwave to **start automatically when the machine boots**, and run in the background forever:
 
 **Important: You must be in the project root folder first** (Step 1).
 Or use the absolute path so it works from anywhere:
@@ -172,13 +172,13 @@ sudo bash platform/deploy/deploy.sh
 ```
 
 This does 3 things:
-1. Sets up **nginx** (so you can access Artemis on port 80 instead of 3100)
-2. Creates a **systemd service** (Artemis starts on boot, restarts if it crashes)
+1. Sets up **nginx** (so you can access Thirdwave on port 80 instead of 3100)
+2. Creates a **systemd service** (Thirdwave starts on boot, restarts if it crashes)
 3. Starts the service immediately
 
 After this:
-- `http://172.30.140.142` → Artemis dashboard (no need for `:3100`)
-- Artemis survives reboots
+- `http://172.30.140.142` → Thirdwave dashboard (no need for `:3100`)
+- Thirdwave survives reboots
 
 ### Managing the service:
 ```bash
@@ -209,19 +209,23 @@ curl http://172.30.140.91:8000/v1/models
 If that fails, vLLM is down. Start it on the GPU node.
 
 ### "Port 3100 already in use"
-Artemis now has **AUTO_PORT=true** by default, so it finds a free port automatically.
-If you still see this error, you can:
-```bash
-# Kill whatever is on port 3100
-fuser -k 3100/tcp
+The start scripts (`start-all.ts`, `launch.ts`) automatically evict stale processes from the required ports before starting. The systemd service also runs a port cleanup as a pre-start step.
 
-# Or use a different port manually
+If you still see a port conflict:
+```bash
+# See what's on the port
+lsof -i :3100
+
+# Kill it manually
+kill -9 <PID>
+
+# Or use a different port
 PORT=3200 ~/.bun/bin/bun run platform/scripts/launch.ts
 
-# Or set a port offset for your user (e.g. user 2 uses offset 10 → port 3110)
-ARTEMIS_PORT_OFFSET=10 ~/.bun/bin/bun run platform/scripts/launch.ts
+# Or set a port offset for your user (e.g. user 2 → port 3110)
+THIRDWAVE_PORT_OFFSET=10 ~/.bun/bin/bun run platform/scripts/launch.ts
 ```
-With AUTO_PORT on, each user can just run `launch.ts` and it'll pick the next free port.
+For multi-user machines each user should set a unique `THIRDWAVE_PORT_OFFSET` so ports never collide.
 
 ### "Module not found" or "Cannot find package"
 You forgot to install packages. Run:
@@ -234,7 +238,7 @@ cd tui && ~/.bun/bin/bun install
 ### TUI can't connect to server
 Make sure the server is running first, then set the URL:
 ```bash
-ARTEMIS_URL=http://localhost:3100 ~/.bun/bin/bun run platform/tui/src/main.ts
+THIRDWAVE_URL=http://localhost:3100 ~/.bun/bin/bun run platform/tui/src/main.ts
 ```
 
 ### Dashboard shows but no models appear
@@ -248,7 +252,7 @@ Check that `VLLM_BASE_URL` in `platform/.env` points to a running vLLM server.
 |---------------|---------|
 | Start everything (chat mode) | `bun run platform/scripts/launch.ts` |
 | Start server only (background) | `bun run platform/scripts/start-all.ts` |
-| Start TUI only (connect to running server) | `cd platform/tui && ARTEMIS_URL=http://localhost:3100 bun run start` |
+| Start TUI only (connect to running server) | `cd platform/tui && THIRDWAVE_URL=http://localhost:3100 bun run start` |
 | Open dashboard | Go to `http://172.30.140.142:3100` in browser |
 | Check health | `curl http://localhost:3100/health` |
 | Send a chat message | `curl -X POST http://localhost:3100/api/chat -H "Content-Type: application/json" -d '{"message":"hello"}'` |
@@ -259,59 +263,83 @@ Check that `VLLM_BASE_URL` in `platform/.env` points to a running vLLM server.
 
 ---
 
-## How Users Use Artemis (After Deployment)
+## How Users Use Thirdwave (After Deployment)
 
-Once Artemis is deployed, your users do NOT need the project folder. They just need the server IP.
-
-The server is already running as a background service at: **http://172.30.140.142**
-
----
-
-### Talk to the AI (curl examples — copy-paste these)
-
-**Ask a simple question:**
-```bash
-curl -X POST http://172.30.140.142/api/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "What is a Docker container? Explain simply."}'
-```
-
-**Ask it to write code:**
-```bash
-curl -X POST http://172.30.140.142/api/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Write a Python function that reverses a string"}'
-```
-
-**Ask with a specific model:**
-```bash
-curl -X POST http://172.30.140.142/api/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Explain recursion", "modelID": "plezan/MiniMax-M2.1-REAP-50-W4A16"}'
-```
-
-**What you get back (example):**
-```json
-{
-  "text": "A Docker container is like a lightweight box...",
-  "model": "MiniMax M2.1 REAP 50 W4A16",
-  "provider": "Local vLLM — 172.30.140.91:8000",
-  "tokens": { "input": 1818, "output": 122 },
-  "latencyMs": 2104
-}
-```
-The `text` field is the AI's answer.
+Once Thirdwave is deployed, your users do NOT need the project folder or the server IP.
+They install a lightweight CLI and use it from anywhere on the network.
 
 ---
 
-### Use from a browser
+### Install the Thirdwave CLI (recommended — one command)
 
-Open **http://172.30.140.142** in any browser → you see the Artemis dashboard.
+Run this on any machine that can reach the server:
+```bash
+curl -fsSL http://172.30.140.142/api/install | bash
+```
+
+This downloads the `thirdwave` command to `~/.local/bin/` and sets up your shell.
+After install, **open a new terminal** (or `source ~/.bashrc`) and you're ready.
+
+**What gets installed:**
+- `~/.local/bin/art` — a single bash script (~15 KB)
+- No project folder, no Node.js, no Bun needed. Just `bash`, `curl`, and `python3`.
 
 ---
 
-### Use from Python
+### Use the CLI
 
+**Ask the AI to write code (auto-saves files):**
+```bash
+art "Write a Python function that reverses a string"
+```
+This sends your question, shows the AI's response, and **auto-saves any code as files** in your current directory:
+```
+  ✓ reverse_string.py
+  ✓ reverse_string_2.py
+```
+
+**Interactive chat mode:**
+```bash
+art chat
+```
+Type questions, get answers. Code is saved after each response.
+Commands: `/models` `/health` `/save` `/nosave` `/clear` `/quit`
+
+**Other commands:**
+```bash
+art health                          # check server status
+art models                          # list all AI models
+art --model gpt-oss-120b "question" # use a specific model
+art --no-save "explain X"           # don't auto-save code files
+```
+
+**Disable auto-save globally:**
+```bash
+export THIRDWAVE_SAVE=false
+art "explain Docker"    # response shown, no files saved
+```
+
+---
+
+### Manual install (if curl-pipe-bash doesn't work)
+
+```bash
+# Download the CLI script
+curl -o ~/.local/bin/art http://172.30.140.142/api/client
+chmod +x ~/.local/bin/art
+
+# Make sure ~/.local/bin is in your PATH
+export PATH="$HOME/.local/bin:$PATH"
+
+# Test it
+art health
+```
+
+---
+
+### Use directly from code (no CLI needed)
+
+#### Python
 ```python
 import requests
 
@@ -321,10 +349,7 @@ response = requests.post("http://172.30.140.142/api/chat", json={
 print(response.json()["text"])
 ```
 
----
-
-### Use from JavaScript/Node
-
+#### JavaScript / Node
 ```javascript
 const res = await fetch("http://172.30.140.142/api/chat", {
   method: "POST",
@@ -335,20 +360,18 @@ const data = await res.json();
 console.log(data.text);
 ```
 
+#### curl (raw API)
+```bash
+curl -X POST http://172.30.140.142/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "What is a Docker container? Explain simply."}'
+```
+
 ---
 
-### Check what models are available
+### Use from a browser
 
-```bash
-curl http://172.30.140.142/api/registry
-```
-
-### Check if the server is up
-
-```bash
-curl http://172.30.140.142/health
-```
-Should return: `{"platform":"ok","opencode":"ok"}`
+Open **http://172.30.140.142** → Thirdwave dashboard.
 
 ---
 
@@ -379,7 +402,10 @@ Commands inside TUI:
 | `/api/registry` | GET | List AI models & status | `curl http://172.30.140.142/api/registry` |
 | `/api/budget/check` | GET | Check token budget | `curl http://172.30.140.142/api/budget/check` |
 | `/api/budget/summary` | GET | Budget usage stats | `curl http://172.30.140.142/api/budget/summary` |
-| `/api/queue/enqueue` | POST | Queue a background task | `curl -X POST http://172.30.140.142/api/queue/enqueue -H "Content-Type: application/json" -d '{"prompt":"...", "userID":"user1"}'` |
+| `/api/queue` | POST | Queue a background task | `curl -X POST http://172.30.140.142/api/queue -H "Content-Type: application/json" -d '{"prompt":"..."}'` |
+| `/api/queue` | GET | List queued/running tasks | `curl http://172.30.140.142/api/queue` |
+| `/api/queue/:id` | GET | Get a specific task | `curl http://172.30.140.142/api/queue/<id>` |
+| `/api/queue/:id/abort` | POST | Abort a running task | `curl -X POST http://172.30.140.142/api/queue/<id>/abort` |
 | `/api/queue/metrics` | GET | Queue stats | `curl http://172.30.140.142/api/queue/metrics` |
 | `/api/tasks` | GET | List all tasks | `curl http://172.30.140.142/api/tasks` |
 | `/api/skills` | GET | List AI skills | `curl http://172.30.140.142/api/skills` |

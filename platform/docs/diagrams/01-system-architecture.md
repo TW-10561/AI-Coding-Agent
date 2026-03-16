@@ -1,11 +1,11 @@
-<!-- Artemis — System Architecture -->
+<!-- Thirdwave — System Architecture -->
 <!-- Render with any Mermaid viewer: https://mermaid.live -->
 
 ```mermaid
 graph TB
     subgraph User["🖥️ User"]
-        TUI["Terminal UI<br/>(artemis CLI)"]
-        SDK["TypeScript SDK<br/>(@artemis/sdk)"]
+        TUI["Terminal UI<br/>(thirdwave CLI)"]
+        SDK["TypeScript SDK<br/>(@thirdwave/sdk)"]
         API["REST / SSE API"]
     end
 

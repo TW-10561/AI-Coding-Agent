@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// Provider Registry — Artemis's "Zen-like" unified model catalogue.
+// Provider Registry — Thirdwave's "Zen-like" unified model catalogue.
 //
 // Combines two sources:
 //   • LOCAL  — vLLM endpoints discovered from env/config.  Always shown;
@@ -164,145 +164,69 @@ const CLOUD_CATALOG: Omit<CloudProvider, "configured">[] = [
       { id: "accounts/fireworks/models/qwen2p5-coder-32b-instruct", name: "Qwen 2.5 Coder 32B", contextLimit: 32768, outputLimit: 8192, costIn: 0.9, costOut: 0.9 },
     ],
   },
+  {
+    id: "openrouter",
+    name: "OpenRouter",
+    apiUrl: "https://openrouter.ai/api/v1",
+    docUrl: "https://openrouter.ai/settings/keys",
+    keyEnvVar: "OPENROUTER_API_KEY",
+    models: [
+      { id: "anthropic/claude-sonnet-4",       name: "Claude Sonnet 4",        contextLimit: 200000, outputLimit: 64000,  costIn: 3,    costOut: 15   },
+      { id: "openai/gpt-4.1",                  name: "GPT-4.1",                contextLimit: 1000000, outputLimit: 32768, costIn: 2,    costOut: 8    },
+      { id: "google/gemini-2.5-pro",            name: "Gemini 2.5 Pro",         contextLimit: 1048576, outputLimit: 65536, costIn: 1.25, costOut: 10   },
+      { id: "deepseek/deepseek-r1",             name: "DeepSeek R1",            contextLimit: 163840, outputLimit: 8192,  costIn: 0.55, costOut: 2.19 },
+      { id: "qwen/qwen3-235b-a22b",             name: "Qwen3 235B",             contextLimit: 40960,  outputLimit: 8192,  costIn: 0.14, costOut: 0.6  },
+      { id: "meta-llama/llama-4-maverick",       name: "Llama 4 Maverick",       contextLimit: 1048576, outputLimit: 32768, costIn: 0.2,  costOut: 0.6  },
+    ],
+  },
 ]
 
-// ── Static vLLM servers — known deployments that may not always be online ──
-// Models are pre-configured so they appear in the registry even when offline,
-// giving users visibility into the full fleet of available models.
-// When the server comes online, live-probed models replace these.
+// ── NOTE: Direct vLLM access removed — all traffic routes through gateway ──
 
-const STATIC_VLLM_SERVERS: Record<string, LocalModel[]> = {
-  "http://172.30.140.143:11435/v1": [
-    { id: "lukealonso/MiniMax-M2.5-REAP-139B-A10B-NVFP4", name: "MiniMax M2.5 REAP 139B",  contextLimit: 32768, outputLimit: 4096 },
-    { id: "Qwen/Qwen2.5-Coder-32B-Instruct-AWQ",          name: "Qwen 2.5 Coder 32B AWQ", contextLimit: 32768, outputLimit: 4096 },
-    { id: "Qwen/Qwen3-8B",                                 name: "Qwen3 8B",               contextLimit: 32768, outputLimit: 4096 },
-    { id: "openai/gpt-oss-20b",                             name: "GPT-OSS 20B",            contextLimit: 32768, outputLimit: 4096 },
-    { id: "QuixiAI/Qwen3-30B-A3B-AWQ",                     name: "Qwen3 30B A3B AWQ",      contextLimit: 32768, outputLimit: 4096 },
-  ],
-}
+// ── Gateway discovery — query APISIX for all models behind the LB ────
 
-// ── vLLM endpoint resolution ──────────────────────────────────────────
-// Endpoints come from two env var sources:
-//   1. VLLM_BASE_URL (single primary, always present)
-//   2. VLLM_EXTRA_ENDPOINTS — comma-separated additional endpoints, e.g.:
-//        VLLM_EXTRA_ENDPOINTS=http://host1:8001/v1,http://host2:8002/v1
+async function probeGateway(): Promise<LocalProvider | null> {
+  const gwUrl = env.VLLM_GATEWAY_URL
+  if (!gwUrl) return null
 
-function resolveVllmEndpoints(): Array<{ endpoint: string; apiKey: string; isPrimary: boolean }> {
-  const endpoints: Array<{ endpoint: string; apiKey: string; isPrimary: boolean }> = []
-
-  // Primary endpoint from existing env vars
-  if (env.VLLM_BASE_URL) {
-    const base = env.VLLM_BASE_URL.replace(/\/?$/, "").replace(/\/v1$/, "") + "/v1"
-    endpoints.push({ endpoint: base, apiKey: env.VLLM_API_KEY ?? "", isPrimary: true })
-  }
-
-  // Extra endpoints
-  const extra = (process.env["VLLM_EXTRA_ENDPOINTS"] ?? "").split(",").map(s => s.trim()).filter(Boolean)
-  for (const ep of extra) {
-    const base = ep.replace(/\/?$/, "").replace(/\/v1$/, "") + "/v1"
-    if (base !== endpoints[0]?.endpoint) {
-      endpoints.push({ endpoint: base, apiKey: env.VLLM_API_KEY ?? "", isPrimary: false })
-    }
-  }
-
-  return endpoints
-}
-
-// ── Auto-discovery: scan for vLLM servers on known hosts/ports ────────
-// Scans hosts from VLLM_SCAN_HOSTS (default: primary host + localhost)
-// on ports VLLM_SCAN_PORTS (default: 8000-8010).  Each scan is a quick
-// HEAD /v1/models with a 1.5s timeout.  Found endpoints get merged.
-
-async function discoverVllmEndpoints(): Promise<string[]> {
-  const discovered: string[] = []
-
-  // Resolve which hosts to scan
-  const primaryHost = (() => {
-    try { return new URL(env.VLLM_BASE_URL ?? "").hostname }
-    catch { return "" }
-  })()
-  const scanHostsStr = process.env["VLLM_SCAN_HOSTS"] ?? ""
-  const defaultHosts = [primaryHost, "localhost", "127.0.0.1"].filter(Boolean)
-  const hosts = scanHostsStr
-    ? scanHostsStr.split(",").map(s => s.trim()).filter(Boolean)
-    : [...new Set(defaultHosts)]
-
-  // Resolve ports
-  const scanPortsStr = process.env["VLLM_SCAN_PORTS"] ?? ""
-  let ports: number[]
-  if (scanPortsStr) {
-    ports = scanPortsStr.split(",").map(s => parseInt(s.trim())).filter(n => !isNaN(n))
-  } else {
-    ports = Array.from({ length: 11 }, (_, i) => 8000 + i) // 8000–8010
-  }
-
-  // Probe all host:port combos in parallel (HEAD with tight timeout)
-  const probes = hosts.flatMap(host =>
-    ports.map(async (port) => {
-      const url = `http://${host}:${port}/v1/models`
-      try {
-        const res = await fetch(url, {
-          method: "HEAD",
-          signal: AbortSignal.timeout(1500),
-        })
-        if (res.ok) return `http://${host}:${port}/v1`
-      } catch {
-        // not reachable — ignore
-      }
-      return null
-    })
-  )
-
-  const results = await Promise.all(probes)
-  for (const r of results) {
-    if (r) discovered.push(r)
-  }
-  return discovered
-}
-
-// ── Live vLLM probe ───────────────────────────────────────────────────
-
-async function probeVllmEndpoint(
-  idx: number,
-  { endpoint, apiKey, isPrimary }: ReturnType<typeof resolveVllmEndpoints>[number],
-): Promise<LocalProvider> {
-  const host = (() => { try { return new URL(endpoint).host } catch { return endpoint } })()
-  const name = isPrimary
-    ? `Local vLLM — ${host}`
-    : `Local vLLM #${idx + 1} — ${host}`
-  const id = isPrimary ? "vllm" : `vllm-${idx}`
-
+  const base = gwUrl.replace(/\/?$/, "").replace(/\/v1$/, "") + "/v1"
   const before = Date.now()
   try {
-    const res = await fetch(`${endpoint}/models`, {
+    const res = await fetch(`${base}/models`, {
       signal: AbortSignal.timeout(5_000),
-      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+      headers: env.VLLM_GATEWAY_KEY ? { Authorization: `Bearer ${env.VLLM_GATEWAY_KEY}` } : {},
     })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
 
-    const json = await res.json() as { data?: Array<{ id: string; max_model_len?: number }> }
+    const json = await res.json() as { data?: Array<{ id: string; max_model_len?: number; owned_by?: string }> }
     const latencyMs = Date.now() - before
+
     const models: LocalModel[] = (json.data ?? []).map(m => ({
       id: m.id,
-      name: (isPrimary && m.id === env.VLLM_MODEL_ID)
-        ? (env.VLLM_MODEL_NAME || m.id)     // use friendly name for the primary model
-        : m.id,
-      contextLimit: isPrimary && m.id === env.VLLM_MODEL_ID
-        ? env.VLLM_CONTEXT_LIMIT
-        : (m.max_model_len ?? 32768),
-      outputLimit:  isPrimary && m.id === env.VLLM_MODEL_ID ? env.VLLM_OUTPUT_LIMIT  : 4096,
+      name: m.id,
+      contextLimit: m.max_model_len ?? 32768,
+      outputLimit: 4096,
     }))
 
-    return { id, name, endpoint, status: "online", latencyMs, models, isPrimary }
+    const host = (() => { try { return new URL(base).host } catch { return base } })()
+    return {
+      id: "gateway",
+      name: `Gateway — ${host}`,
+      endpoint: base,
+      status: "online",
+      latencyMs,
+      models,
+      isPrimary: true,
+    }
   } catch {
-    // Offline — use static model list if available, otherwise env fallback
-    const staticModels = STATIC_VLLM_SERVERS[endpoint]
-    const fallbackModels: LocalModel[] = staticModels
-      ? staticModels
-      : isPrimary
-        ? [{ id: env.VLLM_MODEL_ID, name: env.VLLM_MODEL_NAME, contextLimit: env.VLLM_CONTEXT_LIMIT, outputLimit: env.VLLM_OUTPUT_LIMIT }]
-        : []
-    return { id, name, endpoint, status: "offline", models: fallbackModels, isPrimary }
+    return {
+      id: "gateway",
+      name: "Gateway (offline)",
+      endpoint: base,
+      status: "offline",
+      models: [],
+      isPrimary: true,
+    }
   }
 }
 
@@ -317,32 +241,11 @@ export async function buildRegistry(force = false): Promise<RegistrySnapshot> {
   const now = Date.now()
   if (!force && _cache && now - _cacheTs < CACHE_TTL_MS) return _cache
 
-  const endpoints = resolveVllmEndpoints()
-  const knownUrls = new Set(endpoints.map(e => e.endpoint))
+  const localProviders: LocalProvider[] = []
 
-  // Auto-discover additional vLLM servers on the subnet
-  try {
-    const discovered = await discoverVllmEndpoints()
-    for (const url of discovered) {
-      if (!knownUrls.has(url)) {
-        knownUrls.add(url)
-        endpoints.push({ endpoint: url, apiKey: env.VLLM_API_KEY ?? "", isPrimary: false })
-      }
-    }
-  } catch {
-    // Discovery failed — proceed with configured endpoints only
-  }
-
-  // Merge static vLLM servers (known deployments that may be offline)
-  for (const staticEp of Object.keys(STATIC_VLLM_SERVERS)) {
-    if (!knownUrls.has(staticEp)) {
-      knownUrls.add(staticEp)
-      endpoints.push({ endpoint: staticEp, apiKey: env.VLLM_API_KEY ?? "", isPrimary: false })
-    }
-  }
-
-  // Probe all vLLM endpoints in parallel
-  const localProviders = await Promise.all(endpoints.map((ep, i) => probeVllmEndpoint(i, ep)))
+  // Gateway discovery — the ONLY source for local models
+  const gw = await probeGateway()
+  if (gw) localProviders.push(gw)
 
   // Build cloud providers — only mark "configured" if their env key is set
   const cloudProviders: CloudProvider[] = CLOUD_CATALOG.map(p => ({
@@ -350,14 +253,65 @@ export async function buildRegistry(force = false): Promise<RegistrySnapshot> {
     configured: Boolean(process.env[p.keyEnvVar]),
   }))
 
-  // Active model: primary vLLM's first (or only) model
-  const primaryVllm = localProviders.find(p => p.isPrimary)
-  const firstModel = primaryVllm?.models[0]
+  // Active model: gateway first model
+  const primary = localProviders.find(p => p.isPrimary && p.status === "online")
+  const firstModel = primary?.models[0]
   const activeModel = firstModel
-    ? `${primaryVllm!.id}/${firstModel.id}`
+    ? `${primary!.id}/${firstModel.id}`
     : "none"
 
   _cache = { local: localProviders, cloud: cloudProviders, activeModel, generatedAt: new Date().toISOString() }
   _cacheTs = now
   return _cache
+}
+
+// ── Background gateway polling ────────────────────────────────────────
+// Polls the gateway periodically and broadcasts status-change events so
+// the TUI and other consumers can react without explicit polling.
+
+type StatusChangeListener = (status: "online" | "offline", modelCount: number, latencyMs?: number) => void
+const _statusListeners: StatusChangeListener[] = []
+let _lastKnownStatus: "online" | "offline" | null = null
+let _pollingTimer: ReturnType<typeof setInterval> | null = null
+
+export function onGatewayStatusChange(fn: StatusChangeListener): () => void {
+  _statusListeners.push(fn)
+  return () => {
+    const idx = _statusListeners.indexOf(fn)
+    if (idx !== -1) _statusListeners.splice(idx, 1)
+  }
+}
+
+export function getLastGatewayStatus(): { status: "online" | "offline" | null; modelCount: number } {
+  if (!_cache) return { status: null, modelCount: 0 }
+  const gw = _cache.local.find(p => p.isPrimary)
+  const s = gw?.status
+  return { status: (s === "online" || s === "offline") ? s : null, modelCount: gw?.models.length ?? 0 }
+}
+
+export function startRegistryPolling(intervalMs = 30_000): () => void {
+  if (_pollingTimer) return () => {}  // already polling
+
+  async function poll() {
+    try {
+      const snapshot = await buildRegistry(true)  // force refresh
+      const gw = snapshot.local.find(p => p.isPrimary)
+      const rawStatus = gw?.status ?? "offline"
+      const newStatus: "online" | "offline" = rawStatus === "online" ? "online" : "offline"
+      if (newStatus !== _lastKnownStatus) {
+        _lastKnownStatus = newStatus
+        for (const fn of _statusListeners) {
+          try { fn(newStatus, gw?.models.length ?? 0, gw?.latencyMs) } catch {}
+        }
+      }
+    } catch {}
+  }
+
+  _pollingTimer = setInterval(poll, intervalMs)
+  // Run immediately on start
+  poll()
+
+  return () => {
+    if (_pollingTimer) { clearInterval(_pollingTimer); _pollingTimer = null }
+  }
 }

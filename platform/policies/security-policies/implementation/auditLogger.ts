@@ -1,6 +1,5 @@
 import { Log } from "../util/log"
-import { Instance } from "../project/instance"
-import { Identifier } from "../id/id"
+import { randomUUID } from "crypto"
 import z from "zod"
 import path from "path"
 import fs from "fs/promises"
@@ -48,7 +47,7 @@ export class AuditLogger {
   private lastHash: string = ""
 
   constructor(auditDir?: string) {
-    this.auditDir = auditDir || path.join(Instance.worktree, ".opencode", "audit")
+    this.auditDir = auditDir || path.join(process.cwd(), ".opencode", "audit")
   }
 
   /**
@@ -71,7 +70,7 @@ export class AuditLogger {
   private async loadExistingLog(): Promise<void> {
     try {
       const logFile = path.join(this.auditDir, "audit.log.jsonl")
-      if (!fs.stat(logFile)) return
+      try { await fs.stat(logFile) } catch { return }
 
       const content = await fs.readFile(logFile, "utf-8")
       const lines = content.trim().split("\n")
@@ -112,7 +111,7 @@ export class AuditLogger {
    */
   async logEvent(event: Omit<AuditEvent, "id" | "timestamp">): Promise<void> {
     const auditEvent: AuditEvent = {
-      id: Identifier.ascending("audit"),
+      id: randomUUID(),
       timestamp: Date.now(),
       ...event,
     }
