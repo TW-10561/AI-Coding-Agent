@@ -1,0 +1,57 @@
+# Real-time Multi-User Chat Collaboration Platform
+# Architecture: FastAPI + WebSockets + Redis + Celery + PostgreSQL
+
+chat-platform/
+├── app/
+│   ├── __init__.py
+│   ├── main.py                 # Application entry point
+│   ├── config.py               # Configuration management
+│   ├── database.py             # Database connection and models
+│   ├── auth/
+│   │   ├── __init__.py
+│   │   ├── jwt_handler.py      # JWT token handling
+│   │   ├── password_handler.py # Password hashing
+│   │   ├── auth_schemas.py     # Pydantic schemas
+│   │   ├── auth_service.py     # Authentication logic
+│   │   └── routes.py           # Authentication endpoints
+│   ├── users/
+│   │   ├── __init__.py
+│   │   ├── models.py           # User models
+│   │   ├── schemas.py          # User Pydantic schemas
+│   │   ├── repository.py       # User data access layer
+│   │   └── services.py         # User business logic
+│   ├── chat/
+│   │   ├── __init__.py
+│   │   ├── models.py           # Chat room and message models
+│   │   ├── schemas.py          # Chat Pydantic schemas
+│   │   ├── repository.py       # Chat data access layer
+│   │   ├── websocket_manager.py # WebSocket connection manager
+│   │   └── services.py         # Chat business logic
+│   ├── ai_assistant/
+│   │   ├── __init__.py
+│   │   ├── assistant.py         # AI assistant logic
+│   │   └── tasks.py            # Celery tasks for AI processing
+│   ├── notifications/
+│   │   ├── __init__.py
+│   │   ├── tasks.py            # Notification Celery tasks
+│   │   └── services.py         # Notification logic
+│   ├── worker/
+│   │   ├── __init__.py
+│   │   ├── celery_app.py       # Celery configuration
+│   │   └── tasks.py            # Background task definitions
+│   └── api/
+│       ├── __init__.py
+│       ├── router.py           # API router aggregation
+│       └── v1/
+│           ├── __init__.py
+│           ├── chat.py          # Chat API endpoints
+│           └── users.py         # User API endpoints
+├── tests/
+│   ├── __init__.py
+│   ├── test_auth.py
+│   ├── test_chat.py
+│   └── test_ai.py
+├── requirements.txt
+├── Dockerfile
+├── docker-compose.yml
+└── README.md
