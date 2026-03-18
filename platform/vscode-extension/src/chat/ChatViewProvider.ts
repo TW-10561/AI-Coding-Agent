@@ -5,6 +5,14 @@
 
 import * as vscode from "vscode";
 import type { ThirdwaveClient } from "../sdk/ThirdwaveClient";
+import type { WorkspaceManager } from "../workspace/WorkspaceManager";
+
+interface SessionRecord {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+}
 
 interface ChatMessage {
   role: "user" | "assistant" | "system";
@@ -23,6 +31,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
   private _client: ThirdwaveClient;
   private _history: ChatMessage[] = [];
+  private _sessions: SessionRecord[] = [];
   private _currentSessionId: string | null = null;
   private _currentModel: string = "";
   private _currentAgent: string = "build";
@@ -31,7 +40,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   constructor(
     private readonly _extensionUri: vscode.Uri,
     client: ThirdwaveClient,
-    private readonly _context: vscode.ExtensionContext
+    private readonly _context: vscode.ExtensionContext,
+    private readonly _workspace: WorkspaceManager
   ) {
     this._client = client;
     const cfg = vscode.workspace.getConfiguration("thirdwave");
@@ -40,6 +50,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   updateClient(client: ThirdwaveClient) { this._client = client; }
+
+  /** Persist chat history for a session in extension global state */
+  private _saveSessionHistory(sessionId: string, messages: ChatMessage[]) {
+    const key = `thirdwave.sessionHistory.${sessionId}`;
+    // Keep max 100 messages per session to avoid bloat
+    const trimmed = messages.slice(-100);
+    this._context.globalState.update(key, trimmed);
+  }
+
+  /** Load persisted chat history for a session */
+  private _loadSessionHistory(sessionId: string): ChatMessage[] {
+    const key = `thirdwave.sessionHistory.${sessionId}`;
+    return this._context.globalState.get<ChatMessage[]>(key, []);
+  }
+
+  /** Remove persisted history when session is deleted */
+  private _deleteSessionHistory(sessionId: string) {
+    const key = `thirdwave.sessionHistory.${sessionId}`;
+    this._context.globalState.update(key, undefined);
+  }
+
+  /** Persist the sessions list to extension global state */
+  private _persistSessions() {
+    this._context.globalState.update("thirdwave.sessions", this._sessions);
+  }
+
+  /** Restore the sessions list from extension global state */
+  private _restoreSessions(): SessionRecord[] {
+    return this._context.globalState.get<SessionRecord[]>("thirdwave.sessions", []);
+  }
 
   notifyModelChanged(model: string) {
     this._currentModel = model;
@@ -52,18 +92,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   async createSession() {
-    try {
-      const session = await this._client.createSession({
-        agentID: this._currentAgent,
-        title: `VS Code — ${new Date().toLocaleString()}`,
-      });
-      this._currentSessionId = session.id;
-      this._history = [];
-      this._post({ type: "sessionCreated", sessionId: session.id });
-      this._post({ type: "clearChat" });
-    } catch (e: any) {
-      vscode.window.showErrorMessage(`Failed to create session: ${e.message}`);
-    }
+    const id = `sess_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    const now = Date.now();
+    this._sessions = this._restoreSessions();
+    this._sessions.unshift({ id, title: "New chat", createdAt: now, updatedAt: now });
+    this._persistSessions();
+    this._currentSessionId = id;
+    this._history = [];
+    this._post({ type: "sessionCreated", sessionId: id });
+    this._post({ type: "clearChat" });
+    this._post({ type: "sessionsData", sessions: this._sessions });
   }
 
   resolveWebviewView(
@@ -85,39 +123,113 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case "ready":
           this._post({ type: "init", model: this._currentModel, agent: this._currentAgent, sessionId: this._currentSessionId });
           if (this._history.length > 0) this._post({ type: "loadHistory", messages: this._history });
-          this._loadModels(); this._loadSkills(); this._loadSessions();
+          this._loadModels(); this._loadSkills(); this._loadSessions(); this._loadHitl();
+          // Send persisted skill selections to webview
+          this._post({ type: "selectedSkillsData", skillIds: this._context.workspaceState.get<string[]>("thirdwave.selectedSkills", []) });
           break;
         case "selectModel":
           this._currentModel = msg.modelId;
-          await vscode.workspace.getConfiguration("thirdwave").update("defaultModel", msg.modelId, vscode.ConfigurationTarget.Workspace);
           this._post({ type: "modelChanged", model: msg.modelId });
+          try { await vscode.workspace.getConfiguration("thirdwave").update("defaultModel", msg.modelId, vscode.ConfigurationTarget.Workspace); } catch {}
           break;
         case "selectAgent":
           this._currentAgent = msg.agent;
-          await vscode.workspace.getConfiguration("thirdwave").update("defaultAgent", msg.agent, vscode.ConfigurationTarget.Workspace);
           this._post({ type: "agentChanged", agent: msg.agent });
+          try { await vscode.workspace.getConfiguration("thirdwave").update("defaultAgent", msg.agent, vscode.ConfigurationTarget.Workspace); } catch {}
           break;
         case "refreshModels": this._loadModels(); break;
         case "refreshSkills": this._loadSkills(); break;
         case "refreshSessions": this._loadSessions(); break;
         case "switchSession":
           this._currentSessionId = msg.sessionId;
-          this._history = [];
-          try {
-            const msgs = await this._client.listMessages(msg.sessionId, { limit: 50 });
-            for (const m of msgs) {
-              const tp = m.parts.find((p: any) => p.type === "text");
-              if (tp) this._history.push({ role: m.info.role, content: (tp as any).text || (tp as any).content || "", timestamp: m.info.createdAt });
-            }
-            this._post({ type: "loadHistory", messages: this._history });
-          } catch (e: any) { vscode.window.showErrorMessage(`Failed to load session: ${e.message}`); }
+          this._history = this._loadSessionHistory(msg.sessionId);
+          this._post({ type: "loadHistory", messages: this._history });
           break;
         case "deleteSession":
-          try { await this._client.deleteSession(msg.sessionId); this._loadSessions(); }
-          catch (e: any) { vscode.window.showErrorMessage(`Delete failed: ${e.message}`); }
+          this._deleteSessionHistory(msg.sessionId);
+          this._sessions = this._restoreSessions().filter(s => s.id !== msg.sessionId);
+          this._persistSessions();
+          this._post({ type: "sessionsData", sessions: this._sessions });
           break;
         case "viewSkill":
           vscode.commands.executeCommand("thirdwave.viewSkill", msg.skillId, msg.skillName);
+          break;
+        case "toggleSkill": {
+          const selected: string[] = this._context.workspaceState.get<string[]>("thirdwave.selectedSkills", []);
+          if (msg.enabled) {
+            if (!selected.includes(msg.skillId)) selected.push(msg.skillId);
+          } else {
+            const idx = selected.indexOf(msg.skillId);
+            if (idx >= 0) selected.splice(idx, 1);
+          }
+          this._context.workspaceState.update("thirdwave.selectedSkills", selected);
+          break;
+        }
+        case "clearSkills":
+          this._context.workspaceState.update("thirdwave.selectedSkills", []);
+          break;
+        case "openExternal":
+          if (typeof msg.url === "string" && msg.url.startsWith("https://")) {
+            vscode.env.openExternal(vscode.Uri.parse(msg.url));
+          }
+          break;
+        case "setCloudKey": {
+          // Save cloud provider API key via platform registry endpoint
+          const key = typeof msg.key === "string" ? msg.key : "";
+          const providerId = typeof msg.provider === "string" ? msg.provider : "";
+          if (key && providerId) {
+            try {
+              await this._client.setCloudProviderKey(providerId, key);
+              vscode.window.showInformationMessage(`API key for ${providerId} saved. Refreshing models...`);
+              this._loadModels();
+              this._post({ type: "cloudKeySaved", provider: providerId });
+            } catch (e: any) {
+              vscode.window.showErrorMessage(`Failed to save API key: ${e.message}`);
+              this._post({ type: "cloudKeySaveError", provider: providerId, error: e.message });
+            }
+          }
+          break;
+        }
+        case "pickFiles": {
+          const attached = await this._workspace.pickAndAttachFiles();
+          const list = attached.map(f => ({ name: f.name, path: f.relativePath, language: f.language, size: f.size }));
+          this._post({ type: "filesAttached", files: list });
+          break;
+        }
+        case "attachActiveFile": {
+          const editor = vscode.window.activeTextEditor;
+          if (editor && editor.document.uri.scheme === "file") {
+            const content = editor.document.getText();
+            const rel = vscode.workspace.asRelativePath(editor.document.uri);
+            const name = rel.split("/").pop() || rel;
+            const lang = editor.document.languageId;
+            this._workspace.attachFile({ name, relativePath: rel, language: lang, content: content.substring(0, 50000), size: content.length });
+            this._post({ type: "filesAttached", files: [{ name, path: rel, language: lang, size: content.length }] });
+          }
+          break;
+        }
+        case "removeAttachment":
+          this._workspace.removeAttachment(msg.path);
+          this._post({ type: "attachmentRemoved", path: msg.path });
+          break;
+        case "getDiagnostics": {
+          const diags = this._workspace.getDiagnostics();
+          this._post({ type: "diagnosticsData", diagnostics: diags });
+          break;
+        }
+        case "hitlResolve": {
+          const rid = typeof msg.requestId === "string" ? msg.requestId : "";
+          const decision = msg.decision === "approve" ? "approved" : "denied";
+          if (rid) {
+            try {
+              await this._client.resolveHitl(rid, decision);
+              this._loadHitl();
+            } catch (e: any) { vscode.window.showErrorMessage(`HITL resolve failed: ${e.message}`); }
+          }
+          break;
+        }
+        case "refreshHitl":
+          this._loadHitl();
           break;
       }
     });
@@ -131,9 +243,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     try { this._post({ type: "skillsData", skills: await this._client.listSkills() }); }
     catch { this._post({ type: "skillsData", skills: [] }); }
   }
-  private async _loadSessions() {
-    try { this._post({ type: "sessionsData", sessions: await this._client.listSessions() }); }
-    catch { this._post({ type: "sessionsData", sessions: [] }); }
+  private _loadSessions() {
+    this._sessions = this._restoreSessions();
+    this._post({ type: "sessionsData", sessions: this._sessions });
+  }
+  private async _loadHitl() {
+    try {
+      const [pending, stats, resolved] = await Promise.all([
+        this._client.hitlPending(),
+        this._client.hitlStats(),
+        this._client.hitlResolved()
+      ]);
+      this._post({ type: "hitlPending", requests: pending });
+      this._post({ type: "hitlStats", stats });
+      this._post({ type: "hitlResolved", decisions: resolved });
+    } catch {
+      this._post({ type: "hitlPending", requests: [] });
+      this._post({ type: "hitlStats", stats: {} });
+      this._post({ type: "hitlResolved", decisions: [] });
+    }
   }
 
   private async _onUserMessage(text: string) {
@@ -143,6 +271,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const userMsg: ChatMessage = { role: "user", content: text, timestamp: Date.now() };
     this._history.push(userMsg);
     this._post({ type: "addMessage", message: userMsg });
+    // Auto-title the session from the first user message
+    if (this._history.length === 1 && this._currentSessionId) {
+      const title = text.replace(/\s+/g, " ").trim().substring(0, 60);
+      this._sessions = this._restoreSessions();
+      const si = this._sessions.findIndex(s => s.id === this._currentSessionId);
+      if (si >= 0 && this._sessions[si].title === "New chat") {
+        this._sessions[si].title = title;
+        this._sessions[si].updatedAt = Date.now();
+        this._persistSessions();
+        this._post({ type: "sessionsData", sessions: this._sessions });
+      }
+    }
     this._post({ type: "setLoading", loading: true });
     this._isStreaming = true;
 
@@ -154,23 +294,97 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const kw = /\b(run|exec|build|test|compile|deploy|install|create|delete|remove|write|read|search|find|list|show|open|close|kill|start|stop|restart|update|upgrade|fix|check|lint|format|refactor|rename|move|copy|curl|wget|pip|npm|bun|git|docker|make|grep|sed|awk)\b/i;
       const tools = cfg.get<boolean>("enableTools", true) && text.split(/\s+/).length > 5 && kw.test(text);
 
-      const resp = await this._client.directChat({
-        message: text,
-        modelID: this._currentModel || undefined,
-        maxTokens: cfg.get<number>("maxTokens", 8192),
-        temperature: cfg.get<number>("temperature", 0.3),
-        history: histSlice.length > 0 ? histSlice : undefined,
-        tools,
-      });
+      // Build system prompt: workspace context + selected skills
+      const selectedIds = this._context.workspaceState.get<string[]>("thirdwave.selectedSkills", []);
+      const promptParts: string[] = [];
 
+      // Inject workspace context (active file, open files, diagnostics, attachments)
+      const wsContext = this._workspace.buildContextString();
+      if (wsContext) {
+        promptParts.push("## Current Workspace Context\n" + wsContext);
+      }
+
+      // Inject selected skills
+      if (selectedIds.length > 0) {
+        const skillContents: string[] = [];
+        for (const sid of selectedIds) {
+          try {
+            const sk = await this._client.getSkill(sid);
+            if (sk.content) skillContents.push(`## Skill: ${sk.displayName || sk.name}\n${sk.content}`);
+          } catch { /* skip unavailable skills */ }
+        }
+        if (skillContents.length > 0) {
+          promptParts.push("## Active Skills\n" + skillContents.join("\n\n---\n\n"));
+        }
+      }
+
+      const systemPrompt = promptParts.length > 0 ? promptParts.join("\n\n") : undefined;
+
+      // Clear file attachments after building context (one-shot)
+      this._workspace.clearAttachments();
+
+      // Start streaming — show tokens as they arrive
+      this._post({ type: "streamStart" });
+      let fullText = "";
+      let fullReasoning = "";
+      let meta: any = {};
+      const startTime = Date.now();
+
+      try {
+        const stream = await this._client.chatStream({
+          message: text,
+          model: this._currentModel || undefined,
+          system: systemPrompt,
+          maxTokens: cfg.get<number>("maxTokens", 8192),
+          temperature: cfg.get<number>("temperature", 0.3),
+          history: histSlice.length > 0 ? histSlice : undefined,
+          tools,
+        });
+
+        for await (const chunk of stream) {
+          if (chunk.type === "reasoning") {
+            fullReasoning += chunk.content;
+            this._post({ type: "streamReasoning", content: chunk.content });
+          } else if (chunk.type === "text") {
+            fullText += chunk.content;
+            this._post({ type: "streamToken", content: chunk.content });
+          } else if (chunk.type === "done" && chunk.meta) {
+            meta = chunk.meta;
+          }
+        }
+      } catch {
+        // Fallback to non-streaming if stream fails
+        const resp = await this._client.directChat({
+          message: text,
+          modelID: this._currentModel || undefined,
+          system: systemPrompt,
+          maxTokens: cfg.get<number>("maxTokens", 8192),
+          temperature: cfg.get<number>("temperature", 0.3),
+          history: histSlice.length > 0 ? histSlice : undefined,
+          tools,
+        });
+        fullText = resp.text;
+        fullReasoning = resp.reasoning || "";
+        meta = { model: resp.model, tokens: resp.tokens, latencyMs: resp.latencyMs, toolCalls: resp.toolCalls };
+      }
+
+      const latency = meta.latencyMs || (Date.now() - startTime);
       const aMsg: ChatMessage = {
-        role: "assistant", content: resp.text, reasoning: resp.reasoning,
-        toolCalls: resp.toolCalls, tokens: resp.tokens, latencyMs: resp.latencyMs,
-        model: resp.model, timestamp: Date.now(),
+        role: "assistant", content: fullText, reasoning: fullReasoning || undefined,
+        toolCalls: meta.toolCalls, tokens: meta.tokens, latencyMs: latency,
+        model: meta.model, timestamp: Date.now(),
       };
       this._history.push(aMsg);
-      this._post({ type: "addMessage", message: aMsg });
+      this._post({ type: "streamEnd", message: aMsg });
+      // Persist chat history locally so it survives session switching
+      if (this._currentSessionId) {
+        this._saveSessionHistory(this._currentSessionId, this._history);
+        this._sessions = this._restoreSessions();
+        const si = this._sessions.findIndex(s => s.id === this._currentSessionId);
+        if (si >= 0) { this._sessions[si].updatedAt = Date.now(); this._persistSessions(); }
+      }
     } catch (e: any) {
+      this._post({ type: "streamEnd" });
       this._post({ type: "addMessage", message: { role: "system" as const, content: `Error: ${e.message}`, timestamp: Date.now() } });
     } finally {
       this._isStreaming = false;
@@ -188,6 +402,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const n = getNonce();
     const cssUri = wv.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, "media", "chat.css"));
     const jsUri  = wv.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, "media", "chat.js"));
+    const logoUri = wv.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, "images", "agent-logo.png"));
     return `<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="UTF-8">
@@ -196,81 +411,150 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 <link rel="stylesheet" href="${cssUri}">
 </head>
 <body>
-<div class="tabs">
-  <button class="tab active" data-tab="chat">Chat</button>
-  <button class="tab" data-tab="settings">Models</button>
-  <button class="tab" data-tab="skills">Skills</button>
-  <button class="tab" data-tab="sessions">History</button>
-</div>
+<div class="layout">
 
-<!-- CHAT -->
-<div class="pnl active" id="p-chat">
-  <div class="ch">
-    <div class="bg">
-      <span class="badge" id="aBad" title="Agent mode">build</span>
-      <span class="badge" id="mBad" title="Active model">auto</span>
-    </div>
-    <button class="ib" id="newBtn" title="New Session">+</button>
-  </div>
-  <div class="msgs" id="msgs">
-    <div class="es" id="es">
-      <div class="lg">&#9670;</div>
-      <h3>Thirdwave AI</h3>
-      <p>AI coding assistant powered by local vLLM gateway.</p>
-      <button class="wb" id="startBtn">Start a conversation</button>
+  <!-- TOP HEADER BAR -->
+  <div class="topbar">
+    <div class="topbar-actions">
+      <button class="tb-icon" id="newBtn" title="New Chat"><svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg></button>
+      <button class="tb-icon" id="histBtn" data-tab="sessions" title="History"><svg viewBox="0 0 24 24"><path d="M13 3a9 9 0 00-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.954 8.954 0 0013 21a9 9 0 000-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg></button>
+      <button class="tb-icon" id="settingsBtn" title="Settings"><svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 00-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.57 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1115.6 12 3.611 3.611 0 0112 15.6z"/></svg></button>
     </div>
   </div>
-  <div class="ld" id="ld"><div class="spn"></div><span>Thinking...</span></div>
-  <div class="ia">
-    <div class="ir">
-      <textarea id="inp" placeholder="Type your task here..." rows="1"></textarea>
-      <button class="sb" id="snd">&#9654;</button>
-    </div>
-    <div class="ih">Enter to send &middot; Shift+Enter for newline</div>
-  </div>
-</div>
 
-<!-- MODELS / SETTINGS -->
-<div class="pnl" id="p-settings">
-  <div class="scr" id="setScr">
-    <div class="sec">
-      <div class="st">API Configuration</div>
-      <div class="sg">
-        <div class="sl">Agent Mode</div>
-        <select id="agSel">
-          <option value="build">build &mdash; Full read/write/execute</option>
-          <option value="plan">plan &mdash; Read-only planning</option>
-          <option value="explore">explore &mdash; Codebase search</option>
-          <option value="general">general &mdash; Multi-step reasoning</option>
-        </select>
+  <!-- MAIN BODY — chat + optional right sidebar -->
+  <div class="body">
+
+    <!-- CHAT (always visible) -->
+    <div class="chat-area" id="chatArea">
+      <div class="msgs" id="msgs">
+        <div class="es" id="es">
+          <img class="lg" src="${logoUri}" alt="Thirdwave AI" />
+          <h3>Thirdwave AI</h3>
+          <p>AI coding assistant powered by local vLLM gateway.</p>
+          <button class="wb" id="startBtn">Start a conversation</button>
+        </div>
       </div>
-      <div class="sg">
-        <div class="sl">Active Model</div>
-        <div class="sd">Select from available local or cloud models</div>
-        <select id="mdSel"><option value="">Auto (gateway default)</option></select>
+      <div class="ld" id="ld"><div class="spn"></div><span>Thinking...</span></div>
+      <div class="ia">
+        <div id="attachBar" class="attach-bar" style="display:none"></div>
+        <div class="ir">
+          <button class="attach-btn" id="attachBtn" title="Attach files"><svg viewBox="0 0 24 24" width="16" height="16"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5a2.5 2.5 0 015 0v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6h-1.5v9.5a2.5 2.5 0 005 0V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg></button>
+          <textarea id="inp" placeholder="Type your task here..." rows="1"></textarea>
+          <button class="sb-send" id="snd"><svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg></button>
+        </div>
+        <div class="it">
+          <button class="it-btn" id="agBtn" title="Agent mode"><svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg><span class="it-lbl" id="agLbl">build</span></button>
+          <button class="it-btn" id="mdBtn" title="Active model"><svg viewBox="0 0 24 24"><path d="M20 18c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2H0v2h24v-2h-4zM4 6h16v10H4V6z"/></svg><span class="it-lbl" id="mdLbl">loading...</span></button>
+          <span class="it-sep"></span>
+          <button class="it-btn" id="diagBtn" title="Show diagnostics"><svg viewBox="0 0 24 24" width="14" height="14"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg><span class="it-lbl" id="diagLbl">0</span></button>
+        </div>
       </div>
     </div>
-    <div class="sec">
-      <div class="st">Gateway Models (Local)</div>
-      <div id="lcm"><div class="nd">Loading...</div></div>
-    </div>
-    <div class="sec">
-      <div class="st">Cloud Providers</div>
-      <div id="ccm"><div class="nd">Loading...</div></div>
-    </div>
-  </div>
-</div>
 
-<!-- SKILLS -->
-<div class="pnl" id="p-skills">
-  <div class="ssr"><input type="text" id="skQ" placeholder="Filter skills..." /></div>
-  <div class="sks" id="skC"><div class="nd">Loading skills...</div></div>
-</div>
+    <!-- HISTORY PANEL (overlay, toggled by history button) -->
+    <div class="pnl-overlay" id="p-sessions">
+      <div class="pnl-hdr">History <button class="pnl-close" data-close="sessions">&times;</button></div>
+      <div class="scr" id="seC"><div class="nd">Loading sessions...</div></div>
+    </div>
 
-<!-- SESSIONS -->
-<div class="pnl" id="p-sessions">
-  <div class="scr" id="seC"><div class="nd">Loading sessions...</div></div>
-</div>
+    <!-- RIGHT SIDEBAR (toggled by settings button) -->
+    <div class="rsidebar" id="rsidebar">
+      <div class="rs-icons">
+        <button class="rs-icon active" data-rs="settings" title="Models"><svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 00-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.57 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1115.6 12 3.611 3.611 0 0112 15.6z"/></svg></button>
+        <button class="rs-icon" data-rs="agents" title="Agents"><svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg></button>
+        <button class="rs-icon" data-rs="skills" title="Skills"><svg viewBox="0 0 24 24"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg></button>
+        <button class="rs-icon" data-rs="hitl" title="HITL"><svg viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/></svg><span class="rs-badge" style="display:none">0</span></button>
+      </div>
+      <div class="rs-content">
+
+      <!-- MODELS / SETTINGS -->
+      <div class="rs-pnl active" id="rp-settings">
+        <div class="scr" id="setScr">
+          <div class="sec">
+            <div class="st">Gateway Models (Local)</div>
+            <div id="lcm"><div class="nd">Loading...</div></div>
+          </div>
+          <div class="sec">
+            <div class="st">Cloud Providers</div>
+            <div id="ccm">
+              <div class="cline-api">
+                <label class="cline-lbl">API Provider</label>
+                <select class="cline-select" id="cpSelect"><option value="">Loading...</option></select>
+              </div>
+              <div id="cpDetail"><div class="nd">Select a provider above</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- AGENTS -->
+      <div class="rs-pnl" id="rp-agents">
+        <div class="scr">
+          <div class="sec">
+            <div class="st">Primary Agents</div>
+            <div id="primaryAgents">
+              <div class="ag-card sel" data-ag="build">
+                <div class="ag-hdr"><svg viewBox="0 0 24 24" class="ag-ico"><path d="M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6 6 9 1.6 4.7C.4 7.1.9 10.1 2.9 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.4.4 1 .4 1.4 0l2.3-2.3c.5-.4.5-1.1.1-1.4z"/></svg><span class="ag-name">Build</span></div>
+                <div class="ag-desc">Full read/write/execute — default coding agent with tool calling</div>
+              </div>
+              <div class="ag-card" data-ag="plan">
+                <div class="ag-hdr"><svg viewBox="0 0 24 24" class="ag-ico"><path d="M18 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 4h5v8l-2.5-1.5L6 12V4z"/></svg><span class="ag-name">Plan</span></div>
+                <div class="ag-desc">Read-only planning and architectural analysis</div>
+              </div>
+            </div>
+          </div>
+          <div class="sec">
+            <div class="st">Sub-Agents</div>
+            <div id="subAgents">
+              <div class="ag-card" data-ag="explore">
+                <div class="ag-hdr"><svg viewBox="0 0 24 24" class="ag-ico"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg><span class="ag-name">Explore</span></div>
+                <div class="ag-desc">Codebase search and exploration — read-only discovery</div>
+              </div>
+              <div class="ag-card" data-ag="general">
+                <div class="ag-hdr"><svg viewBox="0 0 24 24" class="ag-ico"><path d="M9 21c0 .5.4 1 1 1h4c.6 0 1-.5 1-1v-1H9v1zm3-19C8.1 2 5 5.1 5 9c0 2.4 1.2 4.5 3 5.7V17c0 .5.4 1 1 1h6c.6 0 1-.5 1-1v-2.3c1.8-1.3 3-3.4 3-5.7 0-3.9-3.1-7-7-7z"/></svg><span class="ag-name">General</span></div>
+                <div class="ag-desc">Multi-step reasoning, research, and general tasks</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SKILLS -->
+      <div class="rs-pnl" id="rp-skills">
+        <div class="sk-hdr">
+          <span class="st" style="margin:0">SKILLS REGISTRY</span>
+          <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+            <span class="sk-cnt" id="skCnt">0</span>
+            <button class="sk-clear" id="skClear">Clear all</button>
+          </div>
+        </div>
+        <div class="ssr"><input type="text" id="skQ" placeholder="Filter skills..." /></div>
+        <div class="sks" id="skC"><div class="nd">Loading skills...</div></div>
+      </div>
+
+      <!-- HITL SECURITY -->
+      <div class="rs-pnl" id="rp-hitl">
+        <div class="scr">
+          <div class="sec">
+            <div class="st">Pending Approvals</div>
+            <div id="hitlPending"><div class="nd">No pending approvals</div></div>
+          </div>
+          <div class="sec">
+            <div class="st">Statistics</div>
+            <div id="hitlStats"><div class="nd">Loading...</div></div>
+          </div>
+          <div class="sec">
+            <div class="st">Recent Decisions</div>
+            <div id="hitlRecent"><div class="nd">No recent decisions</div></div>
+          </div>
+        </div>
+      </div>
+      </div><!-- /rs-content -->
+    </div><!-- /rsidebar -->
+
+  </div><!-- /body -->
+</div><!-- /layout -->
 
 <script nonce="${n}" src="${jsUri}"></script>
 </body></html>`;

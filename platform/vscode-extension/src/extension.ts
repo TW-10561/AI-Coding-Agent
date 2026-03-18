@@ -6,9 +6,11 @@ import * as vscode from "vscode";
 import { ChatViewProvider } from "./chat/ChatViewProvider";
 import { registerChatParticipant } from "./chat/ChatParticipant";
 import { ThirdwaveClient } from "./sdk/ThirdwaveClient";
+import { WorkspaceManager } from "./workspace/WorkspaceManager";
 
 let client: ThirdwaveClient;
 let chatProvider: ChatViewProvider;
+let workspaceManager: WorkspaceManager;
 let modelStatusBar: vscode.StatusBarItem;
 let agentStatusBar: vscode.StatusBarItem;
 
@@ -19,8 +21,12 @@ export function activate(context: vscode.ExtensionContext) {
 
   client = new ThirdwaveClient({ baseUrl, apiKey: apiKey || undefined });
 
+  // ── Workspace Manager (independent, no OpenCode dependency) ────
+  workspaceManager = new WorkspaceManager();
+  context.subscriptions.push(workspaceManager);
+
   // ── Chat Webview Provider (unified sidebar) ────────────────────
-  chatProvider = new ChatViewProvider(context.extensionUri, client, context);
+  chatProvider = new ChatViewProvider(context.extensionUri, client, context, workspaceManager);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("thirdwave.chat", chatProvider, {
       webviewOptions: { retainContextWhenHidden: true },
@@ -184,7 +190,7 @@ export function deactivate() {}
 function updateModelStatusBar() {
   const config = vscode.workspace.getConfiguration("thirdwave");
   const model = config.get<string>("defaultModel", "");
-  modelStatusBar.text = `$(server) ${model || "auto"}`;
+  modelStatusBar.text = `$(server) ${model || "gateway default"}`;
 }
 
 function updateAgentStatusBar() {
@@ -351,12 +357,12 @@ async function showSkillPanel(skillId: string, skillName: string) {
       .replace(/\n/g, "<br>");
     panel.webview.html = `<!DOCTYPE html><html><head><style>
       body{font-family:var(--vscode-font-family);padding:20px;color:var(--vscode-foreground);background:var(--vscode-editor-background);max-width:800px;margin:0 auto;line-height:1.6}
-      h1{color:#7c3aed;border-bottom:2px solid #7c3aed;padding-bottom:8px}h2{margin-top:24px}
+      h1{color:#0088ff;border-bottom:2px solid #0088ff;padding-bottom:8px}h2{margin-top:24px}
       code{font-family:var(--vscode-editor-font-family);background:var(--vscode-textCodeBlock-background);padding:1px 4px;border-radius:3px;font-size:13px}
       pre{background:var(--vscode-textCodeBlock-background);padding:12px;border-radius:6px;overflow-x:auto;margin:12px 0}
       pre code{padding:0;background:none}ul{padding-left:20px}
       .meta{font-size:12px;color:var(--vscode-descriptionForeground);margin-bottom:16px;display:flex;gap:16px}
-      .tag{background:#7c3aed22;color:#7c3aed;padding:2px 8px;border-radius:12px;font-size:11px}
+      .tag{background:#0088ff22;color:#0088ff;padding:2px 8px;border-radius:12px;font-size:11px}
     </style></head><body>
     <h1>${esc(skill.displayName || skill.name)}</h1>
     <div class="meta"><span class="tag">${esc(skill.category || "General")}</span><span>ID: ${esc(skill.id)}</span></div>

@@ -1,0 +1,679 @@
+{
+  "skills": [
+    {
+      "id": "agentic-development-principles",
+      "name": "agentic-development-principles",
+      "description": "Universal principles for agentic development when collaborating with AI agents. Defines divide-and-conquer, context management, abstraction level selection, and an automation philosophy. Applicable to all AI coding tools.",
+      "icon": "🤖",
+      "category": "Development",
+      "tags": [
+        "agentic",
+        "ai",
+        "principles",
+        "automation",
+        "context-management"
+      ]
+    },
+    {
+      "id": "api-design",
+      "name": "api-design",
+      "description": "Design RESTful and GraphQL APIs following best practices. Use when creating new APIs, refactoring existing endpoints, or documenting API specifications. Handles OpenAPI, REST, GraphQL, versioning.",
+      "icon": "🔌",
+      "category": "Development",
+      "tags": [
+        "api",
+        "rest",
+        "graphql",
+        "openapi",
+        "design"
+      ]
+    },
+    {
+      "id": "api-design-principles",
+      "name": "api-design-principles",
+      "description": "RESTful and modern API design best practices",
+      "icon": "🔌",
+      "category": "Development",
+      "tags": [
+        "api",
+        "rest",
+        "design",
+        "graphql"
+      ]
+    },
+    {
+      "id": "architecture-patterns",
+      "name": "architecture-patterns",
+      "description": "Software architecture patterns and design principles",
+      "icon": "🏗️",
+      "category": "Development",
+      "tags": [
+        "architecture",
+        "patterns",
+        "design"
+      ]
+    },
+    {
+      "id": "azure-ai",
+      "name": "azure-ai",
+      "description": "Azure AI services integration and best practices",
+      "icon": "☁️",
+      "category": "Cloud",
+      "tags": [
+        "azure",
+        "ai",
+        "machine-learning",
+        "cognitive"
+      ]
+    },
+    {
+      "id": "azure-cost-optimization",
+      "name": "azure-cost-optimization",
+      "description": "Azure cost management and optimization strategies",
+      "icon": "💰",
+      "category": "Cloud",
+      "tags": [
+        "azure",
+        "cost",
+        "optimization",
+        "financial"
+      ]
+    },
+    {
+      "id": "azure-deploy",
+      "name": "azure-deploy",
+      "description": "Azure deployment strategies and CI/CD integration",
+      "icon": "🚀",
+      "category": "Cloud",
+      "tags": [
+        "azure",
+        "deployment",
+        "devops",
+        "ci-cd"
+      ]
+    },
+    {
+      "id": "azure-diagnostics",
+      "name": "azure-diagnostics",
+      "description": "Azure diagnostics, troubleshooting, and problem resolution",
+      "icon": "🔧",
+      "category": "Cloud",
+      "tags": [
+        "azure",
+        "diagnostics",
+        "troubleshooting",
+        "support"
+      ]
+    },
+    {
+      "id": "azure-observability",
+      "name": "azure-observability",
+      "description": "Azure monitoring, logging, and observability solutions",
+      "icon": "📊",
+      "category": "Cloud",
+      "tags": [
+        "azure",
+        "monitoring",
+        "observability",
+        "logging"
+      ]
+    },
+    {
+      "id": "azure-storage",
+      "name": "azure-storage",
+      "description": "Azure Storage services configuration and best practices",
+      "icon": "💾",
+      "category": "Cloud",
+      "tags": [
+        "azure",
+        "storage",
+        "blob",
+        "database"
+      ]
+    },
+    {
+      "id": "brand-guidelines",
+      "name": "brand-guidelines",
+      "description": "Brand guidelines development and enforcement",
+      "icon": "🎨",
+      "category": "Documentation",
+      "tags": [
+        "branding",
+        "guidelines",
+        "consistency",
+        "design"
+      ]
+    },
+    {
+      "id": "ci-cd",
+      "name": "ci-cd",
+      "description": "CI/CD pipeline design, optimization, DevSecOps security scanning, and troubleshooting. Use for creating workflows, debugging pipeline failures, implementing SAST/DAST/SCA, optimizing build performance, implementing caching strategies, setting up deployments, securing pipelines with OIDC/secrets management, and troubleshooting common issues across GitHub Actions, GitLab CI, and other platforms.",
+      "icon": "🔄",
+      "category": "DevOps",
+      "tags": [
+        "ci-cd",
+        "pipelines",
+        "github-actions",
+        "gitlab-ci",
+        "deployment"
+      ]
+    },
+    {
+      "id": "cicd-expert",
+      "name": "cicd-expert",
+      "description": "Elite CI/CD pipeline engineer specializing in GitHub Actions, GitLab CI, Jenkins automation, secure deployment strategies, and supply chain security. Expert in building efficient, secure pipelines with proper testing gates, artifact management, and ArgoCD/GitOps patterns. Use when designing pipelines, implementing security gates, or troubleshooting CI/CD issues.",
+      "icon": "⚙️",
+      "category": "DevOps",
+      "tags": [
+        "ci-cd",
+        "pipelines",
+        "github-actions",
+        "gitlab-ci",
+        "jenkins",
+        "security"
+      ]
+    },
+    {
+      "id": "cicd-pipeline-generator",
+      "name": "cicd-pipeline-generator",
+      "description": "This skill should be used when creating or configuring CI/CD pipeline files for automated testing, building, and deployment. Use this for generating GitHub Actions workflows, GitLab CI configs, CircleCI configs, or other CI/CD platform configurations. Ideal for setting up automated pipelines for Node.js/Next.js applications, including linting, testing, building, and deploying to platforms like Vercel, Netlify, or AWS.",
+      "icon": "🏗️",
+      "category": "DevOps",
+      "tags": [
+        "ci-cd",
+        "pipelines",
+        "github-actions",
+        "gitlab-ci",
+        "circleci"
+      ]
+    },
+    {
+      "id": "code-refactoring",
+      "name": "code-refactoring",
+      "description": "Simplify and refactor code while preserving behavior, improving clarity, and reducing complexity. Use when simplifying complex code, removing duplication, or applying design patterns. Handles Extract Method, DRY principle, SOLID principles, behavior validation, and refactoring patterns.",
+      "icon": "🔧",
+      "category": "Development",
+      "tags": [
+        "refactoring",
+        "clean-code",
+        "solid",
+        "design-patterns"
+      ]
+    },
+    {
+      "id": "code-review",
+      "name": "code-review",
+      "description": "Conduct thorough, constructive code reviews for quality and security. Use when reviewing pull requests, checking code quality, identifying bugs, or auditing security. Handles best practices, SOLID principles, security vulnerabilities, performance analysis, and testing coverage.",
+      "icon": "👁️",
+      "category": "Development",
+      "tags": [
+        "code-review",
+        "quality",
+        "security",
+        "best-practices"
+      ]
+    },
+    {
+      "id": "database-schema-design",
+      "name": "database-schema-design",
+      "description": "Design and optimize database schemas for SQL and NoSQL databases. Use when creating new databases, designing tables, defining relationships, indexing strategies, or database migrations. Handles PostgreSQL, MySQL, MongoDB, normalization, and performance optimization.",
+      "icon": "🗄️",
+      "category": "Development",
+      "tags": [
+        "database",
+        "schema",
+        "sql",
+        "nosql",
+        "postgresql",
+        "mongodb"
+      ]
+    },
+    {
+      "id": "debugging",
+      "name": "debugging",
+      "description": "Systematically debug code issues using proven methodologies. Use when encountering errors, unexpected behavior, or performance problems. Handles error analysis, root cause identification, debugging strategies, and fix verification.",
+      "icon": "🐛",
+      "category": "Development",
+      "tags": [
+        "debugging",
+        "errors",
+        "troubleshooting",
+        "root-cause"
+      ]
+    },
+    {
+      "id": "deployment-automation",
+      "name": "deployment-automation",
+      "description": "Automate application deployment to cloud platforms and servers. Use when setting up CI/CD pipelines, deploying to Docker/Kubernetes, or configuring cloud infrastructure. Handles GitHub Actions, Docker, Kubernetes, AWS, Vercel, and deployment best practices.",
+      "icon": "🚀",
+      "category": "DevOps",
+      "tags": [
+        "deployment",
+        "docker",
+        "kubernetes",
+        "aws",
+        "automation"
+      ]
+    },
+    {
+      "id": "deployment-pipeline",
+      "name": "deployment-pipeline",
+      "description": ">-",
+      "icon": "📦",
+      "category": "DevOps",
+      "tags": [
+        "deployment",
+        "pipeline",
+        "release",
+        "staging",
+        "production"
+      ]
+    },
+    {
+      "id": "devops-engineer",
+      "name": "devops-engineer",
+      "description": "Creates Dockerfiles, configures CI/CD pipelines, writes Kubernetes manifests, and generates Terraform/Pulumi infrastructure templates. Handles deployment automation, GitOps configuration, incident response runbooks, and internal developer platform tooling. Use when setting up CI/CD pipelines, containerizing applications, managing infrastructure as code, deploying to Kubernetes clusters, configuring cloud platforms, automating releases, or responding to production incidents. Invoke for pipelines, Docker, Kubernetes, GitOps, Terraform, GitHub Actions, on-call, or platform engineering.",
+      "icon": "🛠️",
+      "category": "DevOps",
+      "tags": [
+        "devops",
+        "docker",
+        "kubernetes",
+        "terraform",
+        "github-actions",
+        "infrastructure"
+      ]
+    },
+    {
+      "id": "devsecops-expert",
+      "name": "devsecops-expert",
+      "description": "Expert DevSecOps engineer specializing in secure CI/CD pipelines, shift-left security, security automation, and compliance as code. Use when implementing security gates, container security, infrastructure scanning, secrets management, or building secure supply chains.",
+      "icon": "🔒",
+      "category": "Security",
+      "tags": [
+        "devsecops",
+        "security",
+        "ci-cd",
+        "scanning",
+        "compliance"
+      ]
+    },
+    {
+      "id": "docx",
+      "name": "docx",
+      "description": "DOCX document generation and Word document manipulation",
+      "icon": "📝",
+      "category": "Documentation",
+      "tags": [
+        "docx",
+        "word",
+        "documents",
+        "export"
+      ]
+    },
+    {
+      "id": "find-skills",
+      "name": "find-skills",
+      "description": "Find and discover agent skills to extend agent capabilities",
+      "icon": "🔍",
+      "category": "Core",
+      "tags": [
+        "discovery",
+        "skills",
+        "extension"
+      ]
+    },
+    {
+      "id": "frontend-design",
+      "name": "frontend-design",
+      "description": "Frontend design principles and implementation patterns",
+      "icon": "🖼️",
+      "category": "Core",
+      "tags": [
+        "design",
+        "frontend",
+        "ui-patterns"
+      ]
+    },
+    {
+      "id": "git-workflow",
+      "name": "git-workflow",
+      "description": "Manage Git workflows including commits, branches, merges, and collaboration. Use when working with Git repositories, creating commits, managing branches, or resolving conflicts.",
+      "icon": "📋",
+      "category": "Development",
+      "tags": [
+        "git",
+        "workflow",
+        "branches",
+        "commits",
+        "merge"
+      ]
+    },
+    {
+      "id": "internal-comms",
+      "name": "internal-comms",
+      "description": "Internal communications strategy and workflows",
+      "icon": "💬",
+      "category": "Documentation",
+      "tags": [
+        "communications",
+        "internal",
+        "strategy",
+        "engagement"
+      ]
+    },
+    {
+      "id": "mcp-builder",
+      "name": "mcp-builder",
+      "description": "Model Context Protocol (MCP) server development and implementation",
+      "icon": "🤖",
+      "category": "Cloud",
+      "tags": [
+        "mcp",
+        "protocol",
+        "ai",
+        "integration"
+      ]
+    },
+    {
+      "id": "nodejs-backend-patterns",
+      "name": "nodejs-backend-patterns",
+      "description": "Node.js backend patterns and scalable server architecture",
+      "icon": "🟢",
+      "category": "Development",
+      "tags": [
+        "nodejs",
+        "backend",
+        "patterns",
+        "architecture"
+      ]
+    },
+    {
+      "id": "pdf",
+      "name": "pdf",
+      "description": "PDF document generation and manipulation",
+      "icon": "📄",
+      "category": "Documentation",
+      "tags": [
+        "pdf",
+        "documents",
+        "generation",
+        "export"
+      ]
+    },
+    {
+      "id": "performance-optimization",
+      "name": "performance-optimization",
+      "description": "Optimize application performance for speed, efficiency, and scalability. Use when improving page load times, reducing bundle size, optimizing database queries, or fixing performance bottlenecks. Handles React optimization, lazy loading, caching, code splitting, and profiling.",
+      "icon": "⚡",
+      "category": "Development",
+      "tags": [
+        "performance",
+        "optimization",
+        "profiling",
+        "caching",
+        "speed"
+      ]
+    },
+    {
+      "id": "pptx",
+      "name": "pptx",
+      "description": "PowerPoint presentation generation and manipulation",
+      "icon": "🎯",
+      "category": "Documentation",
+      "tags": [
+        "pptx",
+        "powerpoint",
+        "presentations",
+        "slides"
+      ]
+    },
+    {
+      "id": "precommit",
+      "name": "PreCommit",
+      "description": "Pre-commit hooks framework for multi-language code quality automation. USE WHEN setting up pre-commit OR configuring git hooks OR adding linting OR code formatting OR security scanning OR Terraform validation OR Kubernetes manifests OR Helm charts OR Python linting OR JavaScript formatting. Manages .pre-commit-config.yaml, hook installation, and CI integration.",
+      "icon": "✅",
+      "category": "Development",
+      "tags": [
+        "pre-commit",
+        "hooks",
+        "linting",
+        "formatting",
+        "quality"
+      ]
+    },
+    {
+      "id": "python-performance-optimization",
+      "name": "python-performance-optimization",
+      "description": "Python performance optimization and profiling techniques",
+      "icon": "🐍",
+      "category": "Development",
+      "tags": [
+        "python",
+        "performance",
+        "optimization"
+      ]
+    },
+    {
+      "id": "quality-check",
+      "name": "quality-check",
+      "description": "Run all quality checks including linting, formatting, and type checking. Use when user asks to check code quality, run checks, or verify code before committing.",
+      "icon": "🏆",
+      "category": "Development",
+      "tags": [
+        "quality",
+        "linting",
+        "formatting",
+        "type-checking"
+      ]
+    },
+    {
+      "id": "react-native-best-practices",
+      "name": "react-native-best-practices",
+      "description": "React Native development patterns and best practices",
+      "icon": "📱",
+      "category": "Development",
+      "tags": [
+        "react-native",
+        "mobile",
+        "best-practices"
+      ]
+    },
+    {
+      "id": "receiving-code-review",
+      "name": "receiving-code-review",
+      "description": "How to effectively receive and act on code review feedback",
+      "icon": "✨",
+      "category": "Testing",
+      "tags": [
+        "code-review",
+        "feedback",
+        "growth",
+        "collaboration"
+      ]
+    },
+    {
+      "id": "requesting-code-review",
+      "name": "requesting-code-review",
+      "description": "How to request effective code reviews from peers",
+      "icon": "👥",
+      "category": "Testing",
+      "tags": [
+        "code-review",
+        "collaboration",
+        "communication"
+      ]
+    },
+    {
+      "id": "security-best-practices",
+      "name": "security-best-practices",
+      "description": "Implement security best practices for web applications and infrastructure. Use when securing APIs, preventing common vulnerabilities, or implementing security policies. Handles HTTPS, CORS, XSS, SQL Injection, CSRF, rate limiting, and OWASP Top 10.",
+      "icon": "🛡️",
+      "category": "Security",
+      "tags": [
+        "security",
+        "owasp",
+        "xss",
+        "csrf",
+        "https",
+        "cors"
+      ]
+    },
+    {
+      "id": "systematic-debugging",
+      "name": "systematic-debugging",
+      "description": "Systematic debugging methodology and techniques",
+      "icon": "🐛",
+      "category": "Testing",
+      "tags": [
+        "debugging",
+        "troubleshooting",
+        "problem-solving"
+      ]
+    },
+    {
+      "id": "test-driven-development",
+      "name": "test-driven-development",
+      "description": "Test-Driven Development methodology and practices",
+      "icon": "🧪",
+      "category": "Testing",
+      "tags": [
+        "tdd",
+        "testing",
+        "development",
+        "methodology"
+      ]
+    },
+    {
+      "id": "testing-strategies",
+      "name": "testing-strategies",
+      "description": "Design comprehensive testing strategies for software quality assurance. Use when planning test coverage, implementing test pyramids, or setting up testing infrastructure. Handles unit testing, integration testing, E2E testing, TDD, and testing best practices.",
+      "icon": "🧪",
+      "category": "Testing",
+      "tags": [
+        "testing",
+        "unit-test",
+        "integration",
+        "e2e",
+        "tdd"
+      ]
+    },
+    {
+      "id": "typescript-advanced-types",
+      "name": "typescript-advanced-types",
+      "description": "Advanced TypeScript type system and patterns",
+      "icon": "📘",
+      "category": "Development",
+      "tags": [
+        "typescript",
+        "types",
+        "advanced",
+        "patterns"
+      ]
+    },
+    {
+      "id": "ui-ux-pro-max",
+      "name": "ui-ux-pro-max",
+      "description": "Professional UI/UX design and advanced interaction patterns",
+      "icon": "✨",
+      "category": "Core",
+      "tags": [
+        "ui",
+        "ux",
+        "design",
+        "interactions"
+      ]
+    },
+    {
+      "id": "vercel-composition-patterns",
+      "name": "vercel-composition-patterns",
+      "description": "Component composition patterns and architectural best practices",
+      "icon": "🧩",
+      "category": "Core",
+      "tags": [
+        "patterns",
+        "composition",
+        "architecture"
+      ]
+    },
+    {
+      "id": "vercel-react-best-practices",
+      "name": "vercel-react-best-practices",
+      "description": "React best practices and patterns from Vercel experts",
+      "icon": "⚛️",
+      "category": "Core",
+      "tags": [
+        "react",
+        "frontend",
+        "best-practices"
+      ]
+    },
+    {
+      "id": "verification-before-completion",
+      "name": "verification-before-completion",
+      "description": "Quality verification and validation before declaring work complete",
+      "icon": "✔️",
+      "category": "Testing",
+      "tags": [
+        "qa",
+        "verification",
+        "testing",
+        "validation"
+      ]
+    },
+    {
+      "id": "web-design-guidelines",
+      "name": "web-design-guidelines",
+      "description": "Web design principles and accessibility guidelines",
+      "icon": "🎨",
+      "category": "Core",
+      "tags": [
+        "design",
+        "accessibility",
+        "web",
+        "ui"
+      ]
+    },
+    {
+      "id": "webapp-testing",
+      "name": "webapp-testing",
+      "description": "Web application testing strategies and frameworks",
+      "icon": "✅",
+      "category": "Testing",
+      "tags": [
+        "testing",
+        "qa",
+        "web",
+        "automation"
+      ]
+    },
+    {
+      "id": "workflow-automation",
+      "name": "workflow-automation",
+      "description": "Automate repetitive development tasks and workflows. Use when creating build scripts, automating deployments, or setting up development workflows. Handles npm scripts, Makefile, GitHub Actions workflows, and task automation.",
+      "icon": "🤖",
+      "category": "DevOps",
+      "tags": [
+        "automation",
+        "scripts",
+        "workflows",
+        "npm",
+        "makefile"
+      ]
+    },
+    {
+      "id": "xlsx",
+      "name": "xlsx",
+      "description": "Excel spreadsheet generation and data manipulation",
+      "icon": "📊",
+      "category": "Documentation",
+      "tags": [
+        "xlsx",
+        "excel",
+        "spreadsheet",
+        "data"
+      ]
+    }
+  ],
+  "totalCount": 51
+}

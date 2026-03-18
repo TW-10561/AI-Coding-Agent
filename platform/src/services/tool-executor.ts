@@ -16,6 +16,12 @@
 
 import { env } from "../config/env"
 import { defaultPolicyEngine } from "./policy-engine"
+import type { HITLService } from "./hitl-service"
+
+// ── HITL integration ─────────────────────────────────────────────────
+// Set by the server at startup so tools can trigger approval requests.
+let _hitl: HITLService | null = null
+export function setToolHITL(hitl: HITLService) { _hitl = hitl }
 
 // ── Tool definitions (OpenAI function-calling schema) ────────────────
 
@@ -223,11 +229,21 @@ async function execBash(args: { command: string; timeout?: number; workdir?: str
   const cwd = args.workdir ? resolvePath(args.workdir) : AGENT_WORKSPACE
   const timeout = Math.min(args.timeout ?? DEFAULT_TIMEOUT, MAX_TIMEOUT)
 
-  // Policy check: destructive commands
+  // Policy + HITL check: destructive commands
   try {
-    const policy = defaultPolicyEngine.evaluate({ command })
-    if (policy.decision === "deny") {
-      return { success: false, output: `Policy denied: ${policy.reasons.join("; ")}` }
+    if (_hitl) {
+      const hitlResult = _hitl.evaluate({ action: "bash", command })
+      if (hitlResult.decision === "deny") {
+        return { success: false, output: `Policy denied: ${hitlResult.reasons.join("; ")}` }
+      }
+      if (hitlResult.decision === "ask" && hitlResult.approvalRequest) {
+        return { success: false, output: `⏳ Awaiting HITL approval (${hitlResult.approvalRequest.id}): ${hitlResult.reasons.join("; ")}` }
+      }
+    } else {
+      const policy = defaultPolicyEngine.evaluate({ command })
+      if (policy.decision === "deny") {
+        return { success: false, output: `Policy denied: ${policy.reasons.join("; ")}` }
+      }
     }
   } catch {}
 
@@ -271,11 +287,21 @@ async function execBash(args: { command: string; timeout?: number; workdir?: str
 async function execReadFile(args: { path: string; startLine?: number; endLine?: number }): Promise<ToolResult> {
   const filepath = resolvePath(args.path)
 
-  // Policy check: sensitive files
+  // Policy + HITL check: sensitive files
   try {
-    const policy = defaultPolicyEngine.evaluate({ filePath: filepath })
-    if (policy.decision === "deny") {
-      return { success: false, output: `Policy denied: ${policy.reasons.join("; ")}` }
+    if (_hitl) {
+      const hitlResult = _hitl.evaluate({ action: "read", filePath: filepath })
+      if (hitlResult.decision === "deny") {
+        return { success: false, output: `Policy denied: ${hitlResult.reasons.join("; ")}` }
+      }
+      if (hitlResult.decision === "ask" && hitlResult.approvalRequest) {
+        return { success: false, output: `⏳ Awaiting HITL approval (${hitlResult.approvalRequest.id}): ${hitlResult.reasons.join("; ")}` }
+      }
+    } else {
+      const policy = defaultPolicyEngine.evaluate({ filePath: filepath })
+      if (policy.decision === "deny") {
+        return { success: false, output: `Policy denied: ${policy.reasons.join("; ")}` }
+      }
     }
   } catch {}
 
@@ -306,11 +332,21 @@ async function execWriteFile(args: { path: string; content: string }): Promise<T
     ? resolvePath(args.path)
     : resolvePath(`${AGENT_WORKSPACE}/${args.path}`)
 
-  // Policy check: sensitive files
+  // Policy + HITL check: sensitive files
   try {
-    const policy = defaultPolicyEngine.evaluate({ filePath: filepath })
-    if (policy.decision === "deny") {
-      return { success: false, output: `Policy denied: ${policy.reasons.join("; ")}` }
+    if (_hitl) {
+      const hitlResult = _hitl.evaluate({ action: "edit", filePath: filepath })
+      if (hitlResult.decision === "deny") {
+        return { success: false, output: `Policy denied: ${hitlResult.reasons.join("; ")}` }
+      }
+      if (hitlResult.decision === "ask" && hitlResult.approvalRequest) {
+        return { success: false, output: `⏳ Awaiting HITL approval (${hitlResult.approvalRequest.id}): ${hitlResult.reasons.join("; ")}` }
+      }
+    } else {
+      const policy = defaultPolicyEngine.evaluate({ filePath: filepath })
+      if (policy.decision === "deny") {
+        return { success: false, output: `Policy denied: ${policy.reasons.join("; ")}` }
+      }
     }
   } catch {}
 
@@ -386,11 +422,21 @@ async function execGrepSearch(args: { pattern: string; path?: string; include?: 
 async function execWebFetch(args: { url: string; maxBytes?: number }): Promise<ToolResult> {
   const maxBytes = args.maxBytes ?? MAX_OUTPUT
 
-  // Policy check: network guard
+  // Policy + HITL check: network guard
   try {
-    const policy = defaultPolicyEngine.evaluate({ url: args.url })
-    if (policy.decision === "deny") {
-      return { success: false, output: `Policy denied: ${policy.reasons.join("; ")}` }
+    if (_hitl) {
+      const hitlResult = _hitl.evaluate({ action: "web_fetch", url: args.url })
+      if (hitlResult.decision === "deny") {
+        return { success: false, output: `Policy denied: ${hitlResult.reasons.join("; ")}` }
+      }
+      if (hitlResult.decision === "ask" && hitlResult.approvalRequest) {
+        return { success: false, output: `⏳ Awaiting HITL approval (${hitlResult.approvalRequest.id}): ${hitlResult.reasons.join("; ")}` }
+      }
+    } else {
+      const policy = defaultPolicyEngine.evaluate({ url: args.url })
+      if (policy.decision === "deny") {
+        return { success: false, output: `Policy denied: ${policy.reasons.join("; ")}` }
+      }
     }
   } catch {}
 

@@ -132,7 +132,7 @@
         {
           "id": "thirdwave",
           "title": "Thirdwave AI",
-          "icon": "$(hubot)"
+          "icon": "images/agent-logo.png"
         }
       ]
     },

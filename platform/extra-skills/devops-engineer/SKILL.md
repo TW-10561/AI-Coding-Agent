@@ -10,7 +10,9 @@ metadata:
   role: engineer
   scope: implementation
   output-format: code
-  related-skills: 
+  icon: 🛠️
+  category: DevOps
+  tags: [devops, docker, kubernetes, terraform, github-actions, infrastructure]
 ---
 
 # DevOps Engineer

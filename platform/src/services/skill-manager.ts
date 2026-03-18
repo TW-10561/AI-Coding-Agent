@@ -49,19 +49,65 @@ function parseFrontmatter(raw: string): { meta: Record<string, any>; body: strin
   const yamlBlock = match[1]!
   const body = match[2]!.trim()
   const meta: Record<string, any> = {}
+  const nested: Record<string, Record<string, any>> = {}
+
+  let currentBlock: string | null = null
 
   for (const line of yamlBlock.split("\n")) {
+    // Nested key (indented under a block like metadata:)
+    if (currentBlock && /^\s{2,}/.test(line)) {
+      const m = line.match(/^\s+(\w[\w-]*):\s*(.*)$/)
+      if (m) {
+        let value: any = m[2]!.trim()
+        if (value.startsWith("[") && value.endsWith("]")) {
+          value = value.slice(1, -1).split(",").map((s: string) => s.trim())
+        }
+        nested[currentBlock]![m[1]!] = value
+      }
+      continue
+    }
+
+    currentBlock = null
+
     const m = line.match(/^(\w[\w-]*):\s*(.*)$/)
     if (!m) continue
     const key = m[1]!
     let value: any = m[2]!.trim()
+
+    // Start of nested block (value is empty)
+    if (value === "" || value === ">-") {
+      currentBlock = key
+      nested[key] = {}
+      continue
+    }
 
     // Parse YAML arrays like [tag1, tag2, tag3]
     if (value.startsWith("[") && value.endsWith("]")) {
       value = value.slice(1, -1).split(",").map((s: string) => s.trim())
     }
 
+    // Parse quoted strings
+    if (typeof value === "string" && /^["'].*["']$/.test(value)) {
+      value = value.slice(1, -1)
+    }
+
     meta[key] = value
+  }
+
+  // Merge nested metadata into meta for downstream use
+  if (nested["metadata"]) {
+    meta["_metadata"] = nested["metadata"]
+    // Promote triggers → tags (if no top-level tags)
+    if (!meta["tags"] && nested["metadata"]["triggers"]) {
+      const triggers = nested["metadata"]["triggers"]
+      meta["tags"] = typeof triggers === "string"
+        ? triggers.split(",").map((s: string) => s.trim()).filter(Boolean)
+        : triggers
+    }
+    // Promote domain → category (if no top-level category)
+    if (!meta["category"] && nested["metadata"]["domain"]) {
+      meta["category"] = titleCase(nested["metadata"]["domain"])
+    }
   }
 
   return { meta, body }

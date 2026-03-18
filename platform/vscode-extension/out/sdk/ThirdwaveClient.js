@@ -75,9 +75,11 @@ class ThirdwaveClient {
         const body = {
             message: opts.message,
             modelID: opts.model || undefined,
+            system: opts.system || undefined,
             maxTokens: opts.maxTokens ?? 4096,
             temperature: opts.temperature ?? 0.3,
             history: opts.history,
+            tools: opts.tools,
         };
         const res = await fetch(this.url("/api/chat/stream"), {
             method: "POST",
@@ -89,11 +91,19 @@ class ThirdwaveClient {
             const direct = await this.directChat({
                 message: opts.message,
                 modelID: opts.model || undefined,
+                system: opts.system,
                 maxTokens: opts.maxTokens,
                 temperature: opts.temperature,
                 history: opts.history,
+                tools: opts.tools,
             });
-            return (async function* () { yield direct.text; })();
+            const self = direct;
+            return (async function* () {
+                if (self.reasoning)
+                    yield { type: "reasoning", content: self.reasoning };
+                yield { type: "text", content: self.text };
+                yield { type: "done", content: "", meta: { model: self.model, provider: self.provider, tokens: self.tokens, latencyMs: self.latencyMs, toolCalls: self.toolCalls } };
+            })();
         }
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -106,28 +116,38 @@ class ThirdwaveClient {
                             if (done)
                                 return { done: true, value: undefined };
                             const text = decoder.decode(value, { stream: true });
-                            // Parse SSE: lines starting with "data: "
                             const chunks = [];
                             for (const line of text.split("\n")) {
                                 if (line.startsWith("data: ")) {
                                     const data = line.slice(6);
-                                    if (data === "[DONE]")
+                                    if (data === "[DONE]") {
+                                        chunks.push({ type: "done", content: "" });
                                         continue;
+                                    }
                                     try {
                                         const parsed = JSON.parse(data);
+                                        // Check for reasoning/thinking content
+                                        const reasoning = parsed.choices?.[0]?.delta?.reasoning_content || parsed.choices?.[0]?.delta?.thinking;
+                                        if (reasoning) {
+                                            chunks.push({ type: "reasoning", content: reasoning });
+                                            continue;
+                                        }
                                         const delta = parsed.choices?.[0]?.delta?.content;
                                         if (delta)
-                                            chunks.push(delta);
+                                            chunks.push({ type: "text", content: delta });
+                                        // Check for usage/meta in final chunk
+                                        if (parsed.usage) {
+                                            chunks.push({ type: "done", content: "", meta: { tokens: { input: parsed.usage.prompt_tokens, output: parsed.usage.completion_tokens }, model: parsed.model } });
+                                        }
                                     }
                                     catch {
-                                        // Not JSON — might be raw text
                                         if (data.trim())
-                                            chunks.push(data);
+                                            chunks.push({ type: "text", content: data });
                                     }
                                 }
                             }
                             if (chunks.length > 0)
-                                return { done: false, value: chunks.join("") };
+                                return { done: false, value: chunks.length === 1 ? chunks[0] : chunks[0] };
                         }
                     },
                 };
@@ -177,6 +197,23 @@ class ThirdwaveClient {
     }
     async skillCategories() {
         return this.request("GET", "/api/skills/categories");
+    }
+    // ── Provider Auth ──────────────────────────────────────────────
+    async setCloudProviderKey(providerID, apiKey) {
+        return this.request("POST", `/api/registry/cloud/${encodeURIComponent(providerID)}/key`, { apiKey });
+    }
+    // ── HITL ───────────────────────────────────────────────────────
+    async hitlPending() {
+        return this.request("GET", "/api/hitl/pending");
+    }
+    async hitlStats() {
+        return this.request("GET", "/api/hitl/stats");
+    }
+    async hitlResolved() {
+        return this.request("GET", "/api/hitl/resolved");
+    }
+    async resolveHitl(requestId, decision) {
+        return this.request("POST", `/api/hitl/resolve/${encodeURIComponent(requestId)}`, { decision });
     }
 }
 exports.ThirdwaveClient = ThirdwaveClient;

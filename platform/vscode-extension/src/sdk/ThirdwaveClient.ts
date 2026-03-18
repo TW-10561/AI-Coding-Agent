@@ -160,16 +160,20 @@ export class ThirdwaveClient {
     message: string;
     model?: string;
     agent?: string;
+    system?: string;
     maxTokens?: number;
     temperature?: number;
     history?: Array<{ role: string; content: string }>;
-  }): Promise<AsyncIterable<string>> {
+    tools?: boolean;
+  }): Promise<AsyncIterable<{ type: "text" | "reasoning" | "done"; content: string; meta?: any }>> {
     const body = {
       message: opts.message,
       modelID: opts.model || undefined,
+      system: opts.system || undefined,
       maxTokens: opts.maxTokens ?? 4096,
       temperature: opts.temperature ?? 0.3,
       history: opts.history,
+      tools: opts.tools,
     };
 
     const res = await fetch(this.url("/api/chat/stream"), {
@@ -183,11 +187,18 @@ export class ThirdwaveClient {
       const direct = await this.directChat({
         message: opts.message,
         modelID: opts.model || undefined,
+        system: opts.system,
         maxTokens: opts.maxTokens,
         temperature: opts.temperature,
         history: opts.history as any,
+        tools: opts.tools,
       });
-      return (async function* () { yield direct.text; })();
+      const self = direct;
+      return (async function* () {
+        if (self.reasoning) yield { type: "reasoning" as const, content: self.reasoning };
+        yield { type: "text" as const, content: self.text };
+        yield { type: "done" as const, content: "", meta: { model: self.model, provider: self.provider, tokens: self.tokens, latencyMs: self.latencyMs, toolCalls: self.toolCalls } };
+      })();
     }
 
     const reader = res.body.getReader();
@@ -195,28 +206,36 @@ export class ThirdwaveClient {
     return {
       [Symbol.asyncIterator]() {
         return {
-          async next(): Promise<IteratorResult<string>> {
+          async next(): Promise<IteratorResult<{ type: "text" | "reasoning" | "done"; content: string; meta?: any }>> {
             while (true) {
               const { done, value } = await reader.read();
               if (done) return { done: true, value: undefined };
               const text = decoder.decode(value, { stream: true });
-              // Parse SSE: lines starting with "data: "
-              const chunks: string[] = [];
+              const chunks: Array<{ type: "text" | "reasoning" | "done"; content: string; meta?: any }> = [];
               for (const line of text.split("\n")) {
                 if (line.startsWith("data: ")) {
                   const data = line.slice(6);
-                  if (data === "[DONE]") continue;
+                  if (data === "[DONE]") {
+                    chunks.push({ type: "done", content: "" });
+                    continue;
+                  }
                   try {
                     const parsed = JSON.parse(data);
+                    // Check for reasoning/thinking content
+                    const reasoning = parsed.choices?.[0]?.delta?.reasoning_content || parsed.choices?.[0]?.delta?.thinking;
+                    if (reasoning) { chunks.push({ type: "reasoning", content: reasoning }); continue; }
                     const delta = parsed.choices?.[0]?.delta?.content;
-                    if (delta) chunks.push(delta);
+                    if (delta) chunks.push({ type: "text", content: delta });
+                    // Check for usage/meta in final chunk
+                    if (parsed.usage) {
+                      chunks.push({ type: "done", content: "", meta: { tokens: { input: parsed.usage.prompt_tokens, output: parsed.usage.completion_tokens }, model: parsed.model } });
+                    }
                   } catch {
-                    // Not JSON — might be raw text
-                    if (data.trim()) chunks.push(data);
+                    if (data.trim()) chunks.push({ type: "text", content: data });
                   }
                 }
               }
-              if (chunks.length > 0) return { done: false, value: chunks.join("") };
+              if (chunks.length > 0) return { done: false, value: chunks.length === 1 ? chunks[0] : chunks[0] };
             }
           },
         };
@@ -299,5 +318,29 @@ export class ThirdwaveClient {
     id: string; name: string; displayName: string; description: string;
   }>>> {
     return this.request("GET", "/api/skills/categories");
+  }
+
+  // ── Provider Auth ──────────────────────────────────────────────
+
+  async setCloudProviderKey(providerID: string, apiKey: string): Promise<{ ok: boolean }> {
+    return this.request("POST", `/api/registry/cloud/${encodeURIComponent(providerID)}/key`, { apiKey });
+  }
+
+  // ── HITL ───────────────────────────────────────────────────────
+
+  async hitlPending(): Promise<unknown[]> {
+    return this.request("GET", "/api/hitl/pending");
+  }
+
+  async hitlStats(): Promise<Record<string, number>> {
+    return this.request("GET", "/api/hitl/stats");
+  }
+
+  async hitlResolved(): Promise<unknown[]> {
+    return this.request("GET", "/api/hitl/resolved");
+  }
+
+  async resolveHitl(requestId: string, decision: "approved" | "denied"): Promise<unknown> {
+    return this.request("POST", `/api/hitl/resolve/${encodeURIComponent(requestId)}`, { decision });
   }
 }

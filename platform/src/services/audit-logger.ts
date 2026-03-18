@@ -45,6 +45,10 @@ export type AuditAction =
   | "system.shutdown"
   | "system.error"
   | "policy.evaluate"
+  | "hitl.resolved"
+  | "hitl.request_created"
+  | "hitl.expired"
+  | "hitl.auto_decision"
 
 export interface AuditEntry {
   id: string

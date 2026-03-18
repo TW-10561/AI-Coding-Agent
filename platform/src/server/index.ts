@@ -42,7 +42,9 @@ import { skillRoutes } from "./routes/skills"
 import { policyRoutes } from "./routes/policies"
 import { SkillManager } from "../services/skill-manager"
 import { PolicyEngine } from "../services/policy-engine"
+import { HITLService } from "../services/hitl-service"
 import { buildRegistry, startRegistryPolling } from "../services/provider-registry"
+import { hitlRoutes } from "./routes/hitl"
 
 // ── Instantiate services ──────────────────────────────────────────────
 
@@ -97,6 +99,14 @@ console.log(`[policies] Security policy engine initialized`)
 // Wire audit into the module-level default policy engine (used by chat + tools)
 import { defaultPolicyEngine } from "../services/policy-engine"
 defaultPolicyEngine.setAudit(audit)
+
+// HITL (Human-in-the-Loop) approval service — bridges policy engine with user approval workflow
+const hitl = new HITLService(policyEngine, audit)
+console.log(`[hitl] Human-in-the-Loop service initialized`)
+
+// Wire HITL into tool executor so risky tool calls trigger approval flow
+import { setToolHITL } from "../services/tool-executor"
+setToolHITL(hitl)
 
 // Start the scalable queue
 scalableQueue.start()
@@ -523,6 +533,7 @@ app.route("/api/registry", registryRoutes())
 app.route("/api/chat", chatRoutes())
 app.route("/api/skills", skillRoutes(skills))
 app.route("/api/policies", policyRoutes(policyEngine))
+app.route("/api/hitl", hitlRoutes(hitl))
 
 // ── CLI client download routes (no auth) ─────────────────────────────
 // These serve the user-facing CLI tool. Users run:

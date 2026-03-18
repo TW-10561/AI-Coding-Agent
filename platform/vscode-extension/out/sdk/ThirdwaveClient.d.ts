@@ -123,13 +123,19 @@ export declare class ThirdwaveClient {
         message: string;
         model?: string;
         agent?: string;
+        system?: string;
         maxTokens?: number;
         temperature?: number;
         history?: Array<{
             role: string;
             content: string;
         }>;
-    }): Promise<AsyncIterable<string>>;
+        tools?: boolean;
+    }): Promise<AsyncIterable<{
+        type: "text" | "reasoning" | "done";
+        content: string;
+        meta?: any;
+    }>>;
     chatModels(): Promise<{
         models: Array<{
             id: string;
@@ -187,4 +193,11 @@ export declare class ThirdwaveClient {
         displayName: string;
         description: string;
     }>>>;
+    setCloudProviderKey(providerID: string, apiKey: string): Promise<{
+        ok: boolean;
+    }>;
+    hitlPending(): Promise<unknown[]>;
+    hitlStats(): Promise<Record<string, number>>;
+    hitlResolved(): Promise<unknown[]>;
+    resolveHitl(requestId: string, decision: "approved" | "denied"): Promise<unknown>;
 }

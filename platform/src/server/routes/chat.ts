@@ -32,13 +32,13 @@ const ChatBody = z.object({
 // Reasoning models (MiniMax) can take 60-180s per call; allow 5 min to be safe.
 const DEFAULT_INFERENCE_TIMEOUT_MS = 300_000  // 5 min per inference call
 
-const DEFAULT_SYSTEM = `You are Thirdwave, an expert AI coding assistant with access to tools.
+const DEFAULT_SYSTEM = `You are Thirdwave AI Coding Platform, an expert AI coding assistant with access to tools.
 Use tools to help the user: execute commands, read/write files, search code, and fetch URLs.
 Be concise and give direct answers. Prefer using tools over guessing.
 When making file edits, always read the file first to understand its content.
 After running commands, report results clearly.`
 
-const DIRECT_SYSTEM = `You are Thirdwave, a helpful AI coding assistant. Always provide complete, thorough answers. Never say "I will explain" or "I'll do" — instead, actually explain and do it immediately. When asked about code, provide full working solutions with explanations. When asked to analyze or fix code, show the complete corrected code and explain every change. Do not be lazy or skip details.`
+const DIRECT_SYSTEM = `You are Thirdwave AI Coding Platform, a helpful AI coding assistant. Always provide complete, thorough answers. Never say "I will explain" or "I'll do" — instead, actually explain and do it immediately. When asked about code, provide full working solutions with explanations. When asked to analyze or fix code, show the complete corrected code and explain every change. Do not be lazy or skip details.`
 
 const MAX_TOOL_ROUNDS = 15
 

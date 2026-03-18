@@ -13,7 +13,20 @@ const windows = new Map<string, Window>()
 const WINDOW_MS = 60_000
 const MAX_REQUESTS = 120
 
+// Routes exempt from rate limiting (method + path prefix)
+const EXEMPT_ROUTES: Array<{ method: string; prefix: string }> = [
+  { method: "DELETE", prefix: "/api/sessions/" },
+]
+
+function isExempt(method: string, path: string): boolean {
+  return EXEMPT_ROUTES.some(
+    (r) => r.method === method && path.startsWith(r.prefix),
+  )
+}
+
 export async function rateLimitMiddleware(c: Context, next: Next) {
+  if (isExempt(c.req.method, c.req.path)) return next()
+
   const forwarded = c.req.header("x-forwarded-for")
   const ip = (forwarded ? forwarded.split(",")[0]?.trim() : undefined)
     ?? c.req.header("x-real-ip")

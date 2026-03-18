@@ -128,7 +128,13 @@ export function registerChatParticipant(
         } else if (response && typeof response[Symbol.asyncIterator] === "function") {
           for await (const chunk of response) {
             if (token.isCancellationRequested) break;
-            if (chunk) stream.markdown(chunk);
+            if (chunk) {
+              if (typeof chunk === "string") {
+                stream.markdown(chunk);
+              } else if (chunk.type === "text" && chunk.content) {
+                stream.markdown(chunk.content);
+              }
+            }
           }
         } else if (response && typeof response === "object" && "content" in response) {
           stream.markdown((response as any).content);
