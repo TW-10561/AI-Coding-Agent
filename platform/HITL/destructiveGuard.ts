@@ -30,7 +30,7 @@ export const DESTRUCTIVE_PATTERNS = [
   // Format/wipe operations
   /mkfs/i,
   /dd\s+if=.*of=/i,
-  /formula\s+.*--force/i,
+  /format\s+.*--force/i,
 
   // Destructive npm/yarn
   /npm\s+uninstall.*-g/i,
@@ -84,7 +84,7 @@ export function getSeverityLevel(context: DestructiveContext): "critical" | "hig
   const cmd = context.command.trim().toLowerCase()
 
   // Critical - system-wide destruction
-  if (/mkfs|dd\s+if.*of=|format\s+.*:|kill\s+-9\s+-1/.test(cmd)) {
+  if (/mkfs|dd\s+if.*of=|format\s+.*:|kill\s+-9\s+-1|rm\s+-.*rf\s+\/\s*$|rm\s+-.*rf\s+\/[^a-z]/.test(cmd)) {
     return "critical"
   }
 

@@ -1,6 +1,6 @@
 import { Log } from "../util/log"
-import { isSensitive } from "../security/sensitiveFiles"
-import { isDestructive, getSeverityLevel } from "../security/destructiveGuard"
+import { isSensitive } from "./sensitiveFiles"
+import { isDestructive, getSeverityLevel } from "./destructiveGuard"
 
 const log = Log.create({ service: "risk-engine" })
 
@@ -95,7 +95,7 @@ export class RiskEngine {
     }
 
     // Large diffs (potential for significant changes)
-    if (context.largeFileDiff && context.diffSize) {
+    if (context.diffSize) {
       if (context.diffSize > 10000) {
         score += 50
         factors.push({ reason: "Very large file changes (10KB+)", points: 50 })
@@ -165,7 +165,7 @@ export class RiskEngine {
       factors.push({ reason: "Sensitive file", points: 70 })
     }
 
-    if (context.largeFileDiff && context.diffSize) {
+    if (context.diffSize) {
       if (context.diffSize > 10000) {
         factors.push({ reason: "Very large file changes", points: 50 })
       } else if (context.diffSize > 1000) {

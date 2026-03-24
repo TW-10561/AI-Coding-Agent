@@ -14,6 +14,7 @@ export declare class ChatViewProvider implements vscode.WebviewViewProvider {
     private _currentModel;
     private _currentAgent;
     private _isStreaming;
+    private _abortController;
     constructor(_extensionUri: vscode.Uri, client: ThirdwaveClient, _context: vscode.ExtensionContext, _workspace: WorkspaceManager);
     updateClient(client: ThirdwaveClient): void;
     /** Persist chat history for a session in extension global state */

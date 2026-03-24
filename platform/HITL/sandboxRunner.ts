@@ -1,8 +1,9 @@
-import { execa } from "execa"
+import { exec, execFile } from "child_process"
+import { promisify } from "util"
 import { Log } from "../util/log"
-import path from "path"
-import os from "os"
 import z from "zod"
+
+const execAsync = promisify(exec)
 
 const log = Log.create({ service: "sandbox" })
 
@@ -47,17 +48,23 @@ export interface SandboxRunner {
 export class HostRunner implements SandboxRunner {
   async runBash(cmd: string): Promise<ExecutionResult> {
     try {
-      const result = await execa(cmd, { shell: true, reject: false })
+      const result = await execAsync(cmd, { shell: true })
       return {
         stdout: result.stdout || "",
         stderr: result.stderr || "",
-        exitCode: result.exitCode,
+        exitCode: 0,
         command: cmd,
         executedIn: "host",
       }
-    } catch (error) {
+    } catch (error: any) {
       log.error("Host runner error", { command: cmd, error })
-      throw error
+      return {
+        stdout: error.stdout || "",
+        stderr: error.stderr || String(error),
+        exitCode: error.code ?? 1,
+        command: cmd,
+        executedIn: "host",
+      }
     }
   }
 
@@ -105,14 +112,23 @@ export class DockerRunner implements SandboxRunner {
 
     try {
       log.debug("Running command in sandbox", { command: cmd, dockerArgs })
-      const result = await execa("docker", dockerArgs, { reject: false })
-
-      return {
-        stdout: result.stdout || "",
-        stderr: result.stderr || "",
-        exitCode: result.exitCode,
-        command: cmd,
-        executedIn: "sandbox",
+      try {
+        const r = await execAsync(["docker", ...dockerArgs].join(" "))
+        return {
+          stdout: r.stdout || "",
+          stderr: r.stderr || "",
+          exitCode: 0,
+          command: cmd,
+          executedIn: "sandbox",
+        }
+      } catch (err: any) {
+        return {
+          stdout: err.stdout || "",
+          stderr: err.stderr || String(err),
+          exitCode: err.code ?? 1,
+          command: cmd,
+          executedIn: "sandbox",
+        }
       }
     } catch (error) {
       log.error("Docker sandbox error", { command: cmd, error })
@@ -129,7 +145,7 @@ export class DockerRunner implements SandboxRunner {
    */
   static async isAvailable(): Promise<boolean> {
     try {
-      await execa("docker", ["--version"])
+      await execAsync("docker --version")
       return true
     } catch {
       return false

@@ -246,6 +246,145 @@ class WorkspaceManager {
         }
         return undefined;
     }
+    // ── Repo tree scanning ───────────────────────────────────────────
+    /**
+     * Build a compact file tree of the workspace root(s).
+     * Skips node_modules, .git, dist, build, __pycache__, .next, etc.
+     * Returns a string like:
+     *   src/
+     *     index.ts
+     *     utils/
+     *       helpers.ts
+     */
+    async buildRepoTree(maxDepth = 3, maxFiles = 80) {
+        const roots = vscode.workspace.workspaceFolders;
+        if (!roots || roots.length === 0)
+            return "";
+        const SKIP = new Set([
+            "node_modules", ".git", "dist", "build", "out", "__pycache__",
+            ".next", ".nuxt", ".turbo", ".cache", ".vscode", ".idea",
+            "coverage", ".nyc_output", "vendor", "target", ".output",
+        ]);
+        const lines = [];
+        let fileCount = 0;
+        const walk = async (uri, indent, depth) => {
+            if (depth > maxDepth || fileCount > maxFiles)
+                return;
+            try {
+                const entries = await vscode.workspace.fs.readDirectory(uri);
+                // Sort: directories first, then files
+                entries.sort((a, b) => {
+                    if (a[1] === b[1])
+                        return a[0].localeCompare(b[0]);
+                    return a[1] === vscode.FileType.Directory ? -1 : 1;
+                });
+                for (const [name, type] of entries) {
+                    if (fileCount > maxFiles)
+                        break;
+                    if (SKIP.has(name) || name.startsWith("."))
+                        continue;
+                    if (type === vscode.FileType.Directory) {
+                        lines.push(`${indent}${name}/`);
+                        await walk(vscode.Uri.joinPath(uri, name), indent + "  ", depth + 1);
+                    }
+                    else {
+                        lines.push(`${indent}${name}`);
+                        fileCount++;
+                    }
+                }
+            }
+            catch { /* permission/read errors */ }
+        };
+        for (const root of roots) {
+            lines.push(`${path.basename(root.uri.fsPath)}/`);
+            await walk(root.uri, "  ", 1);
+        }
+        if (fileCount > maxFiles) {
+            lines.push(`  ... (${fileCount}+ files, tree truncated)`);
+        }
+        return lines.join("\n");
+    }
+    // ── Git integration ──────────────────────────────────────────────
+    /** Get git status for the workspace (branch + changed files) */
+    async getGitStatus() {
+        const roots = vscode.workspace.workspaceFolders;
+        if (!roots || roots.length === 0)
+            return null;
+        const cp = await Promise.resolve().then(() => __importStar(require("child_process")));
+        try {
+            const cwd = roots[0].uri.fsPath;
+            const branch = cp.execSync("git rev-parse --abbrev-ref HEAD", { cwd, encoding: "utf-8", timeout: 5000 }).trim();
+            const status = cp.execSync("git status --porcelain", { cwd, encoding: "utf-8", timeout: 5000 }).trim();
+            const changes = status ? status.split("\n").map((l) => l.trim()) : [];
+            return { branch, changes };
+        }
+        catch {
+            return null;
+        }
+    }
+    /** Get recent git log (last N commits one-line) */
+    async getGitLog(count = 5) {
+        const roots = vscode.workspace.workspaceFolders;
+        if (!roots || roots.length === 0)
+            return null;
+        const cp = await Promise.resolve().then(() => __importStar(require("child_process")));
+        try {
+            const cwd = roots[0].uri.fsPath;
+            return cp.execSync(`git log --oneline -${count}`, { cwd, encoding: "utf-8", timeout: 5000 }).trim();
+        }
+        catch {
+            return null;
+        }
+    }
+    // ── Enhanced context string with repo tree + git ──────────────────
+    /** Build full context string including repo tree and git info */
+    async buildFullContextString() {
+        const base = this.buildContextString();
+        const parts = [base];
+        // Repo tree
+        try {
+            const tree = await this.buildRepoTree();
+            if (tree) {
+                parts.push(`## Repository Structure\n\`\`\`\n${tree}\n\`\`\``);
+            }
+        }
+        catch { /* skip if fails */ }
+        // Git status
+        try {
+            const git = await this.getGitStatus();
+            if (git) {
+                let gitStr = `Git branch: ${git.branch}`;
+                if (git.changes.length > 0) {
+                    gitStr += `\nChanged files (${git.changes.length}):\n${git.changes.slice(0, 15).join("\n")}`;
+                    if (git.changes.length > 15)
+                        gitStr += `\n... +${git.changes.length - 15} more`;
+                }
+                else {
+                    gitStr += "\nWorking tree clean";
+                }
+                parts.push(`## Git Status\n${gitStr}`);
+            }
+        }
+        catch { /* skip if fails */ }
+        // Auto-inject active file content (if small enough)
+        try {
+            const editor = vscode.window.activeTextEditor;
+            if (editor && editor.document.uri.scheme === "file") {
+                const doc = editor.document;
+                const lineCount = doc.lineCount;
+                if (lineCount <= 300) {
+                    const content = doc.getText();
+                    if (content.length <= 15000) {
+                        const rel = this._relativePath(doc.uri) || path.basename(doc.uri.fsPath);
+                        const lang = doc.languageId;
+                        parts.push(`## Active File Content (${rel})\n\`\`\`${lang}\n${content}\n\`\`\``);
+                    }
+                }
+            }
+        }
+        catch { /* skip */ }
+        return parts.filter(p => p).join("\n\n");
+    }
     _guessLanguage(filePath) {
         const ext = path.extname(filePath).toLowerCase();
         const map = {

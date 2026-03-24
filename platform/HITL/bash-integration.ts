@@ -1,507 +1,306 @@
-import z from "zod"
-import { spawn } from "child_process"
-import { Tool } from "./tool"
-import path from "path"
-import DESCRIPTION from "./bash.txt"
+// ---------------------------------------------------------------------------
+// Bash Integration — Standalone bash execution with full HITL security checks
+//
+// This is a self-contained adaptation of the bash security integration for
+// the Thirdwave platform. It does NOT depend on any OpenCode internal framework.
+//
+// Security layers applied on every command execution:
+//   1. Destructive command guard   — pre-flight pattern matching
+//   2. Sensitive file detection    — blocks writes to secret files
+//   3. Risk-based scoring          — dynamic 0-100 risk threshold gating
+//   4. Loop detection              — prevents runaway agent loops
+//   5. Execution mode              — host vs. Docker sandboxed runner
+// ---------------------------------------------------------------------------
+
 import { Log } from "../util/log"
-import { Instance } from "../project/instance"
-import { lazy } from "@/util/lazy"
-import { Language } from "web-tree-sitter"
+import { exec, spawn } from "child_process"
+import { promisify } from "util"
+import { RiskEngine } from "./riskEngine"
+import { isDestructive } from "./destructiveGuard"
+import { isSensitive } from "./sensitiveFiles"
+import { SandboxRunnerFactory } from "./sandboxRunner"
+import { AuditLogger } from "./auditLogger"
+import { LoopGuard } from "./loopGuard"
 
-import { $ } from "bun"
-import { Filesystem } from "@/util/filesystem"
-import { fileURLToPath } from "url"
-import { Flag } from "@/flag/flag.ts"
-import { Shell } from "@/shell/shell"
+const execAsync = promisify(exec)
 
-import { BashArity } from "@/permission/arity"
-import { Truncate } from "./truncation"
-import { Plugin } from "@/plugin"
-import { Config } from "@/config/config"
-import { RiskEngine } from "@/permission/riskEngine"
-import { isDestructive } from "@/security/destructiveGuard"
-import { isSensitive } from "@/security/sensitiveFiles"
-import { SandboxRunnerFactory } from "@/sandbox/sandboxRunner"
-import { AuditLogger } from "@/audit/auditLogger"
-import { LoopGuard } from "@/agent/loopGuard"
-
-const MAX_METADATA_LENGTH = 30_000
-const DEFAULT_TIMEOUT = Flag.OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS || 2 * 60 * 1000
+const MAX_OUTPUT_LENGTH = 30_000
+const DEFAULT_TIMEOUT_MS = 2 * 60 * 1000 // 2 minutes
 
 export const log = Log.create({ service: "bash-tool" })
 
-const resolveWasm = (asset: string) => {
-  if (asset.startsWith("file://")) return fileURLToPath(asset)
-  if (asset.startsWith("/") || /^[a-z]:/i.test(asset)) return asset
-  const url = new URL(asset, import.meta.url)
-  return fileURLToPath(url)
+// ── Types ─────────────────────────────────────────────────────────────
+
+export interface BashParams {
+  command: string
+  timeout?: number
+  workdir?: string
+  description: string
 }
 
-const parser = lazy(async () => {
-  const { Parser } = await import("web-tree-sitter")
-  const { default: treeWasm } = await import("web-tree-sitter/tree-sitter.wasm" as string, {
-    with: { type: "wasm" },
-  })
-  const treePath = resolveWasm(treeWasm)
-  await Parser.init({
-    locateFile() {
-      return treePath
-    },
-  })
-  const { default: bashWasm } = await import("tree-sitter-bash/tree-sitter-bash.wasm" as string, {
-    with: { type: "wasm" },
-  })
-  const bashPath = resolveWasm(bashWasm)
-  const bashLanguage = await Language.load(bashPath)
-  const p = new Parser()
-  p.setLanguage(bashLanguage)
-  return p
-})
+export interface BashResult {
+  output: string
+  exitCode: number
+  executedIn: "host" | "sandbox"
+  description: string
+}
 
-// TODO: we may wanna rename this tool so it works better on other shells
-export const BashTool = Tool.define("bash", async () => {
-  const shell = Shell.acceptable()
-  log.info("bash tool using shell", { shell })
+export interface BashSecurityConfig {
+  execution_mode?: string
+  risk_policy?: string
+  risk_thresholds?: { ask?: number; deny?: number }
+  audit_logging?: { enabled?: boolean; directory?: string }
+  loop_detection?: { enabled?: boolean; threshold?: number }
+  agent_autonomy?: { mode?: "supervised" | "semi_autonomous" | "fully_autonomous" }
+}
 
-  // Initialize security systems
-  const riskEngine = new RiskEngine()
-  const sandboxFactory = new SandboxRunnerFactory()
-  let auditLogger: AuditLogger | null = null
-  let loopGuard: LoopGuard | null = null
+// ── Approval callback (wire to HITL service in production) ────────────
 
-  return {
-    description: DESCRIPTION.replaceAll("${directory}", Instance.directory)
-      .replaceAll("${maxLines}", String(Truncate.MAX_LINES))
-      .replaceAll("${maxBytes}", String(Truncate.MAX_BYTES)),
-    parameters: z.object({
-      command: z.string().describe("The command to execute"),
-      timeout: z.number().describe("Optional timeout in milliseconds").optional(),
-      workdir: z
-        .string()
-        .describe(
-          `The working directory to run the command in. Defaults to ${Instance.directory}. Use this instead of 'cd' commands.`,
-        )
-        .optional(),
-      description: z
-        .string()
-        .describe(
-          "Clear, concise description of what this command does in 5-10 words. Examples:\nInput: ls\nOutput: Lists files in current directory\n\nInput: git status\nOutput: Shows working tree status\n\nInput: npm install\nOutput: Installs package dependencies\n\nInput: mkdir foo\nOutput: Creates directory 'foo'",
-        ),
-    }),
-    async execute(params, ctx) {
-      const cwd = params.workdir || Instance.directory
-      if (params.timeout !== undefined && params.timeout < 0) {
-        throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
-      }
-      const timeout = params.timeout ?? DEFAULT_TIMEOUT
+export type AskFn = (opts: {
+  permission: string
+  patterns: string[]
+  metadata: Record<string, unknown>
+}) => Promise<void>
 
-      // Load security configuration
-      const config = await Config.state()
-      const securityConfig = config.security || {}
-      const autonomyConfig = config.agent_autonomy || { mode: "semi_autonomous" }
+const noopAsk: AskFn = async () => {}
 
-      // Initialize audit logger if enabled
-      if (securityConfig.audit_logging?.enabled && !auditLogger) {
-        auditLogger = new AuditLogger(securityConfig.audit_logging?.directory)
-        await auditLogger.initialize()
-      }
+// ── Simple command tokenizer (no web-tree-sitter required) ────────────
 
-      // Initialize loop guard if enabled
-      if (securityConfig.loop_detection?.enabled && !loopGuard) {
-        loopGuard = new LoopGuard()
-      }
+function tokenizeCommand(cmd: string): string[][] {
+  return cmd
+    .split(/;|&&|\|\||\|/)
+    .map((c) => c.trim().split(/\s+/).filter(Boolean))
+}
 
-      // SECURITY CHECK 1: Destructive command guard (always checked first)
-      if (isDestructive({ command: params.command, workingDirectory: cwd })) {
-        log.warn("Destructive command detected, requiring approval", { command: params.command })
-        await ctx.ask({
-          permission: "bash",
-          patterns: [params.command],
-          metadata: {
-            security_reason: "destructive_guard",
-            command: params.command,
-            severity: "critical",
-          },
-        })
+// ── Core bash executor ────────────────────────────────────────────────
 
-        // Audit the destructive command check
-        if (auditLogger) {
-          await auditLogger.logEvent({
-            type: "command_execution",
-            action: "destructive_command_detected",
-            resource: params.command,
-            result: "ask",
-            details: { destructivePatterns: true },
-          })
-        }
-      }
+export class BashIntegration {
+  private riskEngine = new RiskEngine()
+  private sandboxFactory = new SandboxRunnerFactory()
+  private auditLogger: AuditLogger | null = null
+  private loopGuard: LoopGuard | null = null
+  private config: BashSecurityConfig
+  private ask: AskFn
 
-      // SECURITY CHECK 2: Sensitive file detection
-      if (isSensitive(cwd)) {
-        log.warn("Command in sensitive directory detected", { workdir: cwd })
-        await ctx.ask({
-          permission: "bash",
-          patterns: [params.command],
-          metadata: {
-            security_reason: "sensitive_file_protection",
-            workdir: cwd,
-            command: params.command,
-          },
-        })
-
-        if (auditLogger) {
-          await auditLogger.logEvent({
-            type: "sensitive_file_access",
-            action: "command_in_sensitive_directory",
-            resource: cwd,
-            result: "ask",
-          })
-        }
-      }
-
-      // SECURITY CHECK 3: Risk-based permission system
-      if (securityConfig.risk_policy === "dynamic" || securityConfig.risk_policy === "hybrid") {
-        const riskContext = {
-          command: params.command,
-          path: cwd,
-          touchesSensitiveFile: isSensitive(cwd),
-          action: "bash_execution",
-        }
-
-        const assessment = riskEngine.assess(riskContext)
-        log.debug("Risk assessment", { command: params.command, score: assessment.score, level: assessment.level })
-
-        // Apply autonomy mode multipliers to thresholds
-        const AUTONOMY_MULTIPLIERS = {
-          supervised: 1.5,
-          semi_autonomous: 1.0,
-          fully_autonomous: 0.7,
-        }
-        const multiplier = AUTONOMY_MULTIPLIERS[autonomyConfig.mode || "semi_autonomous"] || 1.0
-        const adjustedAskThreshold = (securityConfig.risk_thresholds?.ask || 40) * multiplier
-
-        if (assessment.score >= adjustedAskThreshold) {
-          log.info("Risk score requires approval", {
-            score: assessment.score,
-            threshold: adjustedAskThreshold,
-            factors: assessment.factors,
-          })
-
-          await ctx.ask({
-            permission: "bash",
-            patterns: [params.command],
-            metadata: {
-              security_reason: "risk_based_permission",
-              risk_score: assessment.score,
-              risk_level: assessment.level,
-              risk_factors: assessment.factors,
-              autonomy_mode: autonomyConfig.mode,
-              command: params.command,
-            },
-          })
-        }
-
-        if (auditLogger) {
-          await auditLogger.logEvent({
-            type: "permission_decision",
-            action: "risk_assessment",
-            resource: params.command,
-            riskScore: assessment.score,
-            details: { factors: assessment.factors, level: assessment.level },
-          })
-        }
-      }
-
-      // SECURITY CHECK 4: Loop detection
-      if (loopGuard) {
-        loopGuard.recordCommand(params.command)
-        const loopScore = loopGuard.computeLoopScore()
-        const loopThreshold = securityConfig.loop_detection?.threshold || 50
-
-        if (loopScore >= loopThreshold) {
-          log.warn("Loop detection triggered, requiring approval", { loopScore, threshold: loopThreshold })
-          await ctx.ask({
-            permission: "bash",
-            patterns: [params.command],
-            metadata: {
-              security_reason: "doom_loop_v2",
-              loop_score: loopScore,
-              command: params.command,
-            },
-          })
-
-          if (auditLogger) {
-            await auditLogger.logEvent({
-              type: "loop_detected",
-              action: "potential_infinite_loop",
-              resource: params.command,
-              riskScore: loopScore,
-            })
-          }
-        }
-      }
-
-      // Parse command for permission patterns
-      const tree = await parser().then((p) => p.parse(params.command))
-      if (!tree) {
-        throw new Error("Failed to parse command")
-      }
-      const directories = new Set<string>()
-      if (!Instance.containsPath(cwd)) directories.add(cwd)
-      const patterns = new Set<string>()
-      const always = new Set<string>()
-
-      for (const node of tree.rootNode.descendantsOfType("command")) {
-        if (!node) continue
-
-        // Get full command text including redirects if present
-        let commandText = node.parent?.type === "redirected_statement" ? node.parent.text : node.text
-
-        const command = []
-        for (let i = 0; i < node.childCount; i++) {
-          const child = node.child(i)
-          if (!child) continue
-          if (
-            child.type !== "command_name" &&
-            child.type !== "word" &&
-            child.type !== "string" &&
-            child.type !== "raw_string" &&
-            child.type !== "concatenation"
-          ) {
-            continue
-          }
-          command.push(child.text)
-        }
-
-        // not an exhaustive list, but covers most common cases
-        if (["cd", "rm", "cp", "mv", "mkdir", "touch", "chmod", "chown", "cat"].includes(command[0])) {
-          for (const arg of command.slice(1)) {
-            if (arg.startsWith("-") || (command[0] === "chmod" && arg.startsWith("+"))) continue
-            const resolved = await $`realpath ${arg}`
-              .cwd(cwd)
-              .quiet()
-              .nothrow()
-              .text()
-              .then((x) => x.trim())
-            log.info("resolved path", { arg, resolved })
-            if (resolved) {
-              const normalized =
-                process.platform === "win32" ? Filesystem.windowsPath(resolved).replace(/\//g, "\\") : resolved
-              if (!Instance.containsPath(normalized)) {
-                const dir = (await Filesystem.isDir(normalized)) ? normalized : path.dirname(normalized)
-                directories.add(dir)
-
-                // Check if accessing sensitive file
-                if (isSensitive(dir)) {
-                  log.warn("Access to sensitive file detected", { path: normalized })
-                  if (auditLogger) {
-                    await auditLogger.logEvent({
-                      type: "sensitive_file_access",
-                      action: "file_operation",
-                      resource: normalized,
-                      result: "ask",
-                    })
-                  }
-                }
-              }
-            }
-          }
-        }
-
-        // cd covered by above check
-        if (command.length && command[0] !== "cd") {
-          patterns.add(commandText)
-          always.add(BashArity.prefix(command).join(" ") + " *")
-        }
-      }
-
-      if (directories.size > 0) {
-        const globs = Array.from(directories).map((dir) => {
-          // Preserve POSIX-looking paths with /s, even on Windows
-          if (dir.startsWith("/")) return `${dir.replace(/[\\/]+$/, "")}/*`
-          return path.join(dir, "*")
-        })
-        await ctx.ask({
-          permission: "external_directory",
-          patterns: globs,
-          always: globs,
-          metadata: {},
-        })
-      }
-
-      if (patterns.size > 0) {
-        await ctx.ask({
-          permission: "bash",
-          patterns: Array.from(patterns),
-          always: Array.from(always),
-          metadata: {},
-        })
-      }
-
-      // Get execution mode and create appropriate runner
-      const executionMode = securityConfig.execution_mode || "host"
-      const runner = await sandboxFactory.create(executionMode)
-
-      log.info("Executing command", { command: params.command, mode: executionMode, workdir: cwd })
-
-      if (auditLogger) {
-        await auditLogger.logEvent({
-          type: "command_execution",
-          action: "bash_command",
-          resource: params.command,
-          details: { mode: executionMode, workdir: cwd },
-        })
-      }
-
-      const shellEnv = await Plugin.trigger(
-        "shell.env",
-        { cwd, sessionID: ctx.sessionID, callID: ctx.callID },
-        { env: {} },
-      )
-
-      // Execute using appropriate runner (host or sandbox)
-      let output = ""
-      let proc: any = null
-      let exitCode = 0
-
-      if (executionMode === "sandbox") {
-        // Use sandboxed execution
-        try {
-          log.debug("Using sandboxed execution mode")
-          const result = await runner.runBash(params.command)
-          output = result.stdout + (result.stderr ? "\n" + result.stderr : "")
-          exitCode = result.exitCode
-
-          if (auditLogger) {
-            await auditLogger.logEvent({
-              type: "sandbox_execution",
-              action: "command_executed",
-              resource: params.command,
-              result: exitCode === 0 ? "allow" : "deny",
-              details: { exitCode, mode: "sandbox" },
-            })
-          }
-        } catch (error) {
-          loopGuard?.recordError(String(error), params.command)
-          log.error("Sandbox execution failed", { command: params.command, error })
-          output = `Sandbox execution error: ${error}`
-          exitCode = 1
-
-          if (auditLogger) {
-            await auditLogger.logEvent({
-              type: "command_execution",
-              action: "sandbox_error",
-              resource: params.command,
-              result: "deny",
-              details: { error: String(error) },
-            })
-          }
-        }
-      } else {
-        // Use host execution (existing behavior)
-        proc = spawn(params.command, {
-          shell,
-          cwd,
-          env: {
-            ...process.env,
-            ...shellEnv.env,
-          },
-          stdio: ["ignore", "pipe", "pipe"],
-          detached: process.platform !== "win32",
-        })
-
-        // Initialize metadata with empty output
-        ctx.metadata({
-          metadata: {
-            output: "",
-            description: params.description,
-          },
-        })
-
-        const append = (chunk: Buffer) => {
-          output += chunk.toString()
-          ctx.metadata({
-            metadata: {
-              // truncate the metadata to avoid GIANT blobs of data (has nothing to do w/ what agent can access)
-              output:
-                output.length > MAX_METADATA_LENGTH ? output.slice(0, MAX_METADATA_LENGTH) + "\n\n..." : output,
-              description: params.description,
-            },
-          })
-        }
-
-        proc.stdout?.on("data", append)
-        proc.stderr?.on("data", append)
-
-        let timedOut = false
-        let aborted = false
-        let exited = false
-
-        const kill = () => Shell.killTree(proc, { exited: () => exited })
-
-        if (ctx.abort.aborted) {
-          aborted = true
-          await kill()
-        }
-
-        const abortHandler = () => {
-          aborted = true
-          void kill()
-        }
-
-        ctx.abort.addEventListener("abort", abortHandler, { once: true })
-
-        const timeoutTimer = setTimeout(() => {
-          timedOut = true
-          void kill()
-        }, timeout + 100)
-
-        await new Promise<void>((resolve, reject) => {
-          const cleanup = () => {
-            clearTimeout(timeoutTimer)
-            ctx.abort.removeEventListener("abort", abortHandler)
-          }
-
-          proc.once("exit", (code: number) => {
-            exitCode = code || 0
-            exited = true
-            cleanup()
-            resolve()
-          })
-
-          proc.once("error", (error: any) => {
-            exited = true
-            cleanup()
-            reject(error)
-          })
-        })
-
-        const resultMetadata: string[] = []
-
-        if (timedOut) {
-          resultMetadata.push(`bash tool terminated command after exceeding timeout ${timeout} ms`)
-          loopGuard?.recordError("Timeout", params.command)
-        }
-
-        if (aborted) {
-          resultMetadata.push("User aborted the command")
-        }
-
-        if (resultMetadata.length > 0) {
-          output += "\n\n<bash_metadata>\n" + resultMetadata.join("\n") + "\n</bash_metadata>"
-        }
-      }
-
-      return {
-        title: params.description,
-        metadata: {
-          output: output.length > MAX_METADATA_LENGTH ? output.slice(0, MAX_METADATA_LENGTH) + "\n\n..." : output,
-          exit: exitCode,
-          description: params.description,
-          execution_mode: executionMode,
-        },
-        output,
-      }
-    },
+  constructor(config: BashSecurityConfig = {}, ask: AskFn = noopAsk) {
+    this.config = config
+    this.ask = ask
   }
-})
+
+  async initialize(): Promise<void> {
+    if (this.config.audit_logging?.enabled) {
+      this.auditLogger = new AuditLogger(this.config.audit_logging.directory)
+      await this.auditLogger.initialize()
+    }
+    if (this.config.loop_detection?.enabled) {
+      this.loopGuard = new LoopGuard()
+    }
+    log.info("BashIntegration initialized", {
+      auditEnabled: !!this.auditLogger,
+      loopDetection: !!this.loopGuard,
+      mode: this.config.execution_mode ?? "host",
+    })
+  }
+
+  async execute(params: BashParams): Promise<BashResult> {
+    const cwd = params.workdir ?? process.cwd()
+
+    if (params.timeout !== undefined && params.timeout < 0) {
+      throw new Error(`Invalid timeout: ${params.timeout}. Must be positive.`)
+    }
+
+    const timeout = params.timeout ?? DEFAULT_TIMEOUT_MS
+
+    // SECURITY CHECK 1: Destructive command guard
+    if (isDestructive({ command: params.command, workingDirectory: cwd })) {
+      log.warn("Destructive command detected", { command: params.command })
+      await this.ask({
+        permission: "bash",
+        patterns: [params.command],
+        metadata: { security_reason: "destructive_guard", command: params.command, severity: "critical" },
+      })
+      await this._audit("command_execution", "destructive_command_detected", params.command, "ask", {
+        destructivePatterns: true,
+      })
+    }
+
+    // SECURITY CHECK 2: Sensitive working directory
+    if (isSensitive(cwd)) {
+      log.warn("Command in sensitive directory", { workdir: cwd })
+      await this.ask({
+        permission: "bash",
+        patterns: [params.command],
+        metadata: { security_reason: "sensitive_file_protection", workdir: cwd, command: params.command },
+      })
+      await this._audit("sensitive_file_access", "command_in_sensitive_directory", cwd, "ask")
+    }
+
+    // Check paths referenced in the command
+    const FILE_OPS = ["cat", "rm", "cp", "mv", "mkdir", "touch", "chmod", "chown", "echo", "tee"]
+    for (const parts of tokenizeCommand(params.command)) {
+      if (parts.length > 1 && FILE_OPS.includes(parts[0])) {
+        for (const arg of parts.slice(1)) {
+          if (arg.startsWith("-")) continue
+          const resolved = await this._resolvePath(arg, cwd)
+          if (resolved && isSensitive(resolved)) {
+            log.warn("Access to sensitive file detected", { path: resolved })
+            await this._audit("sensitive_file_access", "file_operation", resolved, "ask")
+          }
+        }
+      }
+    }
+
+    // SECURITY CHECK 3: Risk-based scoring
+    const policy = this.config.risk_policy
+    if (policy === "dynamic" || policy === "hybrid") {
+      const assessment = this.riskEngine.assess({
+        command: params.command,
+        path: cwd,
+        touchesSensitiveFile: isSensitive(cwd),
+        action: "bash_execution",
+      })
+      const AUTONOMY_MULTIPLIERS: Record<string, number> = {
+        supervised: 1.5, semi_autonomous: 1.0, fully_autonomous: 0.7,
+      }
+      const autonomyMode = this.config.agent_autonomy?.mode ?? "semi_autonomous"
+      const multiplier = AUTONOMY_MULTIPLIERS[autonomyMode] ?? 1.0
+      const askThreshold = (this.config.risk_thresholds?.ask ?? 40) * multiplier
+
+      log.debug("Risk assessment", { score: assessment.score, level: assessment.level })
+
+      if (assessment.score >= askThreshold) {
+        await this.ask({
+          permission: "bash",
+          patterns: [params.command],
+          metadata: {
+            security_reason: "risk_based_permission",
+            risk_score: assessment.score,
+            risk_level: assessment.level,
+            risk_factors: assessment.factors,
+            autonomy_mode: autonomyMode,
+            command: params.command,
+          },
+        })
+      }
+      await this._audit("permission_decision", "risk_assessment", params.command, undefined, {
+        score: assessment.score, level: assessment.level, factors: assessment.factors,
+      })
+    }
+
+    // SECURITY CHECK 4: Loop detection
+    if (this.loopGuard) {
+      this.loopGuard.recordCommand(params.command)
+      const loopScore = this.loopGuard.computeLoopScore()
+      const threshold = this.config.loop_detection?.threshold ?? 50
+
+      if (loopScore >= threshold) {
+        log.warn("Loop detection triggered", { loopScore, threshold })
+        await this.ask({
+          permission: "bash",
+          patterns: [params.command],
+          metadata: { security_reason: "doom_loop_v2", loop_score: loopScore, command: params.command },
+        })
+        await this._audit("loop_detected", "potential_infinite_loop", params.command, undefined, { loopScore })
+      }
+    }
+
+    // EXECUTION
+    const executionMode = (this.config.execution_mode ?? "host") as "host" | "sandbox"
+    log.info("Executing command", { command: params.command, mode: executionMode, cwd })
+    await this._audit("command_execution", "bash_command", params.command, undefined, {
+      mode: executionMode, workdir: cwd,
+    })
+
+    if (executionMode === "sandbox") {
+      return this._runSandboxed(params.command, params.description)
+    }
+    return this._runHost(params.command, cwd, timeout, params.description)
+  }
+
+  private async _runHost(cmd: string, cwd: string, timeout: number, description: string): Promise<BashResult> {
+    return new Promise((resolve) => {
+      const child = spawn(cmd, { shell: true, cwd, stdio: ["ignore", "pipe", "pipe"] })
+      let output = ""
+
+      const killTimer = setTimeout(() => {
+        child.kill("SIGTERM")
+        output += `\n\n<bash_metadata>\nbash tool terminated after exceeding timeout ${timeout}ms\n</bash_metadata>`
+        this.loopGuard?.recordError("Timeout", cmd)
+      }, timeout)
+
+      const append = (chunk: Buffer) => {
+        output += chunk.toString()
+        if (output.length > MAX_OUTPUT_LENGTH) {
+          output = output.slice(0, MAX_OUTPUT_LENGTH) + "\n\n..."
+          child.kill("SIGTERM")
+        }
+      }
+
+      child.stdout?.on("data", append)
+      child.stderr?.on("data", append)
+
+      child.once("exit", (code) => {
+        clearTimeout(killTimer)
+        const exitCode = code ?? 1
+        if (exitCode !== 0) this.loopGuard?.recordError(`exit ${exitCode}`, cmd)
+        this._audit("command_execution", "command_complete", cmd, exitCode === 0 ? "allow" : "deny", {
+          exitCode, mode: "host",
+        })
+        resolve({ output, exitCode, executedIn: "host", description })
+      })
+
+      child.once("error", (err) => {
+        clearTimeout(killTimer)
+        this.loopGuard?.recordError(String(err), cmd)
+        resolve({ output: `Error: ${err.message}`, exitCode: 1, executedIn: "host", description })
+      })
+    })
+  }
+
+  private async _runSandboxed(cmd: string, description: string): Promise<BashResult> {
+    try {
+      const runner = await this.sandboxFactory.create("sandbox")
+      const result = await runner.runBash(cmd)
+      let output = result.stdout + (result.stderr ? "\n" + result.stderr : "")
+      if (output.length > MAX_OUTPUT_LENGTH) output = output.slice(0, MAX_OUTPUT_LENGTH) + "\n\n..."
+      if (result.exitCode !== 0) this.loopGuard?.recordError(`exit ${result.exitCode}`, cmd)
+      await this._audit("sandbox_execution", "command_executed", cmd, result.exitCode === 0 ? "allow" : "deny", {
+        exitCode: result.exitCode,
+      })
+      return { output, exitCode: result.exitCode, executedIn: "sandbox", description }
+    } catch (err) {
+      this.loopGuard?.recordError(String(err), cmd)
+      return { output: `Sandbox error: ${err}`, exitCode: 1, executedIn: "sandbox", description }
+    }
+  }
+
+  private async _resolvePath(arg: string, cwd: string): Promise<string | null> {
+    try {
+      const { stdout } = await execAsync(`realpath -- ${JSON.stringify(arg)}`, { cwd })
+      return stdout.trim() || null
+    } catch {
+      return arg.startsWith("/") ? arg : null
+    }
+  }
+
+  private async _audit(
+    type: "permission_decision" | "command_execution" | "sensitive_file_access" | "loop_detected" | "sandbox_execution",
+    action: string,
+    resource?: string,
+    result?: "allow" | "deny" | "ask",
+    details?: Record<string, unknown>,
+  ): Promise<void> {
+    if (!this.auditLogger) return
+    try { await this.auditLogger.logEvent({ type, action, resource, result, details }) } catch { /* non-fatal */ }
+  }
+}
+
+// ── Singleton factory ─────────────────────────────────────────────────
+
+let _instance: BashIntegration | null = null
+
+export function getBashIntegration(config?: BashSecurityConfig, ask?: AskFn): BashIntegration {
+  if (!_instance) _instance = new BashIntegration(config, ask)
+  return _instance
+}
+

@@ -80,6 +80,7 @@ class ThirdwaveClient {
             temperature: opts.temperature ?? 0.3,
             history: opts.history,
             tools: opts.tools,
+            workspaceRoot: opts.workspaceRoot,
         };
         const res = await fetch(this.url("/api/chat/stream"), {
             method: "POST",
@@ -96,6 +97,7 @@ class ThirdwaveClient {
                 temperature: opts.temperature,
                 history: opts.history,
                 tools: opts.tools,
+                workspaceRoot: opts.workspaceRoot,
             });
             const self = direct;
             return (async function* () {

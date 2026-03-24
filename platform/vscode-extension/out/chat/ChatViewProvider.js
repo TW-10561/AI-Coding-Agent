@@ -52,6 +52,7 @@ class ChatViewProvider {
     _currentModel = "";
     _currentAgent = "build";
     _isStreaming = false;
+    _abortController = null;
     constructor(_extensionUri, client, _context, _workspace) {
         this._extensionUri = _extensionUri;
         this._context = _context;
@@ -117,7 +118,14 @@ class ChatViewProvider {
         webviewView.webview.onDidReceiveMessage(async (msg) => {
             switch (msg.type) {
                 case "sendMessage":
-                    await this._onUserMessage(msg.text);
+                    if (typeof msg.text === "string")
+                        await this._onUserMessage(msg.text);
+                    break;
+                case "stopGeneration":
+                    if (this._abortController) {
+                        this._abortController.abort();
+                        this._abortController = null;
+                    }
                     break;
                 case "newSession":
                     await this.createSession();
@@ -134,20 +142,24 @@ class ChatViewProvider {
                     this._post({ type: "selectedSkillsData", skillIds: this._context.workspaceState.get("thirdwave.selectedSkills", []) });
                     break;
                 case "selectModel":
-                    this._currentModel = msg.modelId;
-                    this._post({ type: "modelChanged", model: msg.modelId });
-                    try {
-                        await vscode.workspace.getConfiguration("thirdwave").update("defaultModel", msg.modelId, vscode.ConfigurationTarget.Workspace);
+                    if (typeof msg.modelId === "string") {
+                        this._currentModel = msg.modelId;
+                        this._post({ type: "modelChanged", model: msg.modelId });
+                        try {
+                            await vscode.workspace.getConfiguration("thirdwave").update("defaultModel", msg.modelId, vscode.ConfigurationTarget.Workspace);
+                        }
+                        catch { }
                     }
-                    catch { }
                     break;
                 case "selectAgent":
-                    this._currentAgent = msg.agent;
-                    this._post({ type: "agentChanged", agent: msg.agent });
-                    try {
-                        await vscode.workspace.getConfiguration("thirdwave").update("defaultAgent", msg.agent, vscode.ConfigurationTarget.Workspace);
+                    if (typeof msg.agent === "string") {
+                        this._currentAgent = msg.agent;
+                        this._post({ type: "agentChanged", agent: msg.agent });
+                        try {
+                            await vscode.workspace.getConfiguration("thirdwave").update("defaultAgent", msg.agent, vscode.ConfigurationTarget.Workspace);
+                        }
+                        catch { }
                     }
-                    catch { }
                     break;
                 case "refreshModels":
                     this._loadModels();
@@ -159,31 +171,39 @@ class ChatViewProvider {
                     this._loadSessions();
                     break;
                 case "switchSession":
-                    this._currentSessionId = msg.sessionId;
-                    this._history = this._loadSessionHistory(msg.sessionId);
-                    this._post({ type: "loadHistory", messages: this._history });
+                    if (typeof msg.sessionId === "string") {
+                        this._currentSessionId = msg.sessionId;
+                        this._history = this._loadSessionHistory(msg.sessionId);
+                        this._post({ type: "loadHistory", messages: this._history });
+                    }
                     break;
                 case "deleteSession":
-                    this._deleteSessionHistory(msg.sessionId);
-                    this._sessions = this._restoreSessions().filter(s => s.id !== msg.sessionId);
-                    this._persistSessions();
-                    this._post({ type: "sessionsData", sessions: this._sessions });
+                    if (typeof msg.sessionId === "string") {
+                        this._deleteSessionHistory(msg.sessionId);
+                        this._sessions = this._restoreSessions().filter(s => s.id !== msg.sessionId);
+                        this._persistSessions();
+                        this._post({ type: "sessionsData", sessions: this._sessions });
+                    }
                     break;
                 case "viewSkill":
-                    vscode.commands.executeCommand("thirdwave.viewSkill", msg.skillId, msg.skillName);
+                    if (typeof msg.skillId === "string" && typeof msg.skillName === "string") {
+                        vscode.commands.executeCommand("thirdwave.viewSkill", msg.skillId, msg.skillName);
+                    }
                     break;
                 case "toggleSkill": {
-                    const selected = this._context.workspaceState.get("thirdwave.selectedSkills", []);
-                    if (msg.enabled) {
-                        if (!selected.includes(msg.skillId))
-                            selected.push(msg.skillId);
+                    if (typeof msg.skillId === "string" && typeof msg.enabled === "boolean") {
+                        const selected = this._context.workspaceState.get("thirdwave.selectedSkills", []);
+                        if (msg.enabled) {
+                            if (!selected.includes(msg.skillId))
+                                selected.push(msg.skillId);
+                        }
+                        else {
+                            const idx = selected.indexOf(msg.skillId);
+                            if (idx >= 0)
+                                selected.splice(idx, 1);
+                        }
+                        this._context.workspaceState.update("thirdwave.selectedSkills", selected);
                     }
-                    else {
-                        const idx = selected.indexOf(msg.skillId);
-                        if (idx >= 0)
-                            selected.splice(idx, 1);
-                    }
-                    this._context.workspaceState.update("thirdwave.selectedSkills", selected);
                     break;
                 }
                 case "clearSkills":
@@ -256,6 +276,16 @@ class ChatViewProvider {
                 case "refreshHitl":
                     this._loadHitl();
                     break;
+                case "getWorkspaceFiles": {
+                    // Return a list of workspace file paths for the @ mention picker
+                    const uris = await vscode.workspace.findFiles("**/*", "**/node_modules/**", 200);
+                    const files = uris.map(u => {
+                        const rel = vscode.workspace.asRelativePath(u);
+                        return { path: rel, name: rel.split("/").pop() || rel };
+                    }).sort((a, b) => a.path.localeCompare(b.path));
+                    this._post({ type: "workspaceFiles", files });
+                    break;
+                }
             }
         });
     }
@@ -323,12 +353,35 @@ class ChatViewProvider {
             const histSlice = this._history.filter(m => m.role === "user" || m.role === "assistant").slice(-10).map(m => ({ role: m.role, content: m.content }));
             histSlice.pop();
             const kw = /\b(run|exec|build|test|compile|deploy|install|create|delete|remove|write|read|search|find|list|show|open|close|kill|start|stop|restart|update|upgrade|fix|check|lint|format|refactor|rename|move|copy|curl|wget|pip|npm|bun|git|docker|make|grep|sed|awk)\b/i;
-            const tools = cfg.get("enableTools", true) && text.split(/\s+/).length > 5 && kw.test(text);
+            // Enable tools for build and general agents. For build mode, always enable
+            // tools regardless of keyword matches — the user expects file creation.
+            const agentAllowsTools = this._currentAgent === "build" || this._currentAgent === "general";
+            const tools = cfg.get("enableTools", true) && agentAllowsTools;
+            // Get workspace root to send with the request
+            const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
             // Build system prompt: workspace context + selected skills
             const selectedIds = this._context.workspaceState.get("thirdwave.selectedSkills", []);
             const promptParts = [];
-            // Inject workspace context (active file, open files, diagnostics, attachments)
-            const wsContext = this._workspace.buildContextString();
+            // Always inject Thirdwave identity + full behavioral instructions so the
+            // model never falls back to its training identity and always responds
+            // coherently — this replaces the server's DIRECT_SYSTEM when present.
+            promptParts.push("You are Thirdwave AI Coding Platform, a helpful AI coding assistant. " +
+                "When asked about your identity or name, you are Thirdwave AI — never identify as Claude, ChatGPT, or any other assistant. " +
+                "Always provide complete, thorough answers. Never say \"I will explain\" or \"I'll do\" — instead, actually explain and do it immediately. " +
+                "When asked about code, provide full working solutions with explanations. " +
+                "When asked to analyze or fix code, show the complete corrected code and explain every change. " +
+                "Do not be lazy or skip details. Always respond in fluent, natural English.");
+            // Agent-specific behavioral instructions
+            const agentInstructions = {
+                build: "You are in BUILD mode. You have full read/write/execute access. Use tools to create files, run commands, install packages, and make changes to the codebase. When the user asks you to build something, actually create all the files and set up the project.",
+                plan: "You are in PLAN mode. You MUST ONLY provide plans and analysis — NEVER output raw code blocks, NEVER write implementation code, NEVER use tools to create files or run commands. Instead: 1) Break down the task into clear steps 2) Describe the file structure and architecture 3) Explain what each component should do 4) Identify dependencies and technologies needed 5) Provide a step-by-step implementation guide. Even if the user gives a short name like 'xo game' or 'calculator', you must provide a structured plan, NOT the code itself. Present your plan using headings, numbered lists, and descriptions.",
+                explore: "You are in EXPLORE mode. You are a read-only codebase search and exploration agent. Focus on finding relevant code, explaining how the codebase works, tracing data flows, and answering questions about the existing code structure.",
+                general: "You are in GENERAL mode. You are a multi-step reasoning and general-purpose assistant. You can use tools when needed. Provide thorough analysis and reasoning for complex tasks.",
+            };
+            const agentInstruction = agentInstructions[this._currentAgent] || agentInstructions.build;
+            promptParts.push("## Agent Mode\n" + agentInstruction);
+            // Inject workspace context (active file, open files, diagnostics, attachments, repo tree, git)
+            const wsContext = await this._workspace.buildFullContextString();
             if (wsContext) {
                 promptParts.push("## Current Workspace Context\n" + wsContext);
             }
@@ -350,33 +403,76 @@ class ChatViewProvider {
             const systemPrompt = promptParts.length > 0 ? promptParts.join("\n\n") : undefined;
             // Clear file attachments after building context (one-shot)
             this._workspace.clearAttachments();
+            // Send context compaction info to webview so user can see what was sent
+            const contextSummary = [];
+            if (wsContext)
+                contextSummary.push("Workspace context: active file, open files, diagnostics");
+            const gitInfo = await this._workspace.getGitStatus().catch(() => null);
+            if (gitInfo)
+                contextSummary.push(`Git: ${gitInfo.branch} (${gitInfo.changes.length} changes)`);
+            if (selectedIds.length > 0)
+                contextSummary.push(`Skills: ${selectedIds.length} active`);
+            const ctxLen = systemPrompt ? systemPrompt.length : 0;
+            this._post({ type: "contextInfo", summary: contextSummary, charCount: ctxLen });
             // Start streaming — show tokens as they arrive
             this._post({ type: "streamStart" });
             let fullText = "";
             let fullReasoning = "";
             let meta = {};
             const startTime = Date.now();
+            this._abortController = new AbortController();
+            const abortSignal = this._abortController.signal;
             try {
-                const stream = await this._client.chatStream({
-                    message: text,
-                    model: this._currentModel || undefined,
-                    system: systemPrompt,
-                    maxTokens: cfg.get("maxTokens", 8192),
-                    temperature: cfg.get("temperature", 0.3),
-                    history: histSlice.length > 0 ? histSlice : undefined,
-                    tools,
-                });
-                for await (const chunk of stream) {
-                    if (chunk.type === "reasoning") {
-                        fullReasoning += chunk.content;
-                        this._post({ type: "streamReasoning", content: chunk.content });
+                if (tools) {
+                    // When tools are enabled, use directChat (POST /api/chat) which has
+                    // the full agentic tool-calling loop. The stream endpoint does NOT
+                    // support tool execution, so we must use the non-streaming path.
+                    const resp = await this._client.directChat({
+                        message: text,
+                        modelID: this._currentModel || undefined,
+                        system: systemPrompt,
+                        maxTokens: cfg.get("maxTokens", 8192),
+                        temperature: cfg.get("temperature", 0.3),
+                        history: histSlice.length > 0 ? histSlice : undefined,
+                        tools,
+                        workspaceRoot: wsRoot,
+                    });
+                    fullText = resp.text;
+                    fullReasoning = resp.reasoning || "";
+                    meta = { model: resp.model, tokens: resp.tokens, latencyMs: resp.latencyMs, toolCalls: resp.toolCalls };
+                    // Emit the full text as a single stream token for consistent rendering
+                    if (!abortSignal.aborted) {
+                        if (fullReasoning)
+                            this._post({ type: "streamReasoning", content: fullReasoning });
+                        this._post({ type: "streamToken", content: fullText });
                     }
-                    else if (chunk.type === "text") {
-                        fullText += chunk.content;
-                        this._post({ type: "streamToken", content: chunk.content });
-                    }
-                    else if (chunk.type === "done" && chunk.meta) {
-                        meta = chunk.meta;
+                }
+                else {
+                    // No tools — use streaming for better UX (plan/explore mode)
+                    const stream = await this._client.chatStream({
+                        message: text,
+                        model: this._currentModel || undefined,
+                        system: systemPrompt,
+                        maxTokens: cfg.get("maxTokens", 8192),
+                        temperature: cfg.get("temperature", 0.3),
+                        history: histSlice.length > 0 ? histSlice : undefined,
+                        tools: false,
+                        workspaceRoot: wsRoot,
+                    });
+                    for await (const chunk of stream) {
+                        if (abortSignal.aborted)
+                            break;
+                        if (chunk.type === "reasoning") {
+                            fullReasoning += chunk.content;
+                            this._post({ type: "streamReasoning", content: chunk.content });
+                        }
+                        else if (chunk.type === "text") {
+                            fullText += chunk.content;
+                            this._post({ type: "streamToken", content: chunk.content });
+                        }
+                        else if (chunk.type === "done" && chunk.meta) {
+                            meta = chunk.meta;
+                        }
                     }
                 }
             }
@@ -390,6 +486,7 @@ class ChatViewProvider {
                     temperature: cfg.get("temperature", 0.3),
                     history: histSlice.length > 0 ? histSlice : undefined,
                     tools,
+                    workspaceRoot: wsRoot,
                 });
                 fullText = resp.text;
                 fullReasoning = resp.reasoning || "";
@@ -420,6 +517,7 @@ class ChatViewProvider {
         }
         finally {
             this._isStreaming = false;
+            this._abortController = null;
             this._post({ type: "setLoading", loading: false });
         }
     }
@@ -444,6 +542,7 @@ class ChatViewProvider {
 
   <!-- TOP HEADER BAR -->
   <div class="topbar">
+    <span class="topbar-title" id="topbarTitle">CHAT</span>
     <div class="topbar-actions">
       <button class="tb-icon" id="newBtn" title="New Chat"><svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg></button>
       <button class="tb-icon" id="histBtn" data-tab="sessions" title="History"><svg viewBox="0 0 24 24"><path d="M13 3a9 9 0 00-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.954 8.954 0 0013 21a9 9 0 000-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg></button>
@@ -477,6 +576,7 @@ class ChatViewProvider {
           <button class="it-btn" id="mdBtn" title="Active model"><svg viewBox="0 0 24 24"><path d="M20 18c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2H0v2h24v-2h-4zM4 6h16v10H4V6z"/></svg><span class="it-lbl" id="mdLbl">loading...</span></button>
           <span class="it-sep"></span>
           <button class="it-btn" id="diagBtn" title="Show diagnostics"><svg viewBox="0 0 24 24" width="14" height="14"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg><span class="it-lbl" id="diagLbl">0</span></button>
+          <div class="active-skills-bar" id="activeSkillsBar" style="display:none"></div>
         </div>
       </div>
     </div>
@@ -500,6 +600,15 @@ class ChatViewProvider {
       <!-- MODELS / SETTINGS -->
       <div class="rs-pnl active" id="rp-settings">
         <div class="scr" id="setScr">
+          <div class="sec">
+            <div class="st">Theme</div>
+            <div class="theme-picker" id="themePicker">
+              <button class="theme-btn sel" data-theme="">VS Code</button>
+              <button class="theme-btn" data-theme="vscode-light">VS Code Light</button>
+              <button class="theme-btn" data-theme="electric">Electric B&W</button>
+              <button class="theme-btn" data-theme="electric-light">Electric Light</button>
+            </div>
+          </div>
           <div class="sec">
             <div class="st">Gateway Models (Local)</div>
             <div id="lcm"><div class="nd">Loading...</div></div>

@@ -37,6 +37,7 @@ export interface DirectChatRequest {
     }>;
     tools?: boolean;
     maxToolRounds?: number;
+    workspaceRoot?: string;
 }
 export interface DirectChatResponse {
     text: string;
@@ -131,6 +132,7 @@ export declare class ThirdwaveClient {
             content: string;
         }>;
         tools?: boolean;
+        workspaceRoot?: string;
     }): Promise<AsyncIterable<{
         type: "text" | "reasoning" | "done";
         content: string;

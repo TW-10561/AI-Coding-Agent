@@ -26,6 +26,7 @@ const ChatBody = z.object({
   tools: z.boolean().optional(),           // enable tool calling (default: true)
   maxToolRounds: z.number().min(0).max(20).optional(),
   timeoutMs: z.number().min(5000).max(600000).optional(), // per-round fetch timeout
+  workspaceRoot: z.string().optional(),    // VS Code workspace folder path
 })
 
 // Per-round timeout for model inference calls (not total request timeout).
@@ -39,6 +40,149 @@ When making file edits, always read the file first to understand its content.
 After running commands, report results clearly.`
 
 const DIRECT_SYSTEM = `You are Thirdwave AI Coding Platform, a helpful AI coding assistant. Always provide complete, thorough answers. Never say "I will explain" or "I'll do" — instead, actually explain and do it immediately. When asked about code, provide full working solutions with explanations. When asked to analyze or fix code, show the complete corrected code and explain every change. Do not be lazy or skip details.`
+
+// ── Text-based tool calling ──────────────────────────────────────────
+// Many local models (MiniMax, LLaMA, Qwen, etc.) don't support native
+// OpenAI function calling. This fallback embeds tool instructions in the
+// system prompt and parses XML <tool_use> blocks from the model's text.
+// This is the same pattern used by Cline, Continue, Aider, and other
+// coding agents to achieve reliable tool use with any model.
+
+const TOOL_USE_INSTRUCTIONS = `
+# Tool Usage
+
+You have access to tools for executing code, reading/writing files, searching, and more.
+To use a tool, you MUST include the following XML block in your response:
+
+<tool_use>
+<name>TOOL_NAME</name>
+<input>
+{"param1": "value1", "param2": "value2"}
+</input>
+</tool_use>
+
+## Available Tools
+
+### bash
+Execute a shell command. Commands run in the project workspace directory.
+Parameters: {"command": "the shell command to run"}
+
+### write_file
+Create or overwrite a file. Creates parent directories automatically. Use RELATIVE paths from the project root.
+Parameters: {"path": "relative/path/to/file.py", "content": "full file content here"}
+
+### read_file
+Read file contents. Use RELATIVE paths.
+Parameters: {"path": "relative/path/to/file.py"}
+Optional: {"startLine": 1, "endLine": 50}
+
+### list_dir
+List directory contents.
+Parameters: {"path": "."}
+
+### grep_search
+Search files for a pattern (regex supported).
+Parameters: {"pattern": "search term", "path": ".", "include": "*.py"}
+
+### web_fetch
+Fetch content from a URL.
+Parameters: {"url": "https://example.com"}
+
+### git_status
+Show git branch and modified files.
+Parameters: {}
+
+### git_diff
+Show git diff.
+Parameters: {"staged": false, "file": "optional/path"}
+
+### git_log
+Show recent commits.
+Parameters: {"count": 10}
+
+## CRITICAL RULES
+1. You MUST use write_file tool to actually create files. Do NOT just show file content as markdown code blocks. Actually create them with write_file.
+2. You MUST use bash tool to run commands. Do NOT just describe what commands to run.
+3. Use RELATIVE paths (e.g. "src/app.py") not absolute paths for write_file and read_file.
+4. You can make multiple tool_use calls in one response. Each will be executed.
+5. After your tools execute, you will receive the results and can continue with more tool calls or provide a summary.
+6. Always create necessary directories by using write_file (it auto-creates parent dirs) or bash with mkdir.
+`
+
+/**
+ * Parse text-based tool calls from model output.
+ * Handles multiple formats models may produce:
+ *   1. <tool_use><name>X</name><input>{"key":"val"}</input></tool_use>
+ *   2. <tool_use><name>X</name><input><key>val</key></input></tool_use>
+ *   3. <tool_use><name>X</name><parameter name="key">val</parameter></tool_use>
+ *   4. <tool_use><name>X</name><key>val</key></tool_use>
+ */
+function parseTextToolCalls(text: string): Array<{ name: string; args: Record<string, any> }> {
+  const calls: Array<{ name: string; args: Record<string, any> }> = []
+  // Capture entire <tool_use> blocks
+  const blockRegex = /<tool_use>([\s\S]*?)<\/tool_use>/g
+  let blockMatch
+  while ((blockMatch = blockRegex.exec(text)) !== null) {
+    const block = blockMatch[1]
+    // Extract tool name
+    const nameMatch = block.match(/<name>\s*([\s\S]*?)\s*<\/name>/)
+    if (!nameMatch) continue
+    const name = nameMatch[1].trim()
+
+    // Extract everything after </name> as the params section
+    const afterName = block.slice(block.indexOf("</name>") + 7).trim()
+    let args: Record<string, any> = {}
+
+    // Strategy 1: <input>{JSON}</input>
+    const inputMatch = afterName.match(/<input>\s*([\s\S]*?)\s*<\/input>/)
+    if (inputMatch) {
+      const inputContent = inputMatch[1].trim()
+      try {
+        args = JSON.parse(inputContent)
+      } catch {
+        // Strategy 2: <input><key>val</key>...</input> (XML tags inside input)
+        const tagRegex2 = /<(\w+)>([\s\S]*?)<\/\1>/g
+        let tm
+        while ((tm = tagRegex2.exec(inputContent)) !== null) {
+          args[tm[1]] = tm[2]
+        }
+      }
+    }
+
+    // Strategy 3: <parameter name="key">val</parameter> (no input wrapper)
+    if (Object.keys(args).length === 0) {
+      const paramRegex = /<parameter\s+name=["'](\w+)["']>([\s\S]*?)<\/parameter>/g
+      let pm
+      while ((pm = paramRegex.exec(afterName)) !== null) {
+        args[pm[1]] = pm[2]
+      }
+    }
+
+    // Strategy 4: direct XML tags after </name> (no input wrapper)
+    if (Object.keys(args).length === 0) {
+      const tagRegex3 = /<(\w+)>([\s\S]*?)<\/\1>/g
+      let tm3
+      while ((tm3 = tagRegex3.exec(afterName)) !== null) {
+        if (tm3[1] !== "input") args[tm3[1]] = tm3[2]
+      }
+    }
+
+    if (Object.keys(args).length > 0) {
+      calls.push({ name, args })
+    } else {
+      // Last resort: pass entire afterName as raw
+      calls.push({ name, args: { _raw: afterName } })
+    }
+  }
+  return calls
+}
+
+/**
+ * Strip <tool_use> blocks from text to get the non-tool narrative parts.
+ */
+function stripToolBlocks(text: string): string {
+  return text.replace(/<tool_use>[\s\S]*?<\/tool_use>/g, "").trim()
+}
 
 const MAX_TOOL_ROUNDS = 15
 
@@ -215,10 +359,15 @@ export function chatRoutes() {
       // Build initial messages
       const useTools = body.tools !== false
       const messages: Array<Record<string, any>> = []
-      messages.push({
-        role: "system",
-        content: body.system ?? (useTools ? DEFAULT_SYSTEM : DIRECT_SYSTEM),
-      })
+
+      // Build system prompt: base instructions + tool use format (for text-based fallback)
+      let systemContent = body.system ?? (useTools ? DEFAULT_SYSTEM : DIRECT_SYSTEM)
+      if (useTools) {
+        // Always prepend tool usage instructions so models that can't use native
+        // function calling know how to invoke tools via XML text blocks.
+        systemContent = TOOL_USE_INSTRUCTIONS + "\n\n" + systemContent
+      }
+      messages.push({ role: "system", content: systemContent })
       if (body.history?.length) {
         for (const h of body.history) messages.push({ role: h.role, content: h.content })
       }
@@ -231,7 +380,7 @@ export function chatRoutes() {
       // Leave headroom for input tokens (rough estimate: 4 chars ≈ 1 token)
       const estimatedInputTokens = Math.ceil(
         messages.reduce((acc, m) => acc + (typeof m.content === "string" ? m.content.length : 0), 0) / 4
-      ) + (useTools ? 800 : 0) // ~800 tokens for tool definitions
+      )
       const safeOutputLimit = Math.min(
         requestedMaxTokens,
         modelOutputLimit,
@@ -256,11 +405,10 @@ export function chatRoutes() {
           temperature,
         }
 
-        // Include tools unless disabled or final round
-        if (useTools && round < maxRounds) {
-          reqBody.tools = getToolDefinitions()
-          reqBody.tool_choice = "auto"
-        }
+        // Do NOT send native JSON tool definitions — many local/gateway
+        // models (MiniMax, etc.) choke on them and return empty content.
+        // Tool calling is handled entirely via text-based XML <tool_use>
+        // blocks in TOOL_USE_INSTRUCTIONS (embedded in the system prompt).
 
         let res: Response
         try {
@@ -280,19 +428,6 @@ export function chatRoutes() {
         }
 
         if (!res.ok) {
-          // If tool calling fails (model doesn't support it), retry without tools
-          if (useTools && round === 0 && res.status === 400) {
-            const errText = await res.text().catch(() => "")
-            if (errText.includes("tool") || errText.includes("function") || errText.includes("not supported")) {
-              delete reqBody.tools
-              delete reqBody.tool_choice
-              const retryRes = await providerFetch(endpoint, apiKey, cloudProviderId, reqBody, inferenceTimeout)
-              if (retryRes.ok) {
-                const data = (await retryRes.json()) as any
-                return formatFinalResponse(c, data, Date.now() - start, modelName, providerName, totalInput, totalOutput, toolLog)
-              }
-            }
-          }
           // Rate-limited — surface 429 directly so clients can back off
           if (res.status === 429) {
             const errText = await res.text().catch(() => "")
@@ -328,6 +463,9 @@ export function chatRoutes() {
 
         const msg = choice.message
 
+        // Log round info for debugging
+        console.log(`[chat] Round ${round}: ${(msg.content ?? "").length} chars, ${msg.tool_calls?.length ?? 0} native calls, finish=${choice.finish_reason}`)
+
         // ── Check for tool calls ────────────────────────────────
         if (msg.tool_calls && msg.tool_calls.length > 0 && useTools) {
           messages.push(msg)
@@ -341,7 +479,7 @@ export function chatRoutes() {
                 : tc.function?.arguments ?? {}
             } catch { toolArgs = { _raw: tc.function?.arguments } }
 
-            const result = await executeTool(toolName, toolArgs)
+            const result = await executeTool(toolName, toolArgs, body.workspaceRoot)
             toolLog.push({
               tool: toolName,
               args: toolArgs,
@@ -356,6 +494,36 @@ export function chatRoutes() {
             })
           }
           continue  // next round — model gets tool results
+        }
+
+        // ── Text-based tool call fallback ───────────────────────
+        // If the model didn't use native function calling but included
+        // <tool_use> XML blocks in its text, parse and execute them.
+        if (useTools && msg.content) {
+          const textToolCalls = parseTextToolCalls(msg.content)
+          if (textToolCalls.length > 0) {
+            // Add assistant message to history
+            messages.push({ role: "assistant", content: msg.content })
+
+            // Execute each text-based tool call
+            let toolResultsText = "Tool execution results:\n"
+            for (const tc of textToolCalls) {
+              const result = await executeTool(tc.name, tc.args, body.workspaceRoot)
+              toolLog.push({
+                tool: tc.name,
+                args: tc.args,
+                result: result.output.slice(0, 2000),
+                success: result.success,
+              })
+              toolResultsText += `\n<tool_result>\n<name>${tc.name}</name>\n<status>${result.success ? "success" : "error"}</status>\n<output>\n${result.output.slice(0, 3000)}\n</output>\n</tool_result>\n`
+            }
+
+            // Feed results back as a user message (since text-based tools
+            // don't have tool_call_id, we use user role for the results)
+            toolResultsText += "\nContinue with any remaining steps, or provide a summary of what was done."
+            messages.push({ role: "user", content: toolResultsText })
+            continue  // next round — model gets tool results
+          }
         }
 
         // ── No tool calls — final response ──────────────────────
@@ -566,6 +734,9 @@ function formatFinalResponse(
   const choice = data.choices?.[0]
   let text = choice?.message?.content ?? ""
   let reasoning = choice?.message?.reasoning_content ?? choice?.message?.reasoning ?? ""
+
+  // Strip any leftover <tool_use> blocks from the final response text
+  text = stripToolBlocks(text)
 
   if (!text && reasoning) {
     text = reasoning

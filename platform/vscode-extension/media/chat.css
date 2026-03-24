@@ -42,7 +42,7 @@ body {
 .topbar {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   padding: 6px 10px;
   border-bottom: 1px solid var(--bd);
   flex-shrink: 0;
@@ -320,7 +320,7 @@ body {
 @keyframes sp { to { transform: rotate(360deg); } }
 
 /* INPUT AREA */
-.ia { padding: 8px 10px 10px; border-top: 1px solid var(--bd); flex-shrink: 0; }
+.ia { padding: 8px 10px 10px; border-top: 1px solid var(--bd); flex-shrink: 0; position: relative; }
 .ir { display: flex; gap: 6px; align-items: flex-end; }
 textarea {
   flex: 1; min-height: 36px; max-height: 120px; padding: 8px 10px;
@@ -344,6 +344,8 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
 .sb-send:active { transform: translateY(0); box-shadow: 0 1px 4px rgba(0,136,255,.2); }
 .sb-send:disabled { opacity: .4; cursor: not-allowed; box-shadow: none; transform: none; }
 .sb-send svg { width: 16px; height: 16px; fill: #fff; }
+.sb-send.stop-mode { background: linear-gradient(135deg, #ef4444 0%, #b91c1c 100%); box-shadow: 0 2px 8px rgba(239,68,68,.25); }
+.sb-send.stop-mode:hover { filter: brightness(1.15); box-shadow: 0 3px 12px rgba(239,68,68,.35); }
 .ih { margin-top: 4px; font-size: 10px; color: var(--mt); }
 
 /* BOTTOM TOOLBAR — agent + model selectors under input */
@@ -635,3 +637,352 @@ select:focus, .si:focus { border-color: var(--vscode-focusBorder); }
 
 /* Skills count badge in pnl-hdr */
 .pnl-hdr .sk-cnt { font-size: 10px; padding: 1px 7px; border-radius: 10px; background: var(--accent); color: #fff; font-weight: 600; }
+
+/* ═══════════════════════════════════════════════════════════════
+   SLASH COMMAND SKILL PICKER
+   ═══════════════════════════════════════════════════════════════ */
+.slash-popup {
+  position: absolute;
+  bottom: 100%;
+  left: 10px;
+  right: 10px;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--vscode-editorWidget-background, var(--bg));
+  border: 1px solid var(--bd);
+  border-radius: var(--r);
+  box-shadow: 0 -4px 16px rgba(0,0,0,.25);
+  z-index: 50;
+  margin-bottom: 4px;
+}
+.slash-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--fg);
+  transition: background .1s;
+}
+.slash-item:hover, .slash-item.active {
+  background: var(--hv);
+}
+.slash-name { font-weight: 500; }
+.slash-active { color: var(--ok); font-size: 14px; font-weight: 700; }
+
+/* ═══════════════════════════════════════════════════════════════
+   THEME: VS Code Light
+   Light theme using VS Code's own light variables with fallbacks
+   ═══════════════════════════════════════════════════════════════ */
+body.theme-vscode-light {
+  --bg: #ffffff;
+  --fg: #1e1e1e;
+  --mt: #6e7681;
+  --bd: #d1d5db;
+  --ibg: #f5f5f5;
+  --ib: #d1d5db;
+  --hv: rgba(0,0,0,.04);
+  --cb: #f0f0f0;
+  --accent: #0066cc;
+  --dim: #0055aa;
+}
+body.theme-vscode-light .topbar { background: #f8f8f8; border-color: #d1d5db; }
+body.theme-vscode-light .sb-send { background: linear-gradient(135deg, #0066cc 0%, #004499 100%); box-shadow: 0 2px 8px rgba(0,102,204,.2); }
+body.theme-vscode-light .msg.user { background: rgba(0,102,204,.05); }
+body.theme-vscode-light .sb-send.stop-mode { background: linear-gradient(135deg, #d32f2f 0%, #b71c1c 100%); }
+body.theme-vscode-light textarea { background: #fff; color: #1e1e1e; border-color: #d1d5db; }
+body.theme-vscode-light textarea:focus { border-color: #0066cc; }
+
+/* ═══════════════════════════════════════════════════════════════
+   THEME: Electric (black & white)
+   Pure black background, white text, electric blue accent
+   ═══════════════════════════════════════════════════════════════ */
+body.theme-electric {
+  --bg: #000000;
+  --fg: #ffffff;
+  --mt: #999999;
+  --bd: #333333;
+  --ibg: #111111;
+  --ib: #444444;
+  --hv: rgba(255,255,255,.06);
+  --cb: #111111;
+  --accent: #00d4ff;
+  --dim: #00aaff;
+  --ok: #00ff88;
+  --warn: #ffcc00;
+  --err: #ff3355;
+}
+body.theme-electric .topbar { background: #000; border-color: #333; }
+body.theme-electric .sb-send { background: linear-gradient(135deg, #00d4ff 0%, #0088cc 100%); box-shadow: 0 2px 8px rgba(0,212,255,.3); }
+body.theme-electric .msg.a { background: #0a0a0a; border: 1px solid #222; }
+body.theme-electric textarea { border-color: #444; }
+body.theme-electric textarea:focus { border-color: #00d4ff; }
+
+/* ═══════════════════════════════════════════════════════════════
+   THEME: Electric Light (white & black)
+   Pure white background, black text, electric blue accent
+   ═══════════════════════════════════════════════════════════════ */
+body.theme-electric-light {
+  --bg: #ffffff;
+  --fg: #000000;
+  --mt: #666666;
+  --bd: #cccccc;
+  --ibg: #f5f5f5;
+  --ib: #bbbbbb;
+  --hv: rgba(0,0,0,.04);
+  --cb: #f0f0f0;
+  --accent: #0099cc;
+  --dim: #0077aa;
+  --ok: #00994d;
+  --warn: #cc8800;
+  --err: #cc2244;
+}
+body.theme-electric-light .topbar { background: #fafafa; border-color: #ccc; }
+body.theme-electric-light .sb-send { background: linear-gradient(135deg, #0099cc 0%, #006699 100%); box-shadow: 0 2px 8px rgba(0,153,204,.2); }
+body.theme-electric-light .msg.user { background: rgba(0,153,204,.04); }
+body.theme-electric-light .sb-send.stop-mode { background: linear-gradient(135deg, #cc2244 0%, #991133 100%); }
+body.theme-electric-light textarea { background: #fff; color: #000; border-color: #bbb; }
+body.theme-electric-light textarea:focus { border-color: #0099cc; }
+
+/* ═══════════════════════════════════════════════════════════════
+   ACTIVE SKILLS INDICATOR — badges in bottom toolbar
+   ═══════════════════════════════════════════════════════════════ */
+.active-skills-bar {
+  display: flex; gap: 4px; flex-wrap: wrap; align-items: center;
+}
+.skill-pill {
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 1px 8px; border-radius: 10px; font-size: 10px; font-weight: 600;
+  background: rgba(0,136,255,.12); color: var(--accent); border: 1px solid rgba(0,136,255,.25);
+  white-space: nowrap; cursor: default;
+}
+.skill-pill .skill-pill-icon { font-size: 10px; }
+.skill-pill-rm {
+  border: none; background: none; color: var(--accent); cursor: pointer;
+  font-size: 11px; padding: 0 1px; line-height: 1; opacity: .6;
+}
+.skill-pill-rm:hover { opacity: 1; color: var(--err); }
+
+/* ═══════════════════════════════════════════════════════════════
+   THEME PICKER
+   ═══════════════════════════════════════════════════════════════ */
+.theme-picker { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.theme-btn {
+  padding: 4px 12px; border: 1px solid var(--bd); border-radius: 12px;
+  background: none; color: var(--mt); font-size: 11px; cursor: pointer;
+  transition: .15s; font-family: var(--vscode-font-family);
+}
+.theme-btn:hover { border-color: var(--accent); color: var(--fg); }
+.theme-btn.sel { border-color: var(--accent); color: var(--accent); background: rgba(0,136,255,.1); }
+
+/* ═══════════════════════════════════════════════════════════════
+   RETRY BUTTON — shown below error messages
+   ═══════════════════════════════════════════════════════════════ */
+.retry-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 14px;
+  margin-top: 8px;
+  border: 1px solid var(--err);
+  border-radius: 4px;
+  background: rgba(239,68,68,.08);
+  color: var(--err);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: .15s;
+  font-family: var(--vscode-font-family);
+}
+.retry-btn:hover {
+  background: rgba(239,68,68,.18);
+  border-color: var(--err);
+  transform: translateY(-1px);
+}
+.retry-btn:active { transform: translateY(0); }
+
+/* ═══════════════════════════════════════════════════════════════
+   CONTEXT COMPACTION — collapsible bar showing what context was sent
+   ═══════════════════════════════════════════════════════════════ */
+.ctx-compact {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--bd);
+  background: var(--vscode-editor-lineHighlightBackground, rgba(255,255,255,.02));
+}
+.ctx-compact-hdr {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--mt);
+  user-select: none;
+}
+.ctx-compact-icon { font-size: 12px; }
+.ctx-compact-size {
+  margin-left: auto;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(0,136,255,.12);
+  color: var(--accent);
+}
+.ctx-compact-toggle {
+  border: none;
+  background: none;
+  color: var(--mt);
+  font-size: 10px;
+  cursor: pointer;
+  padding: 0;
+}
+.ctx-compact-body {
+  padding-top: 6px;
+}
+.ctx-compact-body.collapsed { display: none; }
+.ctx-compact-item {
+  font-size: 10px;
+  color: var(--mt);
+  padding: 1px 0 1px 4px;
+  line-height: 1.5;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   @ MENTION FILE PICKER POPUP
+   ═══════════════════════════════════════════════════════════════ */
+.at-popup {
+  position: absolute;
+  bottom: 100%;
+  left: 10px;
+  right: 10px;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--vscode-editorWidget-background, var(--bg));
+  border: 1px solid var(--bd);
+  border-radius: var(--r);
+  box-shadow: 0 -4px 16px rgba(0,0,0,.25);
+  z-index: 50;
+  margin-bottom: 4px;
+}
+.at-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--fg);
+  transition: background .1s;
+}
+.at-item:hover, .at-item.active {
+  background: var(--hv);
+}
+.at-item.loading {
+  color: var(--mt);
+  font-style: italic;
+  cursor: default;
+}
+.at-icon { font-size: 12px; flex-shrink: 0; }
+.at-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--vscode-editor-font-family);
+  font-size: 11px;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   TOOL OUTPUT — collapsible terminal-style blocks
+   ═══════════════════════════════════════════════════════════════ */
+.tc { flex-wrap: wrap; }
+.tc-expand-btn {
+  border: none;
+  background: none;
+  color: var(--mt);
+  font-size: 10px;
+  cursor: pointer;
+  padding: 0 4px;
+  margin-left: 4px;
+  transition: .15s;
+}
+.tc-expand-btn:hover { color: var(--fg); }
+
+.tool-output {
+  width: 100%;
+  margin-top: 6px;
+  border-radius: 4px;
+  overflow: hidden;
+  max-height: 300px;
+  transition: max-height .3s ease;
+}
+.tool-output.collapsed {
+  max-height: 0;
+  margin-top: 0;
+}
+.tool-output-pre {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--vscode-terminal-background, #1e1e1e);
+  color: var(--vscode-terminal-foreground, #cccccc);
+  font-family: var(--vscode-editor-font-family);
+  font-size: 11px;
+  line-height: 1.5;
+  border-radius: 4px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   INLINE DIFF — green/red line coloring for write_file results
+   ═══════════════════════════════════════════════════════════════ */
+.diff-block {
+  width: 100%;
+  margin-top: 6px;
+  border-radius: 4px;
+  overflow: hidden;
+  max-height: 300px;
+  transition: max-height .3s ease;
+}
+.diff-block.collapsed {
+  max-height: 0;
+  margin-top: 0;
+}
+.diff-header {
+  padding: 4px 10px;
+  background: rgba(0,136,255,.08);
+  border-bottom: 1px solid var(--bd);
+  font-family: var(--vscode-editor-font-family);
+  font-size: 10px;
+  color: var(--accent);
+  font-weight: 600;
+}
+.diff-content {
+  margin: 0;
+  padding: 6px 10px;
+  background: var(--vscode-editor-lineHighlightBackground, rgba(0,0,0,.15));
+  font-family: var(--vscode-editor-font-family);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.diff-add {
+  color: var(--ok);
+  display: block;
+}
+.diff-del {
+  color: var(--err);
+  display: block;
+  text-decoration: line-through;
+  opacity: .7;
+}
+.diff-meta {
+  color: var(--mt);
+  font-style: italic;
+  display: block;
+}

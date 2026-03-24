@@ -179,6 +179,43 @@ export const TOOL_DEFINITIONS: ToolDef[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "git_status",
+      description: "Get git status of the project — shows branch, modified files, staged changes, and untracked files.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "git_diff",
+      description: "Show git diff — changed lines in working directory or staged changes. Optionally diff a specific file.",
+      parameters: {
+        type: "object",
+        properties: {
+          staged: { type: "boolean", description: "Show staged (cached) diff instead of working directory" },
+          file: { type: "string", description: "Specific file to diff (relative or absolute path)" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "git_log",
+      description: "Show recent git commit history (oneline format with decorations).",
+      parameters: {
+        type: "object",
+        properties: {
+          count: { type: "number", description: "Number of commits to show (default: 10, max: 50)" },
+        },
+        required: [],
+      },
+    },
+  },
 ]
 
 // ── Tool Execution ───────────────────────────────────────────────────
@@ -202,13 +239,14 @@ try {
 } catch {}
 
 function resolvePath(p: string): string {
-  const resolved = p.startsWith("/") ? p : `${PROJECT_DIR}/${p}`
+  const baseDir = getProjectDir()
+  const resolved = p.startsWith("/") ? p : `${baseDir}/${p}`
   const { resolve: pathResolve } = require("path")
   const { realpathSync, existsSync } = require("fs")
   const normalized = pathResolve(resolved)
   // Resolve symlinks to prevent traversal via symlinked paths
   const real = existsSync(normalized) ? realpathSync(normalized) : normalized
-  if (!real.startsWith(PROJECT_DIR) && !real.startsWith(AGENT_WORKSPACE) && !real.startsWith("/tmp")) {
+  if (!real.startsWith(baseDir) && !real.startsWith(PROJECT_DIR) && !real.startsWith(AGENT_WORKSPACE) && !real.startsWith("/tmp")) {
     throw new Error(`Path traversal denied: ${p} resolves outside project root`)
   }
   return real
@@ -222,30 +260,77 @@ function truncateOutput(s: string, max = MAX_OUTPUT): { text: string; truncated:
   }
 }
 
-// ── Individual tool handlers ─────────────────────────────────────────
+// ── HITL approval helper ─────────────────────────────────────────────
+// When a tool triggers "ask", we poll the HITL service for approval/denial
+// up to a timeout (default 2 minutes). This lets the agentic loop block
+// until the user approves or denies in the extension UI.
 
-async function execBash(args: { command: string; timeout?: number; workdir?: string }): Promise<ToolResult> {
-  const command = args.command
-  const cwd = args.workdir ? resolvePath(args.workdir) : AGENT_WORKSPACE
-  const timeout = Math.min(args.timeout ?? DEFAULT_TIMEOUT, MAX_TIMEOUT)
+const HITL_POLL_INTERVAL = 1000   // 1 second
+const HITL_POLL_TIMEOUT  = 120_000 // 2 minutes
 
-  // Policy + HITL check: destructive commands
+async function awaitHITLApproval(requestId: string): Promise<"approved" | "denied" | "expired"> {
+  if (!_hitl) return "denied"
+  const start = Date.now()
+  while (Date.now() - start < HITL_POLL_TIMEOUT) {
+    const req = _hitl.getRequest(requestId)
+    if (!req) {
+      // Request was resolved (moved to resolved list) — check resolved list
+      const resolved = _hitl.getResolved(10)
+      const found = resolved.find(r => r.id === requestId)
+      if (found) return found.status === "approved" ? "approved" : "denied"
+      return "expired"
+    }
+    if (req.status !== "pending") {
+      return req.status === "approved" ? "approved" : "denied"
+    }
+    await new Promise(resolve => setTimeout(resolve, HITL_POLL_INTERVAL))
+  }
+  return "expired"
+}
+
+/**
+ * Run HITL evaluation. Returns "allow" to proceed, or a ToolResult for deny/expired.
+ * For "ask", waits for user approval.
+ */
+async function hitlCheck(ctx: {
+  action: string
+  command?: string
+  filePath?: string
+  url?: string
+}): Promise<{ proceed: true } | ToolResult> {
   try {
     if (_hitl) {
-      const hitlResult = _hitl.evaluate({ action: "bash", command })
+      const hitlResult = _hitl.evaluate(ctx)
       if (hitlResult.decision === "deny") {
         return { success: false, output: `Policy denied: ${hitlResult.reasons.join("; ")}` }
       }
       if (hitlResult.decision === "ask" && hitlResult.approvalRequest) {
-        return { success: false, output: `⏳ Awaiting HITL approval (${hitlResult.approvalRequest.id}): ${hitlResult.reasons.join("; ")}` }
+        const verdict = await awaitHITLApproval(hitlResult.approvalRequest.id)
+        if (verdict === "approved") return { proceed: true }
+        return { success: false, output: verdict === "expired"
+          ? `⏳ HITL approval timed out (${hitlResult.approvalRequest.id}): ${hitlResult.reasons.join("; ")}`
+          : `❌ HITL denied (${hitlResult.approvalRequest.id}): ${hitlResult.reasons.join("; ")}` }
       }
     } else {
-      const policy = defaultPolicyEngine.evaluate({ command })
+      const policy = defaultPolicyEngine.evaluate({ command: ctx.command, filePath: ctx.filePath, url: ctx.url })
       if (policy.decision === "deny") {
         return { success: false, output: `Policy denied: ${policy.reasons.join("; ")}` }
       }
     }
   } catch {}
+  return { proceed: true }
+}
+
+// ── Individual tool handlers ─────────────────────────────────────────
+
+async function execBash(args: { command: string; timeout?: number; workdir?: string }): Promise<ToolResult> {
+  const command = args.command
+  const cwd = args.workdir ? resolvePath(args.workdir) : getProjectDir()
+  const timeout = Math.min(args.timeout ?? DEFAULT_TIMEOUT, MAX_TIMEOUT)
+
+  // Policy + HITL check
+  const check = await hitlCheck({ action: "bash", command })
+  if (!("proceed" in check)) return check
 
   try {
     const proc = Bun.spawn(["bash", "-c", command], {
@@ -287,23 +372,9 @@ async function execBash(args: { command: string; timeout?: number; workdir?: str
 async function execReadFile(args: { path: string; startLine?: number; endLine?: number }): Promise<ToolResult> {
   const filepath = resolvePath(args.path)
 
-  // Policy + HITL check: sensitive files
-  try {
-    if (_hitl) {
-      const hitlResult = _hitl.evaluate({ action: "read", filePath: filepath })
-      if (hitlResult.decision === "deny") {
-        return { success: false, output: `Policy denied: ${hitlResult.reasons.join("; ")}` }
-      }
-      if (hitlResult.decision === "ask" && hitlResult.approvalRequest) {
-        return { success: false, output: `⏳ Awaiting HITL approval (${hitlResult.approvalRequest.id}): ${hitlResult.reasons.join("; ")}` }
-      }
-    } else {
-      const policy = defaultPolicyEngine.evaluate({ filePath: filepath })
-      if (policy.decision === "deny") {
-        return { success: false, output: `Policy denied: ${policy.reasons.join("; ")}` }
-      }
-    }
-  } catch {}
+  // Policy + HITL check
+  const check = await hitlCheck({ action: "read", filePath: filepath })
+  if (!("proceed" in check)) return check
 
   try {
     const file = Bun.file(filepath)
@@ -326,29 +397,13 @@ async function execReadFile(args: { path: string; startLine?: number; endLine?: 
 }
 
 async function execWriteFile(args: { path: string; content: string }): Promise<ToolResult> {
-  // For relative paths, write into the agent workspace directory.
+  // For relative paths, write into the project directory (same as read_file).
   // Absolute paths are resolved against the project root as before.
-  const filepath = args.path.startsWith("/")
-    ? resolvePath(args.path)
-    : resolvePath(`${AGENT_WORKSPACE}/${args.path}`)
+  const filepath = resolvePath(args.path)
 
-  // Policy + HITL check: sensitive files
-  try {
-    if (_hitl) {
-      const hitlResult = _hitl.evaluate({ action: "edit", filePath: filepath })
-      if (hitlResult.decision === "deny") {
-        return { success: false, output: `Policy denied: ${hitlResult.reasons.join("; ")}` }
-      }
-      if (hitlResult.decision === "ask" && hitlResult.approvalRequest) {
-        return { success: false, output: `⏳ Awaiting HITL approval (${hitlResult.approvalRequest.id}): ${hitlResult.reasons.join("; ")}` }
-      }
-    } else {
-      const policy = defaultPolicyEngine.evaluate({ filePath: filepath })
-      if (policy.decision === "deny") {
-        return { success: false, output: `Policy denied: ${policy.reasons.join("; ")}` }
-      }
-    }
-  } catch {}
+  // Policy + HITL check
+  const check = await hitlCheck({ action: "edit", filePath: filepath })
+  if (!("proceed" in check)) return check
 
   try {
     // Ensure parent directories exist
@@ -388,7 +443,7 @@ async function execListDir(args: { path: string }): Promise<ToolResult> {
 }
 
 async function execGrepSearch(args: { pattern: string; path?: string; include?: string; maxResults?: number }): Promise<ToolResult> {
-  const searchPath = args.path ? resolvePath(args.path) : PROJECT_DIR
+  const searchPath = args.path ? resolvePath(args.path) : getProjectDir()
   const maxResults = args.maxResults ?? 50
 
   try {
@@ -411,7 +466,7 @@ async function execGrepSearch(args: { pattern: string; path?: string; include?: 
 
     const lines = stdout.trim().split("\n").slice(0, maxResults)
     // Make paths relative to project
-    const relative = lines.map((l) => l.replace(PROJECT_DIR + "/", ""))
+    const relative = lines.map((l) => l.replace(getProjectDir() + "/", ""))
     const { text, truncated } = truncateOutput(relative.join("\n"))
     return { success: true, output: `${lines.length} matches:\n${text}`, truncated }
   } catch (e: any) {
@@ -422,23 +477,9 @@ async function execGrepSearch(args: { pattern: string; path?: string; include?: 
 async function execWebFetch(args: { url: string; maxBytes?: number }): Promise<ToolResult> {
   const maxBytes = args.maxBytes ?? MAX_OUTPUT
 
-  // Policy + HITL check: network guard
-  try {
-    if (_hitl) {
-      const hitlResult = _hitl.evaluate({ action: "web_fetch", url: args.url })
-      if (hitlResult.decision === "deny") {
-        return { success: false, output: `Policy denied: ${hitlResult.reasons.join("; ")}` }
-      }
-      if (hitlResult.decision === "ask" && hitlResult.approvalRequest) {
-        return { success: false, output: `⏳ Awaiting HITL approval (${hitlResult.approvalRequest.id}): ${hitlResult.reasons.join("; ")}` }
-      }
-    } else {
-      const policy = defaultPolicyEngine.evaluate({ url: args.url })
-      if (policy.decision === "deny") {
-        return { success: false, output: `Policy denied: ${policy.reasons.join("; ")}` }
-      }
-    }
-  } catch {}
+  // Policy + HITL check
+  const check = await hitlCheck({ action: "web_fetch", url: args.url })
+  if (!("proceed" in check)) return check
 
   try {
     const resp = await fetch(args.url, {
@@ -456,6 +497,79 @@ async function execWebFetch(args: { url: string; maxBytes?: number }): Promise<T
   }
 }
 
+// ── Git tools ────────────────────────────────────────────────────────
+
+async function execGitStatus(_args: Record<string, unknown>): Promise<ToolResult> {
+  try {
+    const proc = Bun.spawn(["git", "status", "--porcelain", "-b"], {
+      cwd: getProjectDir(),
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    const stdout = await new Response(proc.stdout).text()
+    const stderr = await new Response(proc.stderr).text()
+    const exitCode = await proc.exited
+    if (exitCode !== 0) return { success: false, output: stderr || "Not a git repository" }
+    if (!stdout.trim()) return { success: true, output: "Working tree clean (no changes)" }
+    return { success: true, output: stdout }
+  } catch (e: any) {
+    return { success: false, output: `Git error: ${e.message ?? e}` }
+  }
+}
+
+async function execGitDiff(args: { staged?: boolean; file?: string }): Promise<ToolResult> {
+  try {
+    const gitArgs = ["git", "diff"]
+    if (args.staged) gitArgs.push("--cached")
+    if (args.file) gitArgs.push("--", resolvePath(args.file))
+    gitArgs.push("--stat")
+
+    const proc = Bun.spawn(gitArgs, {
+      cwd: getProjectDir(),
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    const stdout = await new Response(proc.stdout).text()
+    const stderr = await new Response(proc.stderr).text()
+    const exitCode = await proc.exited
+    if (exitCode !== 0) return { success: false, output: stderr || "Git diff failed" }
+
+    // Also get the actual diff (limited)
+    const diffProc = Bun.spawn([...gitArgs.filter(a => a !== "--stat")], {
+      cwd: getProjectDir(),
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    const diffOut = await new Response(diffProc.stdout).text()
+    await diffProc.exited
+
+    const combined = stdout.trim() + (diffOut.trim() ? "\n\n" + diffOut.trim() : "")
+    if (!combined.trim()) return { success: true, output: "No differences" }
+    const { text, truncated } = truncateOutput(combined)
+    return { success: true, output: text, truncated }
+  } catch (e: any) {
+    return { success: false, output: `Git error: ${e.message ?? e}` }
+  }
+}
+
+async function execGitLog(args: { count?: number }): Promise<ToolResult> {
+  try {
+    const n = Math.min(args.count ?? 10, 50)
+    const proc = Bun.spawn(["git", "log", `--oneline`, `-${n}`, "--decorate"], {
+      cwd: getProjectDir(),
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    const stdout = await new Response(proc.stdout).text()
+    const stderr = await new Response(proc.stderr).text()
+    const exitCode = await proc.exited
+    if (exitCode !== 0) return { success: false, output: stderr || "Git log failed" }
+    return { success: true, output: stdout || "No commits" }
+  } catch (e: any) {
+    return { success: false, output: `Git error: ${e.message ?? e}` }
+  }
+}
+
 // ── Dispatcher ───────────────────────────────────────────────────
 
 const TOOL_HANDLERS: Record<string, (args: any) => Promise<ToolResult>> = {
@@ -465,21 +579,34 @@ const TOOL_HANDLERS: Record<string, (args: any) => Promise<ToolResult>> = {
   list_dir: execListDir,
   grep_search: execGrepSearch,
   web_fetch: execWebFetch,
+  git_status: execGitStatus,
+  git_diff: execGitDiff,
+  git_log: execGitLog,
 }
+
+// Allow the chat route to override the workspace root dynamically
+let _workspaceRoot: string | null = null
+export function setWorkspaceRoot(root: string | null) { _workspaceRoot = root }
+function getProjectDir(): string { return _workspaceRoot || PROJECT_DIR }
 
 /**
  * Execute a tool call returned by the model.
+ * Optionally accepts a workspaceRoot to override the default PROJECT_DIR.
  */
-export async function executeTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+export async function executeTool(name: string, args: Record<string, unknown>, workspaceRoot?: string): Promise<ToolResult> {
   const handler = TOOL_HANDLERS[name]
   if (!handler) {
     return { success: false, output: `Unknown tool: ${name}. Available: ${Object.keys(TOOL_HANDLERS).join(", ")}` }
   }
 
+  const prev = _workspaceRoot
+  if (workspaceRoot) _workspaceRoot = workspaceRoot
   try {
     return await handler(args)
   } catch (e: any) {
     return { success: false, output: `Tool ${name} crashed: ${e.message ?? e}` }
+  } finally {
+    _workspaceRoot = prev
   }
 }
 

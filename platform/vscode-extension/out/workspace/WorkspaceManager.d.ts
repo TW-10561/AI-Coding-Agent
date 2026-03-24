@@ -60,6 +60,25 @@ export declare class WorkspaceManager implements vscode.Disposable {
     /** Open a file-picker dialog and attach selected files */
     pickAndAttachFiles(): Promise<AttachedFile[]>;
     private _relativePath;
+    /**
+     * Build a compact file tree of the workspace root(s).
+     * Skips node_modules, .git, dist, build, __pycache__, .next, etc.
+     * Returns a string like:
+     *   src/
+     *     index.ts
+     *     utils/
+     *       helpers.ts
+     */
+    buildRepoTree(maxDepth?: number, maxFiles?: number): Promise<string>;
+    /** Get git status for the workspace (branch + changed files) */
+    getGitStatus(): Promise<{
+        branch: string;
+        changes: string[];
+    } | null>;
+    /** Get recent git log (last N commits one-line) */
+    getGitLog(count?: number): Promise<string | null>;
+    /** Build full context string including repo tree and git info */
+    buildFullContextString(): Promise<string>;
     private _guessLanguage;
     dispose(): void;
 }

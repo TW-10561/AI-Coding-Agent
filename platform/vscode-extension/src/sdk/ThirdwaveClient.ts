@@ -38,6 +38,7 @@ export interface DirectChatRequest {
   history?: Array<{ role: "user" | "assistant"; content: string }>;
   tools?: boolean;
   maxToolRounds?: number;
+  workspaceRoot?: string;
 }
 
 export interface DirectChatResponse {
@@ -165,6 +166,7 @@ export class ThirdwaveClient {
     temperature?: number;
     history?: Array<{ role: string; content: string }>;
     tools?: boolean;
+    workspaceRoot?: string;
   }): Promise<AsyncIterable<{ type: "text" | "reasoning" | "done"; content: string; meta?: any }>> {
     const body = {
       message: opts.message,
@@ -174,6 +176,7 @@ export class ThirdwaveClient {
       temperature: opts.temperature ?? 0.3,
       history: opts.history,
       tools: opts.tools,
+      workspaceRoot: opts.workspaceRoot,
     };
 
     const res = await fetch(this.url("/api/chat/stream"), {
@@ -192,6 +195,7 @@ export class ThirdwaveClient {
         temperature: opts.temperature,
         history: opts.history as any,
         tools: opts.tools,
+        workspaceRoot: opts.workspaceRoot,
       });
       const self = direct;
       return (async function* () {

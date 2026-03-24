@@ -96,8 +96,18 @@ export class NetworkGuard {
 
     log.debug("Checking URL access", { url, domain, policy: this.policy.mode })
 
-    // "allow" mode - allow all access
+    // "allow" mode - allow all access (but check denied domains first)
     if (this.policy.mode === "allow") {
+      if (this.policy.deniedDomains) {
+        for (const denied of this.policy.deniedDomains) {
+          if (this.matchesDomain(domain, denied)) {
+            return {
+              allowed: false,
+              reason: `Domain is explicitly denied: ${domain}`,
+            }
+          }
+        }
+      }
       return { allowed: true }
     }
 
