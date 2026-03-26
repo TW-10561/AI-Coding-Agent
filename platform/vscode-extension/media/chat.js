@@ -8,6 +8,160 @@
   var selectedSkills = {}; // { skillId: true }
   var lastRegistry = null; // cached registry data for dropdowns
 
+  // ── i18n — Internationalisation ────────────────────────────────
+  var i18nStrings = {
+    en: {
+      chat: 'CHAT', settings: 'SETTINGS', history: 'HISTORY',
+      theme: 'Theme', language: 'Language',
+      gatewayModels: 'Gateway Models (Local)', cloudProviders: 'Cloud Providers',
+      primaryAgents: 'Primary Agents', subAgents: 'Sub-Agents',
+      skillsRegistry: 'SKILLS REGISTRY', clearAll: 'Clear all',
+      filterSkills: 'Filter skills...', inputPlaceholder: 'Type your task here...',
+      thinking: 'Thinking...', analyzing: 'Analyzing...', processing: 'Processing...', working: 'Working',
+      emptyDesc: 'AI coding assistant powered by local vLLM gateway.',
+      startConversation: 'Start a conversation',
+      pendingApprovals: 'Pending Approvals', statistics: 'Statistics',
+      recentDecisions: 'Recent Decisions',
+      agBuildDesc: 'Full read/write/execute \u2014 default coding agent with tool calling',
+      agPlanDesc: 'Read-only planning and architectural analysis',
+      agExploreDesc: 'Codebase search and exploration \u2014 read-only discovery',
+      agGeneralDesc: 'Multi-step reasoning, research, and general tasks',
+      copy: 'Copy', copied: 'Copied!', retry: 'Retry',
+      savingKey: 'Saving...', saveKey: 'Save Key', savedKey: 'Saved!',
+      noPending: 'No pending approvals', noRecent: 'No recent decisions',
+      loadingSessions: 'Loading sessions...', loadingSkills: 'Loading skills...',
+      loading: 'Loading...', selectProvider: 'Select a provider above',
+      enterApiKey: 'Enter API Key...',
+      apiProvider: 'API Provider', apiKey: 'API Key',
+      getApiKey: 'Get {0} API Key', updateKey: 'Update Key',
+      apiKeyNote: 'This key is stored on the server and used to make API requests through the platform.',
+      apiKeyConfigured: 'API key configured',
+      model: 'Model', configureKeyFirst: 'Configure API key first',
+      context: 'Context', input: 'Input', output: 'Output',
+      maxOutput: 'Max output', tokens: 'tokens',
+      noGatewayModels: 'No gateway models available',
+      models: 'model', modelsPlural: 'models',
+      approve: 'Approve', deny: 'Deny',
+      totalEvaluated: 'Total evaluated', approved: 'Approved',
+      denied: 'Denied', expired: 'Expired', pending: 'Pending',
+      recentSessions: 'Recent Sessions', noSessions: 'No sessions yet.\nStart a conversation to create one.',
+      contextSent: 'Context sent', chars: 'chars',
+      stopGeneration: 'Stop generation', sendMessage: 'Send message',
+      noSkills: 'No skills available.\nSkills appear once the platform loads them.',
+      noErrors: 'No errors or warnings in workspace.',
+      newChat: 'New chat', user: 'user', assistant: 'assistant', system: 'system',
+      reasoning: 'Thinking',
+      wroteFile: 'wrote', wroteFileDefault: 'wrote file',
+      readFile: 'read', readFileDefault: 'read file',
+      ranCommand: 'ran command', searched: 'searched:',
+      tcCompleted: 'completed', tcFailed: 'failed',
+      untitled: 'Untitled', deleteSession: 'Delete',
+      modelConfig: 'MODEL CONFIGURATION', contextWindow: 'Context Window Size',
+      maxOutputTokens: 'Max Output Tokens', inputPrice: 'Input Price / 1M tokens',
+      outputPrice: 'Output Price / 1M tokens', temperature: 'Temperature',
+      supportsImages: 'Supports Images', modelId: 'Model ID',
+      apiKeyMasked: 'API key is set', editKey: 'Edit Key',
+      gatewayLocal: 'LOCAL (GPU)', gatewayCloud: 'CLOUD (GATEWAY)',
+      local: 'local', cloud: 'cloud', free: 'free', paid: 'paid',
+      error: 'Error', agentSideConfig: 'AGENT SIDE MODEL CONFIGURATIONS',
+      openaiCompatible: 'OpenAI Compatible', baseUrl: 'Base URL',
+      modelIdLabel: 'Model ID', saveConfig: 'Save', savedConfig: 'Saved!',
+      enterBaseUrl: 'http://localhost:11434/v1', enterModelId: 'Enter model ID...',
+      customHeaders: 'Custom Headers (optional)', testConnection: 'Test',
+      connectionOk: 'Connected!', connectionFail: 'Connection failed',
+      enableR1Format: 'Enable R1 messages format'
+    },
+    ja: {
+      chat: '\u30C1\u30E3\u30C3\u30C8', settings: '\u8A2D\u5B9A', history: '\u5C65\u6B74',
+      theme: '\u30C6\u30FC\u30DE', language: '\u8A00\u8A9E',
+      gatewayModels: '\u30B2\u30FC\u30C8\u30A6\u30A7\u30A4\u30E2\u30C7\u30EB (\u30ED\u30FC\u30AB\u30EB)', cloudProviders: '\u30AF\u30E9\u30A6\u30C9\u30D7\u30ED\u30D0\u30A4\u30C0\u30FC',
+      primaryAgents: '\u30E1\u30A4\u30F3\u30A8\u30FC\u30B8\u30A7\u30F3\u30C8', subAgents: '\u30B5\u30D6\u30A8\u30FC\u30B8\u30A7\u30F3\u30C8',
+      skillsRegistry: '\u30B9\u30AD\u30EB\u30EC\u30B8\u30B9\u30C8\u30EA', clearAll: '\u3059\u3079\u3066\u30AF\u30EA\u30A2',
+      filterSkills: '\u30B9\u30AD\u30EB\u3092\u691C\u7D22...', inputPlaceholder: '\u30BF\u30B9\u30AF\u3092\u5165\u529B\u3057\u3066\u304F\u3060\u3055\u3044...',
+      thinking: '\u601D\u8003\u4E2D...', analyzing: '\u5206\u6790\u4E2D...', processing: '\u51E6\u7406\u4E2D...', working: '\u4F5C\u696D\u4E2D',
+      emptyDesc: '\u30ED\u30FC\u30AB\u30EB vLLM \u30B2\u30FC\u30C8\u30A6\u30A7\u30A4\u3067\u99C6\u52D5\u3059\u308B AI \u30B3\u30FC\u30C7\u30A3\u30F3\u30B0\u30A2\u30B7\u30B9\u30BF\u30F3\u30C8\u3002',
+      startConversation: '\u4F1A\u8A71\u3092\u59CB\u3081\u308B',
+      pendingApprovals: '\u627F\u8A8D\u5F85\u3061', statistics: '\u7D71\u8A08',
+      recentDecisions: '\u6700\u8FD1\u306E\u6C7A\u5B9A',
+      agBuildDesc: '\u8AAD\u307F\u66F8\u304D\u5B9F\u884C \u2014 \u30C4\u30FC\u30EB\u547C\u3073\u51FA\u3057\u4ED8\u304D\u30C7\u30D5\u30A9\u30EB\u30C8\u30B3\u30FC\u30C7\u30A3\u30F3\u30B0\u30A8\u30FC\u30B8\u30A7\u30F3\u30C8',
+      agPlanDesc: '\u8AAD\u307F\u53D6\u308A\u5C02\u7528\u306E\u8A08\u753B\u3068\u30A2\u30FC\u30AD\u30C6\u30AF\u30C1\u30E3\u5206\u6790',
+      agExploreDesc: '\u30B3\u30FC\u30C9\u30D9\u30FC\u30B9\u306E\u691C\u7D22\u3068\u63A2\u7D22 \u2014 \u8AAD\u307F\u53D6\u308A\u5C02\u7528',
+      agGeneralDesc: '\u30DE\u30EB\u30C1\u30B9\u30C6\u30C3\u30D7\u63A8\u8AD6\u3001\u30EA\u30B5\u30FC\u30C1\u3001\u4E00\u822C\u30BF\u30B9\u30AF',
+      copy: '\u30B3\u30D4\u30FC', copied: '\u30B3\u30D4\u30FC\u3057\u307E\u3057\u305F\uFF01', retry: '\u518D\u8A66\u884C',
+      savingKey: '\u4FDD\u5B58\u4E2D...', saveKey: '\u30AD\u30FC\u3092\u4FDD\u5B58', savedKey: '\u4FDD\u5B58\u3057\u307E\u3057\u305F\uFF01',
+      noPending: '\u627F\u8A8D\u5F85\u3061\u306A\u3057', noRecent: '\u6700\u8FD1\u306E\u6C7A\u5B9A\u306A\u3057',
+      loadingSessions: '\u30BB\u30C3\u30B7\u30E7\u30F3\u3092\u8AAD\u307F\u8FBC\u307F\u4E2D...', loadingSkills: '\u30B9\u30AD\u30EB\u3092\u8AAD\u307F\u8FBC\u307F\u4E2D...',
+      loading: '\u8AAD\u307F\u8FBC\u307F\u4E2D...', selectProvider: '\u4E0A\u306E\u30D7\u30ED\u30D0\u30A4\u30C0\u30FC\u3092\u9078\u629E',
+      enterApiKey: 'API\u30AD\u30FC\u3092\u5165\u529B...',
+      apiProvider: 'API\u30D7\u30ED\u30D0\u30A4\u30C0\u30FC', apiKey: 'API\u30AD\u30FC',
+      getApiKey: '{0}\u306EAPI\u30AD\u30FC\u3092\u53D6\u5F97', updateKey: '\u30AD\u30FC\u3092\u66F4\u65B0',
+      apiKeyNote: '\u3053\u306E\u30AD\u30FC\u306F\u30B5\u30FC\u30D0\u30FC\u306B\u4FDD\u5B58\u3055\u308C\u3001\u30D7\u30E9\u30C3\u30C8\u30D5\u30A9\u30FC\u30E0\u7D4C\u7531\u3067API\u30EA\u30AF\u30A8\u30B9\u30C8\u306B\u4F7F\u7528\u3055\u308C\u307E\u3059\u3002',
+      apiKeyConfigured: 'API\u30AD\u30FC\u8A2D\u5B9A\u6E08\u307F',
+      model: '\u30E2\u30C7\u30EB', configureKeyFirst: '\u5148\u306BAPI\u30AD\u30FC\u3092\u8A2D\u5B9A\u3057\u3066\u304F\u3060\u3055\u3044',
+      context: '\u30B3\u30F3\u30C6\u30AD\u30B9\u30C8', input: '\u5165\u529B', output: '\u51FA\u529B',
+      maxOutput: '\u6700\u5927\u51FA\u529B', tokens: '\u30C8\u30FC\u30AF\u30F3',
+      noGatewayModels: '\u30B2\u30FC\u30C8\u30A6\u30A7\u30A4\u30E2\u30C7\u30EB\u306A\u3057',
+      models: '\u30E2\u30C7\u30EB', modelsPlural: '\u30E2\u30C7\u30EB',
+      approve: '\u627F\u8A8D', deny: '\u62D2\u5426',
+      totalEvaluated: '\u5408\u8A08\u8A55\u4FA1\u6570', approved: '\u627F\u8A8D\u6E08\u307F',
+      denied: '\u62D2\u5426\u6E08\u307F', expired: '\u671F\u9650\u5207\u308C', pending: '\u4FDD\u7559\u4E2D',
+      recentSessions: '\u6700\u8FD1\u306E\u30BB\u30C3\u30B7\u30E7\u30F3', noSessions: '\u30BB\u30C3\u30B7\u30E7\u30F3\u306A\u3057\u3002\n\u4F1A\u8A71\u3092\u59CB\u3081\u3066\u4F5C\u6210\u3057\u3066\u304F\u3060\u3055\u3044\u3002',
+      contextSent: '\u30B3\u30F3\u30C6\u30AD\u30B9\u30C8\u9001\u4FE1', chars: '\u6587\u5B57',
+      stopGeneration: '\u751F\u6210\u3092\u505C\u6B62', sendMessage: '\u30E1\u30C3\u30BB\u30FC\u30B8\u3092\u9001\u4FE1',
+      noSkills: '\u30B9\u30AD\u30EB\u304C\u3042\u308A\u307E\u305B\u3093\u3002\n\u30D7\u30E9\u30C3\u30C8\u30D5\u30A9\u30FC\u30E0\u304C\u8AAD\u307F\u8FBC\u3080\u3068\u8868\u793A\u3055\u308C\u307E\u3059\u3002',
+      noErrors: '\u30EF\u30FC\u30AF\u30B9\u30DA\u30FC\u30B9\u306B\u30A8\u30E9\u30FC\u3084\u8B66\u544A\u306F\u3042\u308A\u307E\u305B\u3093\u3002',
+      newChat: '\u65B0\u3057\u3044\u30C1\u30E3\u30C3\u30C8', user: '\u30E6\u30FC\u30B6\u30FC', assistant: '\u30A2\u30B7\u30B9\u30BF\u30F3\u30C8', system: '\u30B7\u30B9\u30C6\u30E0',
+      reasoning: '\u601D\u8003',
+      wroteFile: '\u66F8\u304D\u8FBC\u307F', wroteFileDefault: '\u30D5\u30A1\u30A4\u30EB\u66F8\u304D\u8FBC\u307F',
+      readFile: '\u8AAD\u307F\u53D6\u308A', readFileDefault: '\u30D5\u30A1\u30A4\u30EB\u8AAD\u307F\u53D6\u308A',
+      ranCommand: '\u30B3\u30DE\u30F3\u30C9\u5B9F\u884C', searched: '\u691C\u7D22:',
+      tcCompleted: '\u5B8C\u4E86', tcFailed: '\u5931\u6557',
+      untitled: '\u7121\u984C', deleteSession: '\u524A\u9664',
+      modelConfig: '\u30E2\u30C7\u30EB\u8A2D\u5B9A', contextWindow: '\u30B3\u30F3\u30C6\u30AD\u30B9\u30C8\u30A6\u30A3\u30F3\u30C9\u30A6\u30B5\u30A4\u30BA',
+      maxOutputTokens: '\u6700\u5927\u51FA\u529B\u30C8\u30FC\u30AF\u30F3', inputPrice: '\u5165\u529B\u4FA1\u683C / 1M\u30C8\u30FC\u30AF\u30F3',
+      outputPrice: '\u51FA\u529B\u4FA1\u683C / 1M\u30C8\u30FC\u30AF\u30F3', temperature: '\u6E29\u5EA6',
+      supportsImages: '\u753B\u50CF\u30B5\u30DD\u30FC\u30C8', modelId: '\u30E2\u30C7\u30EBID',
+      apiKeyMasked: 'API\u30AD\u30FC\u8A2D\u5B9A\u6E08\u307F', editKey: '\u30AD\u30FC\u3092\u7DE8\u96C6',
+      gatewayLocal: '\u30ED\u30FC\u30AB\u30EB (GPU)', gatewayCloud: '\u30AF\u30E9\u30A6\u30C9 (\u30B2\u30FC\u30C8\u30A6\u30A7\u30A4)',
+      local: '\u30ED\u30FC\u30AB\u30EB', cloud: '\u30AF\u30E9\u30A6\u30C9', free: '\u7121\u6599', paid: '\u6709\u6599',
+      error: '\u30A8\u30E9\u30FC', agentSideConfig: '\u30A8\u30FC\u30B8\u30A7\u30F3\u30C8\u5074\u30E2\u30C7\u30EB\u8A2D\u5B9A',
+      openaiCompatible: 'OpenAI\u4E92\u63DB', baseUrl: '\u30D9\u30FC\u30B9URL',
+      modelIdLabel: '\u30E2\u30C7\u30EBID', saveConfig: '\u4FDD\u5B58', savedConfig: '\u4FDD\u5B58\u3057\u307E\u3057\u305F\uFF01',
+      enterBaseUrl: 'http://localhost:11434/v1', enterModelId: '\u30E2\u30C7\u30EBID\u3092\u5165\u529B...',
+      customHeaders: '\u30AB\u30B9\u30BF\u30E0\u30D8\u30C3\u30C0\u30FC (\u4EFB\u610F)', testConnection: '\u30C6\u30B9\u30C8',
+      enableR1Format: 'R1\u30E1\u30C3\u30BB\u30FC\u30B8\u30D5\u30A9\u30FC\u30DE\u30C3\u30C8\u3092\u6709\u52B9\u5316',
+      connectionOk: '\u63A5\u7D9A\u6210\u529F\uFF01', connectionFail: '\u63A5\u7D9A\u5931\u6557'
+    }
+  };
+  var currentLang = localStorage.getItem('tw-lang') || 'en';
+
+  function t(key) {
+    var strings = i18nStrings[currentLang] || i18nStrings.en;
+    return strings[key] || i18nStrings.en[key] || key;
+  }
+
+  function applyI18n() {
+    // Translate all elements with data-i18n attribute
+    document.querySelectorAll('[data-i18n]').forEach(function (el) {
+      el.textContent = t(el.getAttribute('data-i18n'));
+    });
+    // Translate all elements with data-i18n-placeholder attribute
+    document.querySelectorAll('[data-i18n-placeholder]').forEach(function (el) {
+      el.placeholder = t(el.getAttribute('data-i18n-placeholder'));
+    });
+    // Update topbar title based on current panel state
+    var titleEl = document.getElementById('topbarTitle');
+    if (titleEl) {
+      var cur = titleEl.textContent;
+      if (cur === 'CHAT' || cur === i18nStrings.ja.chat) titleEl.textContent = t('chat');
+      else if (cur === 'SETTINGS' || cur === i18nStrings.ja.settings) titleEl.textContent = t('settings');
+      else if (cur === 'HISTORY' || cur === i18nStrings.ja.history) titleEl.textContent = t('history');
+    }
+  }
+
+  // Apply saved language on load
+  applyI18n();
+
   // ── Top bar: Settings toggle (right sidebar) ───────────────────
   var settingsBtn = document.getElementById('settingsBtn');
   var rsidebar = document.getElementById('rsidebar');
@@ -22,7 +176,7 @@
       if (histBtn) histBtn.classList.remove('active');
       // Update topbar title
       var titleEl = document.getElementById('topbarTitle');
-      if (titleEl) titleEl.textContent = isOpen ? 'SETTINGS' : 'CHAT';
+      if (titleEl) titleEl.textContent = isOpen ? t('settings') : t('chat');
     });
   }
 
@@ -39,7 +193,7 @@
       if (isOpen && settingsBtn) settingsBtn.classList.remove('active');
       // Update topbar title
       var titleEl = document.getElementById('topbarTitle');
-      if (titleEl) titleEl.textContent = isOpen ? 'HISTORY' : 'CHAT';
+      if (titleEl) titleEl.textContent = isOpen ? t('history') : t('chat');
     });
   }
 
@@ -50,7 +204,7 @@
       if (overlay) overlay.classList.remove('open');
       if (histBtn) histBtn.classList.remove('active');
       var titleEl = document.getElementById('topbarTitle');
-      if (titleEl) titleEl.textContent = 'CHAT';
+      if (titleEl) titleEl.textContent = t('chat');
     });
   });
 
@@ -160,6 +314,7 @@
     snd.innerHTML = STOP_SVG;
     snd.classList.add('stop-mode');
     snd.disabled = false;
+    snd.title = 'Stop generation';
     vs.postMessage({ type: 'sendMessage', text: t });
     // Clear attachment chips after send (backend clears actual attachments)
     attachedFiles = [];
@@ -172,6 +327,7 @@
     snd.innerHTML = SEND_SVG;
     snd.classList.remove('stop-mode');
     snd.disabled = false;
+    snd.title = 'Send message';
   }
 
   snd.addEventListener('click', function () {
@@ -475,6 +631,32 @@
     });
   }
 
+  // ── Language picker ────────────────────────────────────────────
+  var langPicker = document.getElementById('langPicker');
+  if (langPicker) {
+    // Restore saved language
+    var savedLang = localStorage.getItem('tw-lang') || 'en';
+    langPicker.querySelectorAll('.lang-btn').forEach(function (b) {
+      b.classList.toggle('sel', b.getAttribute('data-lang') === savedLang);
+    });
+    langPicker.addEventListener('click', function (e) {
+      var btn = e.target.closest('.lang-btn');
+      if (!btn) return;
+      var lang = btn.getAttribute('data-lang');
+      currentLang = lang;
+      langPicker.querySelectorAll('.lang-btn').forEach(function (b) { b.classList.remove('sel'); });
+      btn.classList.add('sel');
+      localStorage.setItem('tw-lang', lang);
+      applyI18n();
+      // Re-render all dynamic content in the new language
+      if (lastRegistry) renderModels(lastRegistry);
+      if (allSk.length) renderSkills(allSk);
+      vs.postMessage({ type: 'refreshSessions' });
+      // Notify extension about language change so system prompt uses the same language
+      vs.postMessage({ type: 'setLanguage', language: lang });
+    });
+  }
+
   var newBtn = document.getElementById('newBtn');
   if (newBtn) newBtn.addEventListener('click', function () {
     // Navigate back to chat view when on history or settings page
@@ -483,7 +665,7 @@
     if (histPanel) histPanel.classList.remove('open');
     if (histBtn) histBtn.classList.remove('active');
     var titleEl = document.getElementById('topbarTitle');
-    if (titleEl) titleEl.textContent = 'CHAT';
+    if (titleEl) titleEl.textContent = t('chat');
     vs.postMessage({ type: 'newSession' });
   });
 
@@ -511,13 +693,18 @@
     for (var i = 0; i < items.length; i++) {
       (function(item) {
         var opt = document.createElement('div');
-        opt.className = 'it-dd-item' + (item.active ? ' active' : '');
-        opt.textContent = item.label;
-        opt.addEventListener('click', function (e) {
-          e.stopPropagation();
-          closeDropdown();
-          onSelect(item.value);
-        });
+        if (item.isHeader) {
+          opt.className = 'it-dd-header';
+          opt.textContent = item.label;
+        } else {
+          opt.className = 'it-dd-item' + (item.active ? ' active' : '');
+          opt.textContent = item.label;
+          opt.addEventListener('click', function (e) {
+            e.stopPropagation();
+            closeDropdown();
+            onSelect(item.value);
+          });
+        }
         dd.appendChild(opt);
       })(items[i]);
     }
@@ -555,22 +742,52 @@
     var items = [];
     if (lastRegistry) {
       var local = lastRegistry.local || [];
+      var hasLocal = false;
+      var hasCloudGw = false;
+      // Collect local GPU and cloud (gateway) models separately
+      var localItems = [];
+      var cloudGwItems = [];
       for (var i = 0; i < local.length; i++) {
+        if (local[i].status !== 'online') continue;
         for (var j = 0; j < local[i].models.length; j++) {
           var m = local[i].models[j];
-          items.push({ label: m.name || m.id, value: m.id, active: cMod === m.id });
+          if (m.isCloud) {
+            cloudGwItems.push({ label: m.name || m.id, value: m.id, active: cMod === m.id });
+          } else {
+            localItems.push({ label: m.name || m.id, value: m.id, active: cMod === m.id });
+          }
         }
       }
+      // Add grouped items with headers
+      if (localItems.length > 0) {
+        items.push({ label: '\u2500\u2500 ' + t('gatewayLocal') + ' \u2500\u2500', value: '', active: false, isHeader: true });
+        items = items.concat(localItems);
+      }
+      if (cloudGwItems.length > 0) {
+        items.push({ label: '\u2500\u2500 ' + t('gatewayCloud') + ' \u2500\u2500', value: '', active: false, isHeader: true });
+        items = items.concat(cloudGwItems);
+      }
+      // Agent's own cloud providers
       var cloud = lastRegistry.cloud || [];
+      var cloudAgentItems = [];
       for (var i = 0; i < cloud.length; i++) {
         if (!cloud[i].configured) continue;
         for (var j = 0; j < cloud[i].models.length; j++) {
           var m = cloud[i].models[j];
-          items.push({ label: m.name || m.id, value: m.id, active: cMod === m.id });
+          cloudAgentItems.push({ label: m.name || m.id, value: m.id, active: cMod === m.id });
         }
       }
+      if (cloudAgentItems.length > 0) {
+        items.push({ label: '\u2500\u2500 ' + t('agentSideConfig') + ' \u2500\u2500', value: '', active: false, isHeader: true });
+        items = items.concat(cloudAgentItems);
+      }
+    } else {
+      vs.postMessage({ type: 'refreshModels' });
     }
-    if (items.length === 0) items.push({ label: 'No models available', value: '', active: false });
+    if (cMod && !items.some(function(it) { return it.value === cMod; })) {
+      items.unshift({ label: resolveModelName(cMod), value: cMod, active: true });
+    }
+    if (items.length === 0) items.push({ label: t('noGatewayModels'), value: '', active: false });
     showDropdown(mdBtn, items, function (val) {
       if (val) {
         cMod = val;
@@ -650,15 +867,16 @@
       .replace(/"/g, '&quot;');
   }
 
+  var _codeBlockSeq = 0;
   function md(t) {
     var h = esc(t);
-    var i = 0;
     // code blocks
     h = h.replace(/```(\w*?)\n([\s\S]*?)```/g, function (_, l, c) {
-      var id = 'c' + (i++);
+      var id = 'cb' + (_codeBlockSeq++);
+      var trimmed = c.replace(/^\n+/, '').replace(/\n+$/, '');
       return '<div class="cbw">' + (l ? '<span class="cl">' + l + '</span>' : '') +
-        '<button class="cpb" data-ci="' + id + '">Copy</button>' +
-        '<pre><code id="' + id + '">' + c + '</code></pre></div>';
+        '<button class="cpb">Copy</button>' +
+        '<pre><code id="' + id + '">' + trimmed + '</code></pre></div>';
     });
     // inline code
     h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
@@ -683,20 +901,20 @@
     var n = tc.tool || 'unknown', a = tc.args || {};
     if (n === 'write_file' || n === 'create_file') {
       var p = a.path || a.filePath || '';
-      return p ? 'wrote ' + p.split('/').pop() : 'wrote file';
+      return p ? t('wroteFile') + ' ' + p.split('/').pop() : t('wroteFileDefault');
     }
     if (n === 'read_file') {
       var p = a.path || a.filePath || '';
-      return p ? 'read ' + p.split('/').pop() : 'read file';
+      return p ? t('readFile') + ' ' + p.split('/').pop() : t('readFileDefault');
     }
     if (n === 'run_command' || n === 'execute' || n === 'bash') {
       var c = a.command || a.cmd || '';
-      return c ? c.substring(0, 40) + (c.length > 40 ? '...' : '') : 'ran command';
+      return c ? c.substring(0, 40) + (c.length > 40 ? '...' : '') : t('ranCommand');
     }
     if (n === 'search' || n === 'grep') {
-      return 'searched: ' + (a.query || a.pattern || '').substring(0, 30);
+      return t('searched') + ' ' + (a.query || a.pattern || '').substring(0, 30);
     }
-    return tc.success ? 'completed' : 'failed';
+    return tc.success ? t('tcCompleted') : t('tcFailed');
   }
 
   // ── Render message ─────────────────────────────────────────────
@@ -707,7 +925,7 @@
 
     var hdr = document.createElement('div');
     hdr.className = 'mh ' + m.role;
-    hdr.innerHTML = '<span class="d"></span><span>' + m.role + '</span>';
+    hdr.innerHTML = '<span class="d"></span><span>' + t(m.role) + '</span>';
     if (m.model) hdr.innerHTML += '<span class="meta">' + esc(m.model) + '</span>';
     if (m.latencyMs) hdr.innerHTML += '<span class="meta">' + (m.latencyMs / 1000).toFixed(1) + 's</span>';
     el.appendChild(hdr);
@@ -777,13 +995,16 @@
     if (m.reasoning) {
       var r = document.createElement('div');
       r.className = 'rsn';
-      r.innerHTML = '<div class="rh">&#9671; Reasoning &#9660;</div><div class="rc">' + esc(m.reasoning) + '</div>';
+      r.innerHTML = '<div class="rh"><span>&#9671; ' + t('thinking').replace('...', '') + '</span><span class="rh-chevron">&#9660;</span></div><div class="rc">' + esc(m.reasoning) + '</div>';
       el.appendChild(r);
     }
 
     var body = document.createElement('div');
     body.className = 'mb';
-    if (m.role === 'user' || m.role === 'system') {
+    if (m.role === 'system' && m.content && m.content.indexOf('Error:') === 0) {
+      // Localize the "Error:" prefix
+      body.textContent = t('error') + ':' + m.content.substring(6);
+    } else if (m.role === 'user' || m.role === 'system') {
       body.textContent = m.content;
     } else {
       body.innerHTML = md(m.content);
@@ -794,8 +1015,8 @@
     if (m.role === 'system' && m.content && m.content.indexOf('Error:') !== -1 && lastUserText) {
       var retryBtn = document.createElement('button');
       retryBtn.className = 'retry-btn';
-      retryBtn.innerHTML = '&#8635; Retry';
-      retryBtn.title = 'Re-send the last prompt';
+      retryBtn.innerHTML = '&#8635; ' + t('retry');
+      retryBtn.title = t('retry');
       retryBtn.addEventListener('click', function () {
         vs.postMessage({ type: 'sendMessage', text: lastUserText });
       });
@@ -840,7 +1061,7 @@
     for (var i = 0; i < cloudList.length; i++) {
       if (cloudList[i].id === providerId) { p = cloudList[i]; break; }
     }
-    if (!p) { det.innerHTML = '<div class="nd">Select a provider above</div>'; return; }
+    if (!p) { det.innerHTML = '<div class="nd">' + t('selectProvider') + '</div>'; return; }
 
     // Figure out which cloud model is currently active for this provider
     var activeCloudModel = '';
@@ -849,27 +1070,36 @@
     }
 
     var h = '';
-    // API key section
+
+    // ── API Key section ──
     h += '<div class="cl-section">';
-    h += '<label class="cl-field-lbl">' + esc(p.name) + ' API Key</label>';
-    h += '<input class="cl-key-inp" id="clKeyInp" type="password" placeholder="Enter API Key..." data-provider="' + esc(p.id) + '" />';
-    if (p.docUrl) {
-      h += '<button class="cl-get-key-btn" id="clGetKeyBtn" data-url="' + esc(p.docUrl) + '">Get ' + esc(p.name) + ' API Key</button>';
-    }
-    h += '<div class="cl-note">This key is stored on the server and used to make API requests through the platform.</div>';
+    h += '<label class="cl-field-lbl">' + esc(p.name) + ' ' + t('apiKey') + '</label>';
     if (p.configured) {
-      h += '<div class="cl-status-ok">&#10003; API key configured</div>';
+      // Show masked key with edit button (Cline-style)
+      h += '<div class="cl-key-row" id="clKeyRow">';
+      h += '<input class="cl-key-inp cl-key-masked" id="clKeyInp" type="password" value="sk-\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022" readonly data-provider="' + esc(p.id) + '" />';
+      h += '</div>';
+      h += '<div class="cl-key-actions">';
+      h += '<span class="cl-status-ok">&#10003; ' + t('apiKeyConfigured') + '</span>';
+      h += '<button class="cl-edit-key-btn" id="clEditKeyBtn">' + t('editKey') + '</button>';
+      h += '</div>';
+    } else {
+      h += '<input class="cl-key-inp" id="clKeyInp" type="password" placeholder="' + t('enterApiKey') + '" data-provider="' + esc(p.id) + '" />';
     }
-    h += '<button class="cl-save-btn" id="clSaveBtn" data-provider="' + esc(p.id) + '">' + (p.configured ? 'Update Key' : 'Save Key') + '</button>';
+    h += '<div class="cl-note">' + t('apiKeyNote') + '</div>';
+    if (p.docUrl) {
+      h += '<button class="cl-get-key-btn" id="clGetKeyBtn" data-url="' + esc(p.docUrl) + '">' + t('getApiKey').replace('{0}', esc(p.name)) + '</button>';
+    }
+    h += '<button class="cl-save-btn" id="clSaveBtn" data-provider="' + esc(p.id) + '"' + (p.configured ? ' style="display:none"' : '') + '>' + t('saveKey') + '</button>';
     h += '</div>';
 
-    // Model selector
+    // ── Model selector ──
     h += '<div class="cl-section">';
-    h += '<label class="cl-field-lbl">Model</label>';
+    h += '<label class="cl-field-lbl">' + t('model') + '</label>';
     h += '<div class="cl-model-select-row">';
     h += '<select class="cl-model-select" id="clModelSel">';
     if (!p.configured) {
-      h += '<option value="">Configure API key first</option>';
+      h += '<option value="">' + t('configureKeyFirst') + '</option>';
     } else {
       for (var j = 0; j < p.models.length; j++) {
         var m = p.models[j];
@@ -884,35 +1114,86 @@
     h += '</div>';
     h += '</div>';
 
-    // Model detail card (if a model is selected)
+    // ── Cline-style Model Configuration ──
     var selModel = null;
     var showId = activeCloudModel || (p.configured && p.models.length > 0 ? p.models[0].id : '');
     for (var j = 0; j < p.models.length; j++) {
       if (p.models[j].id === showId) { selModel = p.models[j]; break; }
     }
     if (selModel) {
-      h += '<div class="cl-model-detail">';
-      h += '<div class="cl-model-stats">';
-      h += '<span>Context: <strong>' + (selModel.contextLimit >= 1000 ? Math.round(selModel.contextLimit / 1000) + 'K' : selModel.contextLimit) + '</strong></span>';
-      h += '<span>Input: <strong>$' + selModel.costIn + '/M</strong></span>';
-      h += '<span>Output: <strong>$' + selModel.costOut + '/M</strong></span>';
+      // Read saved overrides from localStorage (keyed by model id)
+      var cfgKey = 'tw-mcfg-' + (selModel.id || '');
+      var savedCfg = {};
+      try { savedCfg = JSON.parse(localStorage.getItem(cfgKey) || '{}'); } catch (e) {}
+      var cfgCtx = savedCfg.contextWindow != null ? savedCfg.contextWindow : (selModel.contextLimit || 0);
+      var cfgMax = savedCfg.maxOutputTokens != null ? savedCfg.maxOutputTokens : (selModel.outputLimit || -1);
+      var cfgIn = savedCfg.inputPrice != null ? savedCfg.inputPrice : (selModel.costIn || 0);
+      var cfgOut = savedCfg.outputPrice != null ? savedCfg.outputPrice : (selModel.costOut || 0);
+      var cfgTemp = savedCfg.temperature != null ? savedCfg.temperature : 0;
+      var cfgImg = savedCfg.supportsImages != null ? savedCfg.supportsImages : (selModel.supportsImages || false);
+      var cfgR1 = savedCfg.enableR1Format || false;
+
+      h += '<details class="cl-config-details" open>';
+      h += '<summary class="cl-config-summary">&#9656; ' + t('modelConfig') + '</summary>';
+      // Supports Images + Enable R1 checkboxes at top (like Cline)
+      h += '<div class="cl-config-check-row">';
+      h += '<label><input type="checkbox" id="clCfgImg"' + (cfgImg ? ' checked' : '') + ' /> ' + t('supportsImages') + '</label>';
+      h += '<label><input type="checkbox" id="clCfgR1"' + (cfgR1 ? ' checked' : '') + ' /> ' + t('enableR1Format') + '</label>';
       h += '</div>';
-      if (selModel.outputLimit) {
-        h += '<div class="cl-model-meta">Max output: ' + selModel.outputLimit.toLocaleString() + ' tokens</div>';
-      }
+      h += '<div class="cl-config-grid">';
+      // Context Window Size
+      h += '<div class="cl-config-field"><label>' + t('contextWindow') + '</label>';
+      h += '<input type="text" class="cl-config-inp" id="clCfgCtx" value="' + cfgCtx + '" /></div>';
+      // Max Output Tokens
+      h += '<div class="cl-config-field"><label>' + t('maxOutputTokens') + '</label>';
+      h += '<input type="text" class="cl-config-inp" id="clCfgMax" value="' + cfgMax + '" /></div>';
+      // Input Price
+      h += '<div class="cl-config-field"><label>' + t('inputPrice') + '</label>';
+      h += '<input type="text" class="cl-config-inp" id="clCfgIn" value="' + cfgIn + '" /></div>';
+      // Output Price
+      h += '<div class="cl-config-field"><label>' + t('outputPrice') + '</label>';
+      h += '<input type="text" class="cl-config-inp" id="clCfgOut" value="' + cfgOut + '" /></div>';
+      // Temperature
+      h += '<div class="cl-config-field cl-config-full"><label>' + t('temperature') + '</label>';
+      h += '<input type="text" class="cl-config-inp" id="clCfgTemp" value="' + cfgTemp + '" /></div>';
       h += '</div>';
+      // Bottom summary bar (like Cline): Context: 30K  Input: Free  Output: Free
+      var ctxLabel = cfgCtx >= 1000 ? Math.round(cfgCtx / 1000) + 'K' : cfgCtx;
+      var inLabel = cfgIn > 0 ? ('$' + cfgIn) : t('free');
+      var outLabel = cfgOut > 0 ? ('$' + cfgOut) : t('free');
+      h += '<div class="cl-config-summary-bar" id="clCfgBar">';
+      h += '<span>' + t('context') + ': <b>' + ctxLabel + '</b></span>';
+      h += '<span>' + t('input') + ': <b>' + inLabel + '</b></span>';
+      h += '<span>' + t('output') + ': <b>' + outLabel + '</b></span>';
+      h += '</div>';
+      h += '<div class="cl-config-note">(Note: Thirdwave AI uses complex prompts and works best with capable models. Less capable models may not work as expected.)</div>';
+      h += '</details>';
     }
 
     det.innerHTML = h;
 
-    // Bind events
+    // ── Bind events ──
     var saveBtn = document.getElementById('clSaveBtn');
     var keyInp = document.getElementById('clKeyInp');
+    var editKeyBtn = document.getElementById('clEditKeyBtn');
+
+    // Edit key — make the masked field editable
+    if (editKeyBtn && keyInp) {
+      editKeyBtn.addEventListener('click', function () {
+        keyInp.value = '';
+        keyInp.readOnly = false;
+        keyInp.classList.remove('cl-key-masked');
+        keyInp.placeholder = t('enterApiKey');
+        keyInp.focus();
+        if (saveBtn) { saveBtn.style.display = 'block'; saveBtn.textContent = t('updateKey'); }
+      });
+    }
+
     if (saveBtn) {
       saveBtn.addEventListener('click', function () {
         var key = keyInp ? keyInp.value.trim() : '';
         if (!key) return;
-        saveBtn.textContent = 'Saving...';
+        saveBtn.textContent = t('savingKey');
         saveBtn.disabled = true;
         vs.postMessage({ type: 'setCloudKey', provider: p.id, key: key });
       });
@@ -930,7 +1211,6 @@
           cMod = modelSel.value;
           updateModelLabel();
           vs.postMessage({ type: 'selectModel', modelId: modelSel.value });
-          // Immediately re-render the detail card with the new model's specs
           if (lastRegistry) renderCloudDetail(p.id, lastRegistry.cloud || []);
         }
       });
@@ -943,6 +1223,49 @@
         modelClear.remove();
       });
     }
+    // ── Bind editable model config fields ──
+    var cfgFields = ['clCfgCtx', 'clCfgMax', 'clCfgIn', 'clCfgOut', 'clCfgTemp'];
+    var cfgKey2 = 'tw-mcfg-' + (activeCloudModel || (p.configured && p.models.length > 0 ? p.models[0].id : ''));
+    function saveCfgOverrides() {
+      var saved = {};
+      try { saved = JSON.parse(localStorage.getItem(cfgKey2) || '{}'); } catch (e) {}
+      var ctx = document.getElementById('clCfgCtx');
+      var mx = document.getElementById('clCfgMax');
+      var inp = document.getElementById('clCfgIn');
+      var outp = document.getElementById('clCfgOut');
+      var tmp = document.getElementById('clCfgTemp');
+      var img = document.getElementById('clCfgImg');
+      var r1 = document.getElementById('clCfgR1');
+      if (ctx) saved.contextWindow = Number(ctx.value) || 0;
+      if (mx) saved.maxOutputTokens = Number(mx.value);
+      if (inp) saved.inputPrice = Number(inp.value) || 0;
+      if (outp) saved.outputPrice = Number(outp.value) || 0;
+      if (tmp) saved.temperature = Number(tmp.value) || 0;
+      if (img) saved.supportsImages = img.checked;
+      if (r1) saved.enableR1Format = r1.checked;
+      localStorage.setItem(cfgKey2, JSON.stringify(saved));
+      // Send to extension so it uses overrides
+      vs.postMessage({ type: 'setModelConfig', config: saved });
+      // Update summary bar
+      var bar = document.getElementById('clCfgBar');
+      if (bar) {
+        var ctxV = saved.contextWindow || 0;
+        var ctxL = ctxV >= 1000 ? Math.round(ctxV / 1000) + 'K' : ctxV;
+        var inL = saved.inputPrice > 0 ? ('$' + saved.inputPrice) : t('free');
+        var outL = saved.outputPrice > 0 ? ('$' + saved.outputPrice) : t('free');
+        bar.innerHTML = '<span>' + t('context') + ': <b>' + ctxL + '</b></span>' +
+          '<span>' + t('input') + ': <b>' + inL + '</b></span>' +
+          '<span>' + t('output') + ': <b>' + outL + '</b></span>';
+      }
+    }
+    cfgFields.forEach(function (fid) {
+      var el = document.getElementById(fid);
+      if (el) el.addEventListener('change', saveCfgOverrides);
+    });
+    var imgEl = document.getElementById('clCfgImg');
+    if (imgEl) imgEl.addEventListener('change', saveCfgOverrides);
+    var r1El = document.getElementById('clCfgR1');
+    if (r1El) r1El.addEventListener('change', saveCfgOverrides);
   }
 
   // ── Render models ──────────────────────────────────────────────
@@ -956,18 +1279,55 @@
     for (var i = 0; i < local.length; i++) {
       var p = local[i];
       var sc = p.status === 'online' ? 'on2' : 'off2';
-      lh += '<div class="ms"><div class="msh"><span><span class="sd2 ' + sc + '"></span>' + esc(p.name) + '</span>';
-      lh += '<span class="bc">' + p.models.length + ' model' + (p.models.length !== 1 ? 's' : '') + '</span></div><div class="ml">';
+
+      // Split models into local GPU vs cloud gateway
+      var localModels = [];
+      var cloudGwModels = [];
       for (var j = 0; j < p.models.length; j++) {
-        var m = p.models[j];
-        var s = cMod === m.id ? ' sel' : '';
-        lh += '<div class="mc' + s + '" data-mid="' + esc(m.id) + '">' +
-          '<span class="mi">&#128421;</span><span class="mn">' + esc(m.name || m.id) + '</span>' +
-          '<span class="lt">local</span><span class="mm">ctx:' + m.contextLimit + '</span></div>';
+        if (p.models[j].isCloud) { cloudGwModels.push(p.models[j]); }
+        else { localModels.push(p.models[j]); }
       }
-      lh += '</div></div>';
+
+      // Section: Local GPU models
+      if (localModels.length > 0) {
+        lh += '<div class="ms"><div class="msh"><span><span class="sd2 ' + sc + '"></span>' + esc(p.name) + '</span>';
+        lh += '<span class="bc">' + localModels.length + ' ' + (localModels.length !== 1 ? t('modelsPlural') : t('models')) + '</span></div>';
+        lh += '<div class="ms-badge ms-badge-local">' + t('gatewayLocal') + ' &mdash; ' + t('free') + '</div>';
+        lh += '<div class="ml">';
+        for (var j = 0; j < localModels.length; j++) {
+          var m = localModels[j];
+          var s = cMod === m.id ? ' sel' : '';
+          lh += '<div class="mc' + s + '" data-mid="' + esc(m.id) + '">' +
+            '<span class="mi">&#128421;</span><span class="mn">' + esc(m.name || m.id) + '</span>' +
+            '<span class="lt lt-local">' + t('local') + '</span><span class="mm">ctx:' + m.contextLimit + '</span></div>';
+        }
+        lh += '</div></div>';
+      }
+
+      // Section: Cloud models routed through gateway
+      if (cloudGwModels.length > 0) {
+        lh += '<div class="ms"><div class="msh"><span><span class="sd2 ' + sc + '"></span>' + esc(p.name) + '</span>';
+        lh += '<span class="bc">' + cloudGwModels.length + ' ' + (cloudGwModels.length !== 1 ? t('modelsPlural') : t('models')) + '</span></div>';
+        lh += '<div class="ms-badge ms-badge-cloud">' + t('gatewayCloud') + ' &mdash; ' + t('paid') + '</div>';
+        lh += '<div class="ml">';
+        for (var j = 0; j < cloudGwModels.length; j++) {
+          var m = cloudGwModels[j];
+          var s = cMod === m.id ? ' sel' : '';
+          var provLabel = m.cloudProviderName ? esc(m.cloudProviderName) : t('cloud');
+          lh += '<div class="mc' + s + '" data-mid="' + esc(m.id) + '">' +
+            '<span class="mi">&#9729;</span><span class="mn">' + esc(m.name || m.id) + '</span>' +
+            '<span class="lt lt-cloud">' + t('cloud') + '</span><span class="mm">' + provLabel + '</span></div>';
+        }
+        lh += '</div></div>';
+      }
+
+      // If no models at all on this gateway, show status only
+      if (localModels.length === 0 && cloudGwModels.length === 0) {
+        lh += '<div class="ms"><div class="msh"><span><span class="sd2 ' + sc + '"></span>' + esc(p.name) + '</span>';
+        lh += '<span class="bc">0 ' + t('modelsPlural') + '</span></div></div>';
+      }
     }
-    if (lc) lc.innerHTML = lh || '<div class="nd">No gateway models available</div>';
+    if (lc) lc.innerHTML = lh || '<div class="nd">' + t('noGatewayModels') + '</div>';
 
     var ch = '';
     var cloud = reg.cloud || [];
@@ -1052,7 +1412,7 @@
     var c = document.getElementById('skC');
     if (!c) return;
     if (!skills || !skills.length) {
-      c.innerHTML = '<div class="nd">No skills available.<br>Skills appear once the platform loads them.</div>';
+      c.innerHTML = '<div class="nd">' + t('noSkills').replace('\n', '<br>') + '</div>';
       return;
     }
     var cats = {};
@@ -1103,17 +1463,17 @@
     var c = document.getElementById('seC');
     if (!c) return;
     if (!sessions || !sessions.length) {
-      c.innerHTML = '<div class="nd">No sessions yet.<br>Start a conversation to create one.</div>';
+      c.innerHTML = '<div class="nd">' + t('noSessions').replace('\n', '<br>') + '</div>';
       return;
     }
-    var h = '<div class="st">Recent Sessions</div>';
+    var h = '';
     for (var i = 0; i < sessions.length; i++) {
       var s = sessions[i];
       var d = s.createdAt ? new Date(s.createdAt).toLocaleDateString() : '';
       h += '<div class="ssc" data-sid="' + esc(s.id) + '">' +
-        '<span class="sst">' + esc(s.title || 'Untitled') + '</span>' +
+        '<span class="sst">' + esc(s.title || t('untitled')) + '</span>' +
         '<span class="ssd">' + esc(d) + '</span>' +
-        '<button class="ssx" data-did="' + esc(s.id) + '" title="Delete">&#10005;</button></div>';
+        '<button class="ssx" data-did="' + esc(s.id) + '" title="' + t('deleteSession') + '">&#10005;</button></div>';
     }
     c.innerHTML = h;
 
@@ -1141,21 +1501,42 @@
   document.addEventListener('click', function (e) {
     var b = e.target.closest('.cpb');
     if (!b) return;
-    var el = document.getElementById(b.getAttribute('data-ci'));
-    if (el && navigator.clipboard) {
-      navigator.clipboard.writeText(el.textContent || '').then(function () {
-        b.textContent = 'Copied!';
-        setTimeout(function () { b.textContent = 'Copy'; }, 2000);
-      });
+    var wrapper = b.closest('.cbw');
+    var el = wrapper ? wrapper.querySelector('code') : null;
+    if (el) {
+      var txt = el.textContent || '';
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(txt).then(function () {
+          b.textContent = t('copied');
+          setTimeout(function () { b.textContent = t('copy'); }, 2000);
+        }).catch(function () {
+          fallbackCopy(txt, b);
+        });
+      } else {
+        fallbackCopy(txt, b);
+      }
     }
   });
+  function fallbackCopy(txt, btn) {
+    var ta = document.createElement('textarea');
+    ta.value = txt;
+    ta.style.cssText = 'position:fixed;left:-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); btn.textContent = t('copied'); setTimeout(function () { btn.textContent = t('copy'); }, 2000); } catch(e) {}
+    document.body.removeChild(ta);
+  }
 
   // ── Streaming state ─────────────────────────────────────────────
   var streamEl = null;      // current streaming message container
   var streamBody = null;    // streaming body text element
-  var streamReason = null;  // streaming reasoning element
+  var streamReason = null;  // streaming reasoning container
+  var streamReasonBody = null; // reasoning text body inside container
+  var streamReasonHdr = null;  // reasoning header (clickable)
   var streamText = '';      // accumulated text for final render
+  var streamReasonText = ''; // accumulated reasoning text
   var reasoningDone = false;
+  var workingPhaseTimer = null; // auto-cycling phase animation timer
 
   // ── Messages from extension ────────────────────────────────────
   window.addEventListener('message', function (e) {
@@ -1166,6 +1547,17 @@
         cAg = m.agent || 'build';
         updateModelLabel();
         if (agLbl) agLbl.textContent = cAg;
+        // Restore language from extension state
+        if (m.language && m.language !== currentLang) {
+          currentLang = m.language;
+          localStorage.setItem('tw-lang', m.language);
+          applyI18n();
+          if (langPicker) {
+            langPicker.querySelectorAll('.lang-btn').forEach(function (b) {
+              b.classList.toggle('sel', b.getAttribute('data-lang') === m.language);
+            });
+          }
+        }
         // Highlight the active agent card
         document.querySelectorAll('.ag-card').forEach(function (c) {
           c.classList.toggle('sel', c.getAttribute('data-ag') === cAg);
@@ -1173,10 +1565,14 @@
         break;
       case 'addMessage':
         renderMsg(m.message);
-        isGenerating = false;
-        snd.innerHTML = SEND_SVG;
-        snd.classList.remove('stop-mode');
-        snd.disabled = false;
+        // Only reset stop button for assistant/system messages (not user echo)
+        if (m.message && m.message.role !== 'user') {
+          isGenerating = false;
+          snd.innerHTML = SEND_SVG;
+          snd.classList.remove('stop-mode');
+          snd.disabled = false;
+          snd.title = 'Send message';
+        }
         break;
       case 'loadHistory':
         Array.from(msgsEl.children).forEach(function (c) { if (c !== esEl) c.remove(); });
@@ -1192,7 +1588,7 @@
         if (histPanel) histPanel.classList.remove('open');
         if (histBtn) histBtn.classList.remove('active');
         var titleEl = document.getElementById('topbarTitle');
-        if (titleEl) titleEl.textContent = 'CHAT';
+        if (titleEl) titleEl.textContent = t('chat');
         break;
       case 'setLoading':
         if (ldEl) ldEl.classList.toggle('on', m.loading);
@@ -1201,6 +1597,7 @@
           snd.innerHTML = SEND_SVG;
           snd.classList.remove('stop-mode');
           snd.disabled = false;
+          snd.title = 'Send message';
         }
         if (m.loading) autoScroll();
         break;
@@ -1208,34 +1605,141 @@
       case 'streamStart':
         // Create the streaming message container
         if (esEl) esEl.style.display = 'none';
+        // Hide the loading spinner since we're now streaming
+        if (ldEl) ldEl.classList.remove('on');
+        // Ensure stop button is visible during streaming
+        isGenerating = true;
+        snd.innerHTML = STOP_SVG;
+        snd.classList.add('stop-mode');
+        snd.disabled = false;
+        snd.title = 'Stop generation';
         streamEl = document.createElement('div');
         streamEl.className = 'stream-msg';
+        // Unified Copilot-style "Working" block — contains everything
+        var workingBlock = document.createElement('div');
+        workingBlock.className = 'stream-working';
+        workingBlock.id = 'streamWorkingBlock';
+        // Working header (always visible)
+        var workHdr = document.createElement('div');
+        workHdr.className = 'working-header';
+        workHdr.innerHTML = '<span class="working-dot"></span><span class="working-label">' + t('working') + '</span>';
+        workingBlock.appendChild(workHdr);
+        // Tool steps container — inside working block
+        var toolSteps = document.createElement('div');
+        toolSteps.className = 'stream-tool-steps';
+        toolSteps.id = 'streamToolSteps';
+        workingBlock.appendChild(toolSteps);
+        // Reasoning content — inside working block, below tool steps
         streamReason = document.createElement('div');
-        streamReason.className = 'stream-reasoning';
+        streamReason.className = 'working-reasoning';
+        streamReason.id = 'streamReasoningContent';
+        workingBlock.appendChild(streamReason);
+        // Status indicator at bottom — shows current phase (Analyzing, Thinking, etc.)
+        var statusLine = document.createElement('div');
+        statusLine.className = 'working-status';
+        statusLine.id = 'streamWorkingStatus';
+        workingBlock.appendChild(statusLine);
+        streamEl.appendChild(workingBlock);
+
+        // Body for actual response text (appears below working block)
         streamBody = document.createElement('div');
         streamBody.className = 'stream-body';
-        streamBody.innerHTML = '<span class="stream-cursor"></span>';
-        streamEl.appendChild(streamReason);
         streamEl.appendChild(streamBody);
+        // We don't need separate streamReasonHdr/streamReasonBody anymore
+        streamReasonBody = streamReason;
+        streamReasonHdr = null;
         msgsEl.appendChild(streamEl);
         streamText = '';
+        streamReasonText = '';
         reasoningDone = false;
         userScrolledUp = false;
         autoScroll();
         break;
+      case 'streamWorking':
+        // Update the status indicator at the bottom of the working block
+        var statusEl = document.getElementById('streamWorkingStatus');
+        var wb = document.getElementById('streamWorkingBlock');
+        if (m.phase === 'done') {
+          // Fade the entire working block when response is ready
+          if (wb) wb.classList.add('working-done');
+          if (workingPhaseTimer) { clearInterval(workingPhaseTimer); workingPhaseTimer = null; }
+        } else if (statusEl) {
+          var phases = ['thinking', 'analyzing', 'processing'];
+          var phaseIdx = 0;
+          var renderStatus = function (pkey) {
+            var phaseLabels = { thinking: t('thinking'), analyzing: t('analyzing'), processing: t('processing') };
+            var label = phaseLabels[pkey] || t('thinking');
+            statusEl.innerHTML = '<span class="working-phase-dot"></span> ' + label;
+          };
+          renderStatus(m.phase);
+          if (wb) wb.classList.remove('working-done');
+          if (workingPhaseTimer) clearInterval(workingPhaseTimer);
+          workingPhaseTimer = setInterval(function () {
+            phaseIdx = (phaseIdx + 1) % phases.length;
+            renderStatus(phases[phaseIdx]);
+          }, 3000);
+          autoScroll();
+        }
+        break;
+      case 'streamToolStep':
+        // Render a tool call step in the working block
+        var ts = document.getElementById('streamToolSteps');
+        if (ts) {
+          var icon = m.success ? '&#10003;' : '&#10007;';
+          var cls = m.success ? 'tool-step-ok' : 'tool-step-fail';
+          var toolLabel = esc(m.tool);
+          var argSummary = '';
+          if (m.args) {
+            if (m.args.path || m.args.filePath) argSummary = esc(m.args.path || m.args.filePath);
+            else if (m.args.command) argSummary = esc(String(m.args.command).substring(0, 60));
+            else if (m.args.pattern || m.args.query) argSummary = esc(m.args.pattern || m.args.query);
+          }
+          var step = document.createElement('div');
+          step.className = 'tool-step ' + cls;
+          step.innerHTML = '<span class="tool-step-icon">' + icon + '</span>' +
+            '<span class="tool-step-name">' + toolLabel + '</span>' +
+            (argSummary ? '<span class="tool-step-arg">' + argSummary + '</span>' : '');
+          ts.appendChild(step);
+          autoScroll();
+        }
+        break;
+      case 'streamThinking':
+        // Update status indicator to show thinking state
+        var thinkStatus = document.getElementById('streamWorkingStatus');
+        if (m.thinking) {
+          if (thinkStatus) {
+            thinkStatus.innerHTML = '<span class="working-phase-dot"></span> ' + t('thinking');
+          }
+        } else {
+          if (thinkStatus) {
+            thinkStatus.innerHTML = '<span class="working-phase-dot done"></span> ' + t('thinking').replace('...', '');
+          }
+        }
+        break;
       case 'streamReasoning':
-        if (streamReason) {
-          streamReason.textContent += m.content;
+        if (streamReasonBody) {
+          streamReasonText += m.content;
+          streamReasonBody.textContent = streamReasonText;
           autoScroll();
         }
         break;
       case 'streamToken':
-        if (!reasoningDone && streamReason && streamReason.textContent) {
-          // Reasoning is done, fade it out
+        if (!reasoningDone) {
+          // First text token arrived — collapse the working block
           reasoningDone = true;
-          streamReason.style.opacity = '0.4';
-          streamReason.style.maxHeight = '40px';
-          streamReason.style.transition = 'opacity .5s, max-height .5s';
+          var workBlock = document.getElementById('streamWorkingBlock');
+          if (workBlock) {
+            workBlock.classList.add('working-collapsed');
+            // Make the header clickable to expand
+            var hdr = workBlock.querySelector('.working-header');
+            if (hdr) {
+              hdr.style.cursor = 'pointer';
+              hdr.addEventListener('click', function () {
+                workBlock.classList.toggle('working-collapsed');
+              });
+            }
+          }
+          if (workingPhaseTimer) { clearInterval(workingPhaseTimer); workingPhaseTimer = null; }
         }
         streamText += m.content;
         if (streamBody) {
@@ -1245,13 +1749,16 @@
         break;
       case 'streamEnd':
         // Remove streaming elements, render final message
+        if (workingPhaseTimer) { clearInterval(workingPhaseTimer); workingPhaseTimer = null; }
         if (streamEl) { streamEl.remove(); streamEl = null; }
-        streamBody = null; streamReason = null;
+        streamBody = null; streamReason = null; streamReasonBody = null; streamReasonHdr = null;
+        streamReasonText = '';
         if (m.message) renderMsg(m.message);
         isGenerating = false;
         snd.innerHTML = SEND_SVG;
         snd.classList.remove('stop-mode');
         snd.disabled = false;
+        snd.title = 'Send message';
         break;
       case 'modelChanged':
         cMod = m.model;
@@ -1299,12 +1806,12 @@
       case 'cloudKeySaveError':
         // Re-enable the save button on error
         var errSaveBtn = document.getElementById('clSaveBtn');
-        if (errSaveBtn) { errSaveBtn.textContent = 'Save Key'; errSaveBtn.disabled = false; }
+        if (errSaveBtn) { errSaveBtn.textContent = t('saveKey'); errSaveBtn.disabled = false; }
         break;
       case 'cloudKeySaved':
         // Key saved — modelsData will arrive from _loadModels() and re-render the detail
         var okSaveBtn = document.getElementById('clSaveBtn');
-        if (okSaveBtn) { okSaveBtn.textContent = 'Saved!'; }
+        if (okSaveBtn) { okSaveBtn.textContent = t('savedKey'); }
         break;
       case 'filesAttached':
         if (m.files) {
@@ -1350,16 +1857,42 @@
       case 'workspaceFiles':
         wsFiles = m.files || [];
         break;
+      case 'customOpenAIData':
+        // Restore saved custom OpenAI config into the fields
+        if (m.config) {
+          var coBase = document.getElementById('coBaseUrl');
+          var coKey = document.getElementById('coApiKey');
+          var coModel = document.getElementById('coModelId');
+          if (coBase && m.config.baseUrl) coBase.value = m.config.baseUrl;
+          if (coKey && m.config.apiKey) { coKey.value = '\u2022'.repeat(20); coKey.setAttribute('data-saved', 'true'); }
+          if (coModel && m.config.modelId) coModel.value = m.config.modelId;
+        }
+        break;
+      case 'customOpenAISaved':
+        var coStat = document.getElementById('coStatus');
+        if (coStat) { coStat.textContent = t('savedConfig'); coStat.className = 'cl-note co-status co-ok'; }
+        var coSBtn = document.getElementById('coSaveBtn');
+        if (coSBtn) { coSBtn.textContent = t('savedConfig'); setTimeout(function() { coSBtn.textContent = t('saveConfig'); }, 2000); }
+        break;
+      case 'customOpenAITestResult':
+        var coSt = document.getElementById('coStatus');
+        if (coSt) {
+          if (m.ok) { coSt.textContent = t('connectionOk'); coSt.className = 'cl-note co-status co-ok'; }
+          else { coSt.textContent = t('connectionFail') + (m.error ? ': ' + m.error : ''); coSt.className = 'cl-note co-status co-fail'; }
+        }
+        var coTBtn = document.getElementById('coTestBtn');
+        if (coTBtn) { coTBtn.disabled = false; coTBtn.textContent = t('testConnection'); }
+        break;
       case 'contextInfo':
-        renderContextCompaction(m.summary || [], m.charCount || 0);
+        renderContextCompaction(m.summary || [], m.charCount || 0, m.activeSkills || []);
         break;
     }
   });
 
   // ── Context compaction display ─────────────────────────────────
-  function renderContextCompaction(summary, charCount) {
+  function renderContextCompaction(summary, charCount, activeSkillIds) {
     // Show a compact info bar above the streaming message
-    if (!summary.length) return;
+    if (!summary.length && (!activeSkillIds || !activeSkillIds.length)) return;
     var existing = document.querySelector('.ctx-compact');
     if (existing) existing.remove();
 
@@ -1367,8 +1900,24 @@
     bar.className = 'ctx-compact';
     var hdr = document.createElement('div');
     hdr.className = 'ctx-compact-hdr';
+    // Build skill tags HTML
+    var skillTags = '';
+    // Add agent mode tag
+    skillTags += '<span class="ctx-agent-tag">' + esc(cAg) + '</span>';
+    if (activeSkillIds && activeSkillIds.length) {
+      for (var si = 0; si < activeSkillIds.length; si++) {
+        var sName = activeSkillIds[si];
+        // Resolve display name from allSk
+        for (var sj = 0; sj < allSk.length; sj++) {
+          var skItem = allSk[sj].skill || allSk[sj];
+          if (skItem.id === activeSkillIds[si]) { sName = skItem.displayName || skItem.name || activeSkillIds[si]; break; }
+        }
+        skillTags += '<span class="ctx-skill-tag">/' + esc(sName) + '</span>';
+      }
+    }
     hdr.innerHTML = '<span class="ctx-compact-icon">&#9881;</span>' +
       '<span>Context sent</span>' +
+      skillTags +
       '<span class="ctx-compact-size">' + Math.round(charCount / 1000) + 'K chars</span>' +
       '<button class="ctx-compact-toggle">&#9660;</button>';
     bar.appendChild(hdr);
@@ -1399,7 +1948,7 @@
     // Update badge count
     var badge = document.querySelector('.rs-icon[data-rs="hitl"] .rs-badge');
     if (badge) { badge.textContent = requests.length; badge.style.display = requests.length ? 'flex' : 'none'; }
-    if (!requests.length) { c.innerHTML = '<div class="nd">No pending approvals</div>'; return; }
+    if (!requests.length) { c.innerHTML = '<div class="nd">' + t('noPending') + '</div>'; return; }
     var h = '';
     for (var i = 0; i < requests.length; i++) {
       var r = requests[i];
@@ -1413,8 +1962,8 @@
         h += '</ul>';
       }
       h += '<div class="hitl-btns">' +
-        '<button class="hitl-btn approve" data-rid="' + esc(r.id) + '">Approve</button>' +
-        '<button class="hitl-btn deny" data-rid="' + esc(r.id) + '">Deny</button>' +
+        '<button class="hitl-btn approve" data-rid="' + esc(r.id) + '">' + t('approve') + '</button>' +
+        '<button class="hitl-btn deny" data-rid="' + esc(r.id) + '">' + t('deny') + '</button>' +
         '</div></div>';
     }
     c.innerHTML = h;
@@ -1431,17 +1980,17 @@
     var c = document.getElementById('hitlStats');
     if (!c) return;
     c.innerHTML =
-      '<div class="hitl-stat"><span class="hitl-stat-lbl">Total evaluated</span><span class="hitl-stat-val">' + (stats.totalEvaluated || 0) + '</span></div>' +
-      '<div class="hitl-stat"><span class="hitl-stat-lbl">Approved</span><span class="hitl-stat-val">' + (stats.approved || 0) + '</span></div>' +
-      '<div class="hitl-stat"><span class="hitl-stat-lbl">Denied</span><span class="hitl-stat-val">' + (stats.denied || 0) + '</span></div>' +
-      '<div class="hitl-stat"><span class="hitl-stat-lbl">Expired</span><span class="hitl-stat-val">' + (stats.expired || 0) + '</span></div>' +
-      '<div class="hitl-stat"><span class="hitl-stat-lbl">Pending</span><span class="hitl-stat-val">' + (stats.pending || 0) + '</span></div>';
+      '<div class="hitl-stat"><span class="hitl-stat-lbl">' + t('totalEvaluated') + '</span><span class="hitl-stat-val">' + (stats.totalEvaluated || 0) + '</span></div>' +
+      '<div class="hitl-stat"><span class="hitl-stat-lbl">' + t('approved') + '</span><span class="hitl-stat-val">' + (stats.approved || 0) + '</span></div>' +
+      '<div class="hitl-stat"><span class="hitl-stat-lbl">' + t('denied') + '</span><span class="hitl-stat-val">' + (stats.denied || 0) + '</span></div>' +
+      '<div class="hitl-stat"><span class="hitl-stat-lbl">' + t('expired') + '</span><span class="hitl-stat-val">' + (stats.expired || 0) + '</span></div>' +
+      '<div class="hitl-stat"><span class="hitl-stat-lbl">' + t('pending') + '</span><span class="hitl-stat-val">' + (stats.pending || 0) + '</span></div>';
   }
 
   function renderHitlRecent(decisions) {
     var c = document.getElementById('hitlRecent');
     if (!c) return;
-    if (!decisions.length) { c.innerHTML = '<div class="nd">No recent decisions</div>'; return; }
+    if (!decisions.length) { c.innerHTML = '<div class="nd">' + t('noRecent') + '</div>'; return; }
     var h = '';
     for (var i = 0; i < Math.min(decisions.length, 20); i++) {
       var d = decisions[i];
@@ -1453,6 +2002,44 @@
         '</div>';
     }
     c.innerHTML = h;
+  }
+
+  // ── OpenAI Compatible config save/test buttons ──────────────────
+  var coSaveBtn = document.getElementById('coSaveBtn');
+  if (coSaveBtn) {
+    coSaveBtn.addEventListener('click', function () {
+      var baseUrl = (document.getElementById('coBaseUrl') || {}).value || '';
+      var apiKey = (document.getElementById('coApiKey') || {}).value || '';
+      var modelId = (document.getElementById('coModelId') || {}).value || '';
+      // Don't send masked placeholder as the key
+      var coKeyEl = document.getElementById('coApiKey');
+      if (coKeyEl && coKeyEl.getAttribute('data-saved') === 'true' && apiKey.indexOf('\u2022') !== -1) apiKey = '';
+      vs.postMessage({ type: 'setCustomOpenAI', baseUrl: baseUrl.trim(), apiKey: apiKey.trim(), modelId: modelId.trim() });
+    });
+  }
+  var coTestBtn = document.getElementById('coTestBtn');
+  if (coTestBtn) {
+    coTestBtn.addEventListener('click', function () {
+      var baseUrl = (document.getElementById('coBaseUrl') || {}).value || '';
+      var apiKey = (document.getElementById('coApiKey') || {}).value || '';
+      var coKeyEl = document.getElementById('coApiKey');
+      if (coKeyEl && coKeyEl.getAttribute('data-saved') === 'true' && apiKey.indexOf('\u2022') !== -1) apiKey = '';
+      coTestBtn.disabled = true;
+      coTestBtn.textContent = '...';
+      var coSt = document.getElementById('coStatus');
+      if (coSt) { coSt.textContent = ''; coSt.className = 'cl-note co-status'; }
+      vs.postMessage({ type: 'testCustomOpenAI', baseUrl: baseUrl.trim(), apiKey: apiKey.trim() });
+    });
+  }
+  // Clear masked state on focus so user can type a new key
+  var coApiKeyEl = document.getElementById('coApiKey');
+  if (coApiKeyEl) {
+    coApiKeyEl.addEventListener('focus', function () {
+      if (coApiKeyEl.getAttribute('data-saved') === 'true') {
+        coApiKeyEl.value = '';
+        coApiKeyEl.removeAttribute('data-saved');
+      }
+    });
   }
 
   // Signal ready to extension

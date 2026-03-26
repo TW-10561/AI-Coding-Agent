@@ -25,6 +25,9 @@ export interface LocalModel {
   name: string        // display name (id or overridden by VLLM_MODEL_NAME for primary)
   contextLimit: number
   outputLimit: number
+  isCloud: boolean            // true if model is a cloud-routed model from the gateway
+  originLabel: string         // "Local" or "Cloud" — display badge
+  cloudProviderName?: string  // e.g. "OpenAI Test Provider" (only for cloud models)
 }
 
 export interface LocalProvider {
@@ -198,15 +201,24 @@ async function probeGateway(): Promise<LocalProvider | null> {
     })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
 
-    const json = await res.json() as { data?: Array<{ id: string; max_model_len?: number; owned_by?: string }> }
+    const json = await res.json() as { data?: Array<{ id: string; max_model_len?: number; owned_by?: string; is_cloud?: boolean; deployment_origin?: string; origin_label?: string; cloud_provider_name?: string; backend_type?: string }> }
     const latencyMs = Date.now() - before
 
-    const models: LocalModel[] = (json.data ?? []).map(m => ({
-      id: m.id,
-      name: m.id,
-      contextLimit: m.max_model_len ?? 32768,
-      outputLimit: 4096,
-    }))
+    const seen = new Set<string>()
+    const models: LocalModel[] = []
+    for (const m of json.data ?? []) {
+      if (seen.has(m.id)) continue
+      seen.add(m.id)
+      models.push({
+        id: m.id,
+        name: m.id,
+        contextLimit: m.max_model_len ?? 32768,
+        outputLimit: 4096,
+        isCloud: m.is_cloud ?? false,
+        originLabel: m.origin_label ?? (m.is_cloud ? "Cloud" : "Local"),
+        cloudProviderName: m.cloud_provider_name ?? undefined,
+      })
+    }
 
     const host = (() => { try { return new URL(base).host } catch { return base } })()
     return {

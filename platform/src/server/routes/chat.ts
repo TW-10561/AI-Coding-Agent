@@ -33,13 +33,22 @@ const ChatBody = z.object({
 // Reasoning models (MiniMax) can take 60-180s per call; allow 5 min to be safe.
 const DEFAULT_INFERENCE_TIMEOUT_MS = 300_000  // 5 min per inference call
 
-const DEFAULT_SYSTEM = `You are Thirdwave AI Coding Platform, an expert AI coding assistant with access to tools.
+const DEFAULT_SYSTEM = `You are Thirdwave AI, an expert AI coding assistant with access to tools.
 Use tools to help the user: execute commands, read/write files, search code, and fetch URLs.
 Be concise and give direct answers. Prefer using tools over guessing.
 When making file edits, always read the file first to understand its content.
-After running commands, report results clearly.`
+After running commands, report results clearly.
 
-const DIRECT_SYSTEM = `You are Thirdwave AI Coding Platform, a helpful AI coding assistant. Always provide complete, thorough answers. Never say "I will explain" or "I'll do" — instead, actually explain and do it immediately. When asked about code, provide full working solutions with explanations. When asked to analyze or fix code, show the complete corrected code and explain every change. Do not be lazy or skip details.`
+QUALITY RULES — follow these strictly:
+- Before suggesting commands, verify the current directory and file paths exist using tools.
+- Always use tools (bash, write_file) to actually create files and run commands — do NOT just show code blocks and tell the user to run them manually.
+- When setting up projects, create ALL necessary files (requirements.txt, package.json, etc.) using write_file, then run install commands using bash.
+- Check the OS and environment before suggesting platform-specific packages (e.g. windows-curses is Windows-only).
+- If a command fails, diagnose the error and fix it yourself instead of telling the user to fix it.
+- When creating Python projects, always create a proper package structure with __init__.py files.
+- Test that your code actually works by running it after creating it.`
+
+const DIRECT_SYSTEM = `You are Thirdwave AI, a friendly and helpful AI coding assistant. When greeted, respond warmly and briefly introduce yourself — mention you can help with coding tasks, file management, and development workflows. Keep greetings short and natural. Always provide complete, thorough answers. Never say "I will explain" or "I'll do" — instead, actually explain and do it immediately. When asked about code, provide full working solutions with explanations. When asked to analyze or fix code, show the complete corrected code and explain every change. Do not be lazy or skip details.`
 
 // ── Text-based tool calling ──────────────────────────────────────────
 // Many local models (MiniMax, LLaMA, Qwen, etc.) don't support native
@@ -434,7 +443,17 @@ export function chatRoutes() {
             const retryAfter = res.headers.get("retry-after")
             const headers: Record<string, string> = {}
             if (retryAfter) headers["retry-after"] = retryAfter
-            return c.json({ error: "Rate limited by model provider", detail: errText.slice(0, 300), retryAfterSeconds: retryAfter ? Number(retryAfter) : 30 }, 429)
+            // Parse detail from gateway JSON response if available
+            let detail = errText.slice(0, 300)
+            try { const j = JSON.parse(errText); if (j.detail) detail = j.detail } catch {}
+            return c.json({ error: "Rate limited by model provider", detail, retryAfterSeconds: retryAfter ? Number(retryAfter) : 30 }, 429)
+          }
+          // Forbidden — model restricted for this API key (gateway ACL)
+          if (res.status === 403) {
+            const errText = await res.text().catch(() => "")
+            let detail = errText.slice(0, 300)
+            try { const j = JSON.parse(errText); if (j.detail) detail = j.detail } catch {}
+            return c.json({ error: `Model access denied: ${detail}`, detail, model: modelName, provider: providerName }, 403)
           }
           // Gateway/provider temporarily unavailable — retry once after 2s
           if ((res.status === 502 || res.status === 503) && round === 0) {
@@ -446,11 +465,15 @@ export function chatRoutes() {
                 return formatFinalResponse(c, data, Date.now() - start, modelName, providerName, totalInput, totalOutput, toolLog)
               }
               const retryErrText = await retryRes.text().catch(() => "")
-              return c.json({ error: `${providerName} unavailable (${retryRes.status}) after retry`, detail: retryErrText.slice(0, 500) }, 503)
+              let retryDetail = retryErrText.slice(0, 500)
+              try { const j = JSON.parse(retryErrText); if (j.detail) retryDetail = j.detail } catch {}
+              return c.json({ error: `${providerName} unavailable (${retryRes.status}) after retry`, detail: retryDetail }, 503)
             } catch {}
           }
           const errText = await res.text().catch(() => "")
-          return c.json({ error: `${providerName} error (${res.status})`, detail: errText.slice(0, 500) }, 502)
+          let detail = errText.slice(0, 500)
+          try { const j = JSON.parse(errText); if (j.detail) detail = j.detail } catch {}
+          return c.json({ error: `${providerName} error (${res.status})`, detail }, 502)
         }
 
         const data = (await res.json()) as any
@@ -586,11 +609,16 @@ export function chatRoutes() {
 
       if (!res.ok || !res.body) {
         const errText = await res.text().catch(() => "")
+        let detail = errText.slice(0, 500)
+        try { const j = JSON.parse(errText); if (j.detail) detail = j.detail } catch {}
         if (res.status === 429) {
           const retryAfter = res.headers.get("retry-after")
-          return c.json({ error: "Rate limited by model provider", detail: errText.slice(0, 300), retryAfterSeconds: retryAfter ? Number(retryAfter) : 30 }, 429)
+          return c.json({ error: "Rate limited by model provider", detail, retryAfterSeconds: retryAfter ? Number(retryAfter) : 30 }, 429)
         }
-        return c.json({ error: `Stream error (${res.status})`, detail: errText.slice(0, 500) }, 502)
+        if (res.status === 403) {
+          return c.json({ error: `Model access denied: ${detail}`, detail }, 403)
+        }
+        return c.json({ error: `Stream error (${res.status})`, detail }, 502)
       }
 
       return new Response(res.body, {
@@ -646,9 +674,14 @@ export function chatRoutes() {
 
       if (!res.ok) {
         const errText = await res.text().catch(() => "")
+        let detail = errText.slice(0, 500)
+        try { const j = JSON.parse(errText); if (j.detail) detail = j.detail } catch {}
         if (res.status === 429) {
           const retryAfter = res.headers.get("retry-after")
-          return c.json({ error: "Rate limited by model provider", detail: errText.slice(0, 300), retryAfterSeconds: retryAfter ? Number(retryAfter) : 30 }, 429)
+          return c.json({ error: "Rate limited by model provider", detail, retryAfterSeconds: retryAfter ? Number(retryAfter) : 30 }, 429)
+        }
+        if (res.status === 403) {
+          return c.json({ error: `Model access denied: ${detail}`, detail, model: modelName, provider: providerName }, 403)
         }
         // Retry once on 502/503
         if (res.status === 502 || res.status === 503) {
@@ -665,10 +698,12 @@ export function chatRoutes() {
               return formatFinalResponse(c, retryData, Date.now() - start, modelName, providerName, 0, 0, [])
             }
             const retryErr = await retryRes.text().catch(() => "")
-            return c.json({ error: `${providerName} unavailable (${retryRes.status}) after retry`, detail: retryErr.slice(0, 500) }, 503)
+            let retryDetail = retryErr.slice(0, 500)
+            try { const j = JSON.parse(retryErr); if (j.detail) retryDetail = j.detail } catch {}
+            return c.json({ error: `${providerName} unavailable (${retryRes.status}) after retry`, detail: retryDetail }, 503)
           } catch {}
         }
-        return c.json({ error: `${providerName} error (${res.status})`, detail: errText.slice(0, 500) }, 502)
+        return c.json({ error: `${providerName} error (${res.status})`, detail }, 502)
       }
       const data = (await res.json()) as any
       return formatFinalResponse(c, data, Date.now() - start, modelName, providerName, 0, 0, [])
@@ -682,6 +717,7 @@ export function chatRoutes() {
       const models: Array<{
         id: string; name: string; provider: string; providerName: string
         source: "local" | "cloud"; contextLimit: number; outputLimit: number
+        isCloud?: boolean; originLabel?: string; cloudProviderName?: string
       }> = []
 
       for (const p of reg.local) {
@@ -689,7 +725,8 @@ export function chatRoutes() {
         for (const m of p.models) {
           models.push({
             id: m.id, name: m.name, provider: p.id, providerName: p.name,
-            source: "local", contextLimit: m.contextLimit, outputLimit: m.outputLimit,
+            source: m.isCloud ? "cloud" : "local", contextLimit: m.contextLimit, outputLimit: m.outputLimit,
+            isCloud: m.isCloud, originLabel: m.originLabel, cloudProviderName: m.cloudProviderName,
           })
         }
       }

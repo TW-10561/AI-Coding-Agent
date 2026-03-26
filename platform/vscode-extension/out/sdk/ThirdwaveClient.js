@@ -26,11 +26,12 @@ class ThirdwaveClient {
         }
         return u.toString();
     }
-    async request(method, path, body, params) {
+    async request(method, path, body, params, signal) {
         const res = await fetch(this.url(path, params), {
             method,
             headers: this.headers,
             body: body ? JSON.stringify(body) : undefined,
+            signal,
         });
         if (!res.ok) {
             const text = await res.text().catch(() => "");
@@ -64,8 +65,8 @@ class ThirdwaveClient {
         });
     }
     // ── Chat ───────────────────────────────────────────────────────
-    async directChat(opts) {
-        return this.request("POST", "/api/chat", opts);
+    async directChat(opts, signal) {
+        return this.request("POST", "/api/chat", opts, undefined, signal);
     }
     /**
      * Stream chat via SSE — returns an async iterator of text chunks.
@@ -86,6 +87,7 @@ class ThirdwaveClient {
             method: "POST",
             headers: this.headers,
             body: JSON.stringify(body),
+            signal: opts.signal,
         });
         if (!res.ok || !res.body) {
             // Fallback to non-streaming
@@ -109,21 +111,32 @@ class ThirdwaveClient {
         }
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
+        let buffer = [];
+        let bufferIndex = 0;
+        let sseLeftover = ""; // leftover partial line from previous read
         return {
             [Symbol.asyncIterator]() {
                 return {
                     async next() {
+                        // First, drain any buffered chunks from the last read
+                        if (bufferIndex < buffer.length) {
+                            return { done: false, value: buffer[bufferIndex++] };
+                        }
                         while (true) {
                             const { done, value } = await reader.read();
                             if (done)
                                 return { done: true, value: undefined };
-                            const text = decoder.decode(value, { stream: true });
-                            const chunks = [];
-                            for (const line of text.split("\n")) {
+                            const text = sseLeftover + decoder.decode(value, { stream: true });
+                            const lines = text.split("\n");
+                            // Last element may be partial — save for next read
+                            sseLeftover = lines.pop() || "";
+                            buffer = [];
+                            bufferIndex = 0;
+                            for (const line of lines) {
                                 if (line.startsWith("data: ")) {
                                     const data = line.slice(6);
                                     if (data === "[DONE]") {
-                                        chunks.push({ type: "done", content: "" });
+                                        buffer.push({ type: "done", content: "" });
                                         continue;
                                     }
                                     try {
@@ -131,25 +144,27 @@ class ThirdwaveClient {
                                         // Check for reasoning/thinking content
                                         const reasoning = parsed.choices?.[0]?.delta?.reasoning_content || parsed.choices?.[0]?.delta?.thinking;
                                         if (reasoning) {
-                                            chunks.push({ type: "reasoning", content: reasoning });
+                                            buffer.push({ type: "reasoning", content: reasoning });
                                             continue;
                                         }
                                         const delta = parsed.choices?.[0]?.delta?.content;
                                         if (delta)
-                                            chunks.push({ type: "text", content: delta });
+                                            buffer.push({ type: "text", content: delta });
                                         // Check for usage/meta in final chunk
                                         if (parsed.usage) {
-                                            chunks.push({ type: "done", content: "", meta: { tokens: { input: parsed.usage.prompt_tokens, output: parsed.usage.completion_tokens }, model: parsed.model } });
+                                            buffer.push({ type: "done", content: "", meta: { tokens: { input: parsed.usage.prompt_tokens, output: parsed.usage.completion_tokens }, model: parsed.model } });
                                         }
                                     }
                                     catch {
                                         if (data.trim())
-                                            chunks.push({ type: "text", content: data });
+                                            buffer.push({ type: "text", content: data });
                                     }
                                 }
                             }
-                            if (chunks.length > 0)
-                                return { done: false, value: chunks.length === 1 ? chunks[0] : chunks[0] };
+                            if (buffer.length > 0) {
+                                bufferIndex = 1;
+                                return { done: false, value: buffer[0] };
+                            }
                         }
                     },
                 };

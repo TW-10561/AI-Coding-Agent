@@ -68,6 +68,9 @@ export interface RegistryResponse {
             name: string;
             contextLimit: number;
             outputLimit: number;
+            isCloud?: boolean;
+            originLabel?: string;
+            cloudProviderName?: string;
         }>;
         isPrimary: boolean;
     }>;
@@ -115,7 +118,7 @@ export declare class ThirdwaveClient {
     listMessages(sessionID: string, opts?: {
         limit?: number;
     }): Promise<MessageWithParts[]>;
-    directChat(opts: DirectChatRequest): Promise<DirectChatResponse>;
+    directChat(opts: DirectChatRequest, signal?: AbortSignal): Promise<DirectChatResponse>;
     /**
      * Stream chat via SSE — returns an async iterator of text chunks.
      * Falls back to non-streaming direct chat on error.
@@ -133,6 +136,7 @@ export declare class ThirdwaveClient {
         }>;
         tools?: boolean;
         workspaceRoot?: string;
+        signal?: AbortSignal;
     }): Promise<AsyncIterable<{
         type: "text" | "reasoning" | "done";
         content: string;
