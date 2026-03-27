@@ -122,8 +122,23 @@ export class HITLService {
     riskAssessment?: RiskAssessment
     reasons: string[]
   } {
+    // Auto-map action → RBAC role+permission when not explicitly provided.
+    // Tool executor passes "bash"/"edit"/"read"/"web_fetch" as action strings;
+    // map these to the Permission type so RBAC matrix is applied.
+    const ACTION_TO_PERMISSION: Record<string, Permission> = {
+      bash: "bash", edit: "edit", read: "read",
+      web_fetch: "webfetch", webfetch: "webfetch",
+      external_directory: "external_directory",
+      doom_loop: "doom_loop", skill: "skill",
+    }
+    const enriched = { ...ctx }
+    if (!enriched.role) enriched.role = "developer"
+    if (!enriched.permission && ACTION_TO_PERMISSION[ctx.action]) {
+      enriched.permission = ACTION_TO_PERMISSION[ctx.action]
+    }
+
     // Run through PolicyEngine
-    const result = this.policyEngine.evaluate(ctx)
+    const result = this.policyEngine.evaluate(enriched)
 
     // If allowed, pass through
     if (result.decision === "allow") {

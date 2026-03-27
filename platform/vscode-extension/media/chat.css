@@ -792,6 +792,40 @@ select:focus, .si:focus { border-color: var(--vscode-focusBorder); }
 .hitl-stat-lbl { color: var(--mt); }
 .hitl-stat-val { font-weight: 600; }
 
+/* ── Inline HITL approval cards (in chat stream) ─────────── */
+.hitl-inline-card {
+  margin: 10px 0;
+  padding: 12px 14px;
+  border-radius: var(--r);
+  border: 2px solid var(--accent);
+  background: rgba(99, 102, 241, 0.06);
+  animation: hitl-pulse 2s ease-in-out infinite;
+}
+.hitl-inline-card.critical { border-color: var(--err); background: rgba(239, 68, 68, 0.08); }
+.hitl-inline-card.high { border-color: #f59e0b; background: rgba(245, 158, 11, 0.08); }
+.hitl-inline-card.medium { border-color: var(--accent); background: rgba(99, 102, 241, 0.06); }
+.hitl-inline-card.low { border-color: var(--ok); background: rgba(34, 197, 94, 0.06); }
+.hitl-inline-card.resolved { animation: none; opacity: 0.7; }
+.hitl-inline-header { font-size: 13px; font-weight: 700; margin-bottom: 6px; color: var(--fg); }
+.hitl-inline-action { font-size: 12px; font-weight: 600; margin-bottom: 4px; font-family: var(--code-font, monospace); }
+.hitl-inline-detail { font-size: 11px; color: var(--mt); margin-bottom: 4px; font-family: var(--code-font, monospace); word-break: break-all; }
+.hitl-inline-reasons { font-size: 11px; color: var(--mt); margin: 4px 0 8px 0; padding: 0; }
+.hitl-inline-reasons li { margin-left: 16px; margin-bottom: 2px; }
+.hitl-inline-status { font-size: 12px; font-weight: 600; margin-bottom: 8px; color: var(--accent); }
+.hitl-inline-status.resolved-approved { color: var(--ok); }
+.hitl-inline-status.resolved-denied { color: var(--err); }
+.hitl-inline-btns { display: flex; gap: 8px; }
+.hitl-inline-btns .hitl-btn { padding: 6px 20px; font-size: 12px; }
+@keyframes hitl-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.3); }
+  50% { box-shadow: 0 0 12px 2px rgba(99, 102, 241, 0.25); }
+}
+.hitl-inline-card.critical { animation-name: hitl-pulse-err; }
+@keyframes hitl-pulse-err {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.3); }
+  50% { box-shadow: 0 0 12px 2px rgba(239, 68, 68, 0.25); }
+}
+
 /* Skills count badge in pnl-hdr */
 .pnl-hdr .sk-cnt { font-size: 10px; padding: 1px 7px; border-radius: 10px; background: var(--accent); color: #fff; font-weight: 600; }
 

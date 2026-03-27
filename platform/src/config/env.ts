@@ -13,6 +13,35 @@
 // ---------------------------------------------------------------------------
 
 import z from "zod"
+import { readFileSync } from "fs"
+import { resolve, dirname } from "path"
+
+// ── Load .env from platform/ directory regardless of CWD ──────────────
+// Bun auto-loads .env from CWD, but when the server is started from the
+// repo root (e.g. `bun run platform/src/server/index.ts`), the .env in
+// platform/ is missed.  We manually load it here.
+const platformDir = resolve(dirname(new URL(import.meta.url).pathname), "../..")
+const envPaths = [
+  resolve(platformDir, ".env"),
+  resolve(platformDir, ".env.local"),
+]
+for (const p of envPaths) {
+  try {
+    const content = readFileSync(p, "utf-8")
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim()
+      if (!trimmed || trimmed.startsWith("#")) continue
+      const eqIdx = trimmed.indexOf("=")
+      if (eqIdx === -1) continue
+      const key = trimmed.slice(0, eqIdx).trim()
+      const val = trimmed.slice(eqIdx + 1).trim()
+      // Only set if not already in environment (env vars take precedence)
+      if (!(key in process.env)) {
+        process.env[key] = val
+      }
+    }
+  } catch {}
+}
 
 const Schema = z.object({
   // ── Platform server ────────────────────────────────────────────────

@@ -15,7 +15,7 @@
 // ---------------------------------------------------------------------------
 
 import { env } from "../config/env"
-import { defaultPolicyEngine } from "./policy-engine"
+import { defaultPolicyEngine, isSensitiveFile } from "./policy-engine"
 import type { HITLService } from "./hitl-service"
 
 // ── HITL integration ─────────────────────────────────────────────────
@@ -114,16 +114,24 @@ export const TOOL_DEFINITIONS: ToolDef[] = [
     function: {
       name: "list_dir",
       description:
-        "List directory contents. Returns entries with type (file/directory) and size.",
+        "List directory contents. Returns entries sorted (directories first, then files) with size. Automatically filters noise directories (node_modules, .git, etc.).",
       parameters: {
         type: "object",
         properties: {
           path: {
             type: "string",
-            description: "Absolute or project-relative directory path",
+            description: "Absolute or project-relative directory path (default: project root)",
+          },
+          recursive: {
+            type: "boolean",
+            description: "List recursively up to 3 levels deep (default: false)",
+          },
+          depth: {
+            type: "number",
+            description: "Max depth for recursive listing (1-5, default: 1, or 3 if recursive=true)",
           },
         },
-        required: ["path"],
+        required: [],
       },
     },
   },
@@ -297,12 +305,13 @@ async function hitlCheck(ctx: {
   command?: string
   filePath?: string
   url?: string
+  diffSize?: number
 }): Promise<{ proceed: true } | ToolResult> {
   try {
     if (_hitl) {
       const hitlResult = _hitl.evaluate(ctx)
       if (hitlResult.decision === "deny") {
-        return { success: false, output: `Policy denied: ${hitlResult.reasons.join("; ")}` }
+        return { success: false, output: `⛔ SECURITY RESTRICTION: ${hitlResult.reasons.join("; ")}. You MUST tell the user this file/action is restricted for security purposes. Do NOT claim the file does not exist.` }
       }
       if (hitlResult.decision === "ask" && hitlResult.approvalRequest) {
         const verdict = await awaitHITLApproval(hitlResult.approvalRequest.id)
@@ -312,9 +321,14 @@ async function hitlCheck(ctx: {
           : `❌ HITL denied (${hitlResult.approvalRequest.id}): ${hitlResult.reasons.join("; ")}` }
       }
     } else {
-      const policy = defaultPolicyEngine.evaluate({ command: ctx.command, filePath: ctx.filePath, url: ctx.url })
+      const policy = defaultPolicyEngine.evaluate({
+        command: ctx.command,
+        filePath: ctx.filePath,
+        url: ctx.url,
+        diffSize: ctx.diffSize,
+      })
       if (policy.decision === "deny") {
-        return { success: false, output: `Policy denied: ${policy.reasons.join("; ")}` }
+        return { success: false, output: `⛔ SECURITY RESTRICTION: ${policy.reasons.join("; ")}. You MUST tell the user this file/action is restricted for security purposes. Do NOT claim the file does not exist.` }
       }
     }
   } catch {}
@@ -327,6 +341,17 @@ async function execBash(args: { command: string; timeout?: number; workdir?: str
   const command = args.command
   const cwd = args.workdir ? resolvePath(args.workdir) : getProjectDir()
   const timeout = Math.min(args.timeout ?? DEFAULT_TIMEOUT, MAX_TIMEOUT)
+
+  // Check if bash command references sensitive files (bypass prevention)
+  const cmdTokens = command.split(/[\s|;&><]+/)
+  for (const token of cmdTokens) {
+    if (token && isSensitiveFile(token)) {
+      return {
+        success: false,
+        output: `⛔ SECURITY RESTRICTION: The file "${token}" is a sensitive/protected file. Access is denied by security policy. You MUST tell the user: "Access to this file is restricted for security purposes." Do NOT claim the file does not exist.`,
+      }
+    }
+  }
 
   // Policy + HITL check
   const check = await hitlCheck({ action: "bash", command })
@@ -374,7 +399,7 @@ async function execReadFile(args: { path: string; startLine?: number; endLine?: 
 
   // Policy + HITL check
   const check = await hitlCheck({ action: "read", filePath: filepath })
-  if (!("proceed" in check)) return check
+  if (!("proceed" in check)) return check as ToolResult
 
   try {
     const file = Bun.file(filepath)
@@ -401,8 +426,10 @@ async function execWriteFile(args: { path: string; content: string }): Promise<T
   // Absolute paths are resolved against the project root as before.
   const filepath = resolvePath(args.path)
 
-  // Policy + HITL check
-  const check = await hitlCheck({ action: "edit", filePath: filepath })
+  // Policy + HITL check — only pass diffSize for large files (>10KB) to avoid
+  // triggering elevated risk for every normal write
+  const contentSize = args.content?.length ?? 0
+  const check = await hitlCheck({ action: "edit", filePath: filepath, diffSize: contentSize > 10000 ? contentSize : undefined })
   if (!("proceed" in check)) return check
 
   try {
@@ -419,23 +446,24 @@ async function execWriteFile(args: { path: string; content: string }): Promise<T
   }
 }
 
-async function execListDir(args: { path: string }): Promise<ToolResult> {
-  const dirpath = resolvePath(args.path)
+async function execListDir(args: { path?: string; recursive?: boolean; depth?: number }): Promise<ToolResult> {
+  const dirpath = resolvePath(args.path || ".")
   try {
     const { readdirSync, statSync } = await import("fs")
     const entries = readdirSync(dirpath)
     const results: string[] = []
-    for (const entry of entries.slice(0, 200)) {
+    for (const entry of entries.slice(0, 500)) {
       try {
         const stat = statSync(`${dirpath}/${entry}`)
         const type = stat.isDirectory() ? "dir" : "file"
         const size = stat.isFile() ? ` (${stat.size} bytes)` : ""
-        results.push(`  ${type === "dir" ? entry + "/" : entry}${size}`)
+        const restricted = isSensitiveFile(entry) ? " [RESTRICTED - sensitive file]" : ""
+        results.push(`  ${type === "dir" ? entry + "/" : entry}${size}${restricted}`)
       } catch {
         results.push(`  ${entry} (stat failed)`)
       }
     }
-    const header = `Directory: ${args.path} (${entries.length} entries${entries.length > 200 ? ", showing first 200" : ""})\n`
+    const header = `Directory: ${args.path || "."} (${entries.length} entries${entries.length > 500 ? ", showing first 500" : ""})\n`
     return { success: true, output: header + results.join("\n") }
   } catch (e: any) {
     return { success: false, output: `List error: ${e.message ?? e}` }
@@ -445,6 +473,11 @@ async function execListDir(args: { path: string }): Promise<ToolResult> {
 async function execGrepSearch(args: { pattern: string; path?: string; include?: string; maxResults?: number }): Promise<ToolResult> {
   const searchPath = args.path ? resolvePath(args.path) : getProjectDir()
   const maxResults = args.maxResults ?? 50
+
+  // Block grep on sensitive files
+  if (args.path && isSensitiveFile(args.path)) {
+    return { success: false, output: `⛔ SECURITY RESTRICTION: "${args.path}" is a sensitive/protected file. Access denied by security policy. Tell the user this file is restricted.` }
+  }
 
   try {
     const grepArgs = ["grep", "-rn", "--color=never"]
@@ -465,10 +498,12 @@ async function execGrepSearch(args: { pattern: string; path?: string; include?: 
     }
 
     const lines = stdout.trim().split("\n").slice(0, maxResults)
-    // Make paths relative to project
-    const relative = lines.map((l) => l.replace(getProjectDir() + "/", ""))
+    // Make paths relative to project and filter out sensitive file matches
+    const relative = lines
+      .map((l) => l.replace(getProjectDir() + "/", ""))
+      .filter((l) => !isSensitiveFile(l.split(":")[0] ?? ""))
     const { text, truncated } = truncateOutput(relative.join("\n"))
-    return { success: true, output: `${lines.length} matches:\n${text}`, truncated }
+    return { success: true, output: `${relative.length} matches:\n${text}`, truncated }
   } catch (e: any) {
     return { success: false, output: `Search error: ${e.message ?? e}` }
   }

@@ -315,14 +315,14 @@ export class SkillTrustManager {
 // ════════════════════════════════════════════════════════════════════════
 
 export type Role = "admin" | "developer" | "readonly" | "autonomous_agent"
-export type Permission = "bash" | "edit" | "read" | "webfetch" | "external_directory" | "skill"
+export type Permission = "bash" | "edit" | "read" | "webfetch" | "external_directory" | "doom_loop" | "skill"
 type Decision = "allow" | "ask" | "deny"
 
 const ROLE_MATRIX: Record<Role, Record<Permission, Decision>> = {
-  admin:            { bash: "allow", edit: "allow", read: "allow", webfetch: "allow", external_directory: "allow", skill: "allow" },
-  developer:        { bash: "ask",   edit: "allow", read: "allow", webfetch: "ask",   external_directory: "ask",   skill: "allow" },
-  readonly:         { bash: "deny",  edit: "deny",  read: "allow", webfetch: "deny",  external_directory: "deny",  skill: "deny" },
-  autonomous_agent: { bash: "allow", edit: "allow", read: "allow", webfetch: "allow", external_directory: "allow", skill: "allow" },
+  admin:            { bash: "allow", edit: "allow", read: "allow", webfetch: "allow", external_directory: "allow", doom_loop: "allow", skill: "allow" },
+  developer:        { bash: "ask",   edit: "ask",   read: "allow", webfetch: "ask",   external_directory: "ask",   doom_loop: "ask",   skill: "ask"   },
+  readonly:         { bash: "deny",  edit: "deny",  read: "allow", webfetch: "deny",  external_directory: "deny",  doom_loop: "deny",  skill: "deny" },
+  autonomous_agent: { bash: "allow", edit: "allow", read: "allow", webfetch: "allow", external_directory: "allow", doom_loop: "allow", skill: "allow" },
 }
 
 export class RBACEngine {
@@ -339,7 +339,7 @@ export class RBACEngine {
     this.overrides.set(role, existing)
   }
   getAllRoles(): Role[] { return ["admin", "developer", "readonly", "autonomous_agent"] }
-  getAllPermissions(): Permission[] { return ["bash", "edit", "read", "webfetch", "external_directory", "skill"] }
+  getAllPermissions(): Permission[] { return ["bash", "edit", "read", "webfetch", "external_directory", "doom_loop", "skill"] }
   getMatrix(role: Role): Record<Permission, Decision> {
     const base = { ...ROLE_MATRIX[role] }
     const over = this.overrides.get(role)
@@ -402,7 +402,7 @@ const DEFAULT_CONFIG: PolicyConfig = {
   execution_mode: "host",
   risk_thresholds: { deny: 80, ask: 40 },
   network: { mode: "allow" },
-  sensitive_files: { enabled: true, block: false },
+  sensitive_files: { enabled: true, block: true },
   destructive_commands: { enabled: true, requireApproval: true },
   loop_detection: { enabled: true, threshold: 50 },
   skill_trust: { defaultLevel: "restricted" },
@@ -506,7 +506,7 @@ export class PolicyEngine {
     // Policy #2: Sensitive files
     if (ctx.filePath && this.config.sensitive_files.enabled) {
       if (isSensitiveFile(ctx.filePath)) {
-        escalate(this.config.sensitive_files.block ? "deny" : "ask", `Sensitive file: ${ctx.filePath}`)
+        escalate(this.config.sensitive_files.block ? "deny" : "ask", `Access restricted — sensitive/protected file: ${ctx.filePath}`)
       }
     }
 

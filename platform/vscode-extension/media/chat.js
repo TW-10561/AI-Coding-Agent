@@ -42,6 +42,8 @@
       noGatewayModels: 'No gateway models available',
       models: 'model', modelsPlural: 'models',
       approve: 'Approve', deny: 'Deny',
+      approvalRequired: 'Approval Required',
+      waitingForApproval: '⏳ Waiting for approval...',
       totalEvaluated: 'Total evaluated', approved: 'Approved',
       denied: 'Denied', expired: 'Expired', pending: 'Pending',
       recentSessions: 'Recent Sessions', noSessions: 'No sessions yet.\nStart a conversation to create one.',
@@ -103,6 +105,8 @@
       noGatewayModels: '\u30B2\u30FC\u30C8\u30A6\u30A7\u30A4\u30E2\u30C7\u30EB\u306A\u3057',
       models: '\u30E2\u30C7\u30EB', modelsPlural: '\u30E2\u30C7\u30EB',
       approve: '\u627F\u8A8D', deny: '\u62D2\u5426',
+      approvalRequired: '\u627F\u8A8D\u304C\u5FC5\u8981',
+      waitingForApproval: '\u2318 \u627F\u8A8D\u5F85\u3061...',
       totalEvaluated: '\u5408\u8A08\u8A55\u4FA1\u6570', approved: '\u627F\u8A8D\u6E08\u307F',
       denied: '\u62D2\u5426\u6E08\u307F', expired: '\u671F\u9650\u5207\u308C', pending: '\u4FDD\u7559\u4E2D',
       recentSessions: '\u6700\u8FD1\u306E\u30BB\u30C3\u30B7\u30E7\u30F3', noSessions: '\u30BB\u30C3\u30B7\u30E7\u30F3\u306A\u3057\u3002\n\u4F1A\u8A71\u3092\u59CB\u3081\u3066\u4F5C\u6210\u3057\u3066\u304F\u3060\u3055\u3044\u3002',
@@ -675,6 +679,11 @@
     inp.focus();
   });
 
+  var refreshModelsBtn = document.getElementById('refreshModelsBtn');
+  if (refreshModelsBtn) refreshModelsBtn.addEventListener('click', function () {
+    vs.postMessage({ type: 'refreshModels' });
+  });
+
   // ── Inline dropdown helper ──────────────────────────────────
   var activeDropdown = null;
   function closeDropdown() {
@@ -744,13 +753,16 @@
       var local = lastRegistry.local || [];
       var hasLocal = false;
       var hasCloudGw = false;
-      // Collect local GPU and cloud (gateway) models separately
+      // Collect local GPU and cloud (gateway) models separately — deduplicate by model id
       var localItems = [];
       var cloudGwItems = [];
+      var seenModelIds = {};
       for (var i = 0; i < local.length; i++) {
         if (local[i].status !== 'online') continue;
         for (var j = 0; j < local[i].models.length; j++) {
           var m = local[i].models[j];
+          if (seenModelIds[m.id]) continue;
+          seenModelIds[m.id] = true;
           if (m.isCloud) {
             cloudGwItems.push({ label: m.name || m.id, value: m.id, active: cMod === m.id });
           } else {
@@ -774,6 +786,8 @@
         if (!cloud[i].configured) continue;
         for (var j = 0; j < cloud[i].models.length; j++) {
           var m = cloud[i].models[j];
+          if (seenModelIds[m.id]) continue;
+          seenModelIds[m.id] = true;
           cloudAgentItems.push({ label: m.name || m.id, value: m.id, active: cMod === m.id });
         }
       }
@@ -784,8 +798,32 @@
     } else {
       vs.postMessage({ type: 'refreshModels' });
     }
+    // Only show fallback for cMod if it belongs to an online provider
     if (cMod && !items.some(function(it) { return it.value === cMod; })) {
-      items.unshift({ label: resolveModelName(cMod), value: cMod, active: true });
+      var modelIsOnline = false;
+      if (lastRegistry) {
+        var lr = lastRegistry.local || [];
+        for (var ii = 0; ii < lr.length; ii++) {
+          if (lr[ii].status !== 'online') continue;
+          for (var jj = 0; jj < lr[ii].models.length; jj++) {
+            if (lr[ii].models[jj].id === cMod) { modelIsOnline = true; break; }
+          }
+          if (modelIsOnline) break;
+        }
+        if (!modelIsOnline) {
+          var cr = lastRegistry.cloud || [];
+          for (var ii = 0; ii < cr.length; ii++) {
+            if (!cr[ii].configured) continue;
+            for (var jj = 0; jj < cr[ii].models.length; jj++) {
+              if (cr[ii].models[jj].id === cMod) { modelIsOnline = true; break; }
+            }
+            if (modelIsOnline) break;
+          }
+        }
+      }
+      if (modelIsOnline) {
+        items.unshift({ label: resolveModelName(cMod), value: cMod, active: true });
+      }
     }
     if (items.length === 0) items.push({ label: t('noGatewayModels'), value: '', active: false });
     showDropdown(mdBtn, items, function (val) {
@@ -1274,11 +1312,52 @@
     var lc = document.getElementById('lcm');
     var cc = document.getElementById('ccm');
 
-    var lh = '';
+    // Build a set of all online model ids so we can auto-clear stale cMod
+    var onlineModelIds = {};
     var local = reg.local || [];
+    for (var i = 0; i < local.length; i++) {
+      if (local[i].status !== 'online') continue;
+      for (var j = 0; j < local[i].models.length; j++) {
+        onlineModelIds[local[i].models[j].id] = true;
+      }
+    }
+    var cloud = reg.cloud || [];
+    for (var i = 0; i < cloud.length; i++) {
+      if (!cloud[i].configured) continue;
+      for (var j = 0; j < cloud[i].models.length; j++) {
+        onlineModelIds[cloud[i].models[j].id] = true;
+      }
+    }
+    // If current model belongs to an offline gateway, auto-select first online model
+    if (cMod && !onlineModelIds[cMod]) {
+      var newModel = '';
+      for (var i = 0; i < local.length; i++) {
+        if (local[i].status === 'online' && local[i].models.length > 0) {
+          newModel = local[i].models[0].id;
+          break;
+        }
+      }
+      if (newModel) {
+        cMod = newModel;
+        updateModelLabel();
+        vs.postMessage({ type: 'selectModel', modelId: cMod });
+      } else {
+        cMod = '';
+        updateModelLabel();
+      }
+    }
+
+    var lh = '';
     for (var i = 0; i < local.length; i++) {
       var p = local[i];
       var sc = p.status === 'online' ? 'on2' : 'off2';
+
+      // Offline gateways: show status header only, no model cards
+      if (p.status !== 'online') {
+        lh += '<div class="ms"><div class="msh"><span><span class="sd2 ' + sc + '"></span>' + esc(p.name) + '</span>';
+        lh += '<span class="bc" style="color:var(--vscode-errorForeground,#f44)">offline</span></div></div>';
+        continue;
+      }
 
       // Split models into local GPU vs cloud gateway
       var localModels = [];
@@ -1321,7 +1400,7 @@
         lh += '</div></div>';
       }
 
-      // If no models at all on this gateway, show status only
+      // If provider is online but has no models, show count
       if (localModels.length === 0 && cloudGwModels.length === 0) {
         lh += '<div class="ms"><div class="msh"><span><span class="sd2 ' + sc + '"></span>' + esc(p.name) + '</span>';
         lh += '<span class="bc">0 ' + t('modelsPlural') + '</span></div></div>';
@@ -1854,6 +1933,12 @@
       case 'hitlResolved':
         renderHitlRecent(m.decisions || []);
         break;
+      case 'hitlApprovalNeeded':
+        renderInlineHitlApproval(m.request);
+        break;
+      case 'hitlApprovalResolved':
+        resolveInlineHitlApproval(m.requestId, m.decision);
+        break;
       case 'workspaceFiles':
         wsFiles = m.files || [];
         break;
@@ -1955,7 +2040,7 @@
       var sev = r.severity || 'medium';
       h += '<div class="hitl-card ' + esc(sev) + '">' +
         '<div class="hitl-action">' + esc(r.action || r.id) + '</div>' +
-        '<div class="hitl-detail">' + esc(r.detail || '') + '</div>';
+        '<div class="hitl-detail">' + esc(r.command || r.filePath || r.resource || r.description || '') + '</div>';
       if (r.reasons && r.reasons.length) {
         h += '<ul class="hitl-reasons">';
         for (var j = 0; j < r.reasons.length; j++) h += '<li>' + esc(r.reasons[j]) + '</li>';
@@ -2002,6 +2087,56 @@
         '</div>';
     }
     c.innerHTML = h;
+  }
+
+  // ── Inline HITL approval cards in the chat stream ─────────────
+  // Shown during active agent execution when HITL triggers "ask"
+  function renderInlineHitlApproval(req) {
+    if (!req || !req.id) return;
+    var msgsEl = document.getElementById('messages');
+    if (!msgsEl) return;
+    var card = document.createElement('div');
+    card.className = 'hitl-inline-card ' + esc(req.severity || 'medium');
+    card.setAttribute('data-hitl-id', req.id);
+    var detail = req.command || req.filePath || req.url || '';
+    var scoreText = req.riskScore != null ? ' (risk: ' + req.riskScore + '/100)' : '';
+    var h = '<div class="hitl-inline-header">⚠️ ' + t('approvalRequired') + ' [' + esc((req.severity || 'medium').toUpperCase()) + ']' + esc(scoreText) + '</div>' +
+      '<div class="hitl-inline-action">' + esc(req.action || 'Unknown') + '</div>';
+    if (detail) h += '<div class="hitl-inline-detail">' + esc(detail) + '</div>';
+    if (req.reasons && req.reasons.length) {
+      h += '<ul class="hitl-inline-reasons">';
+      for (var i = 0; i < req.reasons.length; i++) h += '<li>' + esc(req.reasons[i]) + '</li>';
+      h += '</ul>';
+    }
+    h += '<div class="hitl-inline-status">' + t('waitingForApproval') + '</div>';
+    h += '<div class="hitl-inline-btns">' +
+      '<button class="hitl-btn approve" data-rid="' + esc(req.id) + '">' + t('approve') + '</button>' +
+      '<button class="hitl-btn deny" data-rid="' + esc(req.id) + '">' + t('deny') + '</button>' +
+      '</div>';
+    card.innerHTML = h;
+    card.querySelectorAll('.hitl-btn').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var rid = b.getAttribute('data-rid');
+        var action = b.classList.contains('approve') ? 'approve' : 'deny';
+        vs.postMessage({ type: 'hitlResolve', requestId: rid, decision: action });
+      });
+    });
+    msgsEl.appendChild(card);
+    autoScroll();
+  }
+
+  function resolveInlineHitlApproval(requestId, decision) {
+    var card = document.querySelector('.hitl-inline-card[data-hitl-id="' + requestId + '"]');
+    if (!card) return;
+    var statusEl = card.querySelector('.hitl-inline-status');
+    var btnsEl = card.querySelector('.hitl-inline-btns');
+    if (statusEl) {
+      var icon = decision === 'approved' ? '✅' : '❌';
+      statusEl.textContent = icon + ' ' + (decision === 'approved' ? t('approved') : t('denied'));
+      statusEl.className = 'hitl-inline-status ' + (decision === 'approved' ? 'resolved-approved' : 'resolved-denied');
+    }
+    if (btnsEl) btnsEl.remove();
+    card.classList.add('resolved');
   }
 
   // ── OpenAI Compatible config save/test buttons ──────────────────

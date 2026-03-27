@@ -17,6 +17,8 @@ export declare class ChatViewProvider implements vscode.WebviewViewProvider {
     private _isStreaming;
     private _abortController;
     private _modelConfigOverrides;
+    private _hitlPollTimer;
+    private _shownHitlIds;
     constructor(_extensionUri: vscode.Uri, client: ThirdwaveClient, _context: vscode.ExtensionContext, _workspace: WorkspaceManager);
     updateClient(client: ThirdwaveClient): void;
     /** Persist chat history for a session in extension global state */
@@ -37,6 +39,10 @@ export declare class ChatViewProvider implements vscode.WebviewViewProvider {
     private _loadSkills;
     private _loadSessions;
     private _loadHitl;
+    private _startHitlPolling;
+    private _stopHitlPolling;
+    private _pollHitlPending;
+    private _showHitlModal;
     private _onUserMessage;
     private _post;
     private _html;

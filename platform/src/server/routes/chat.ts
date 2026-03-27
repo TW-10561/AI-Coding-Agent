@@ -46,7 +46,8 @@ QUALITY RULES — follow these strictly:
 - Check the OS and environment before suggesting platform-specific packages (e.g. windows-curses is Windows-only).
 - If a command fails, diagnose the error and fix it yourself instead of telling the user to fix it.
 - When creating Python projects, always create a proper package structure with __init__.py files.
-- Test that your code actually works by running it after creating it.`
+- Test that your code actually works by running it after creating it.
+- SECURITY: If a tool returns "SECURITY RESTRICTION" or "Access restricted", you MUST tell the user that access to the file/resource is restricted for security purposes. NEVER claim the file does not exist when access is denied.`
 
 const DIRECT_SYSTEM = `You are Thirdwave AI, a friendly and helpful AI coding assistant. When greeted, respond warmly and briefly introduce yourself — mention you can help with coding tasks, file management, and development workflows. Keep greetings short and natural. Always provide complete, thorough answers. Never say "I will explain" or "I'll do" — instead, actually explain and do it immediately. When asked about code, provide full working solutions with explanations. When asked to analyze or fix code, show the complete corrected code and explain every change. Do not be lazy or skip details.`
 
@@ -86,8 +87,9 @@ Parameters: {"path": "relative/path/to/file.py"}
 Optional: {"startLine": 1, "endLine": 50}
 
 ### list_dir
-List directory contents.
+List directory contents. Sorted (directories first, then files). Filters out noise dirs (node_modules, .git, etc.).
 Parameters: {"path": "."}
+Optional: {"recursive": true, "depth": 3}
 
 ### grep_search
 Search files for a pattern (regex supported).
@@ -363,7 +365,9 @@ export function chatRoutes() {
       }
 
       const resolved = await resolveModel(body.modelID, body.providerID)
-      const { endpoint, modelApiId, modelName, providerName, apiKey, cloudProviderId } = resolved
+      let { endpoint, modelApiId, modelName, providerName, apiKey, cloudProviderId } = resolved
+      // Preserve the original model the user selected — even after 429 fallback
+      const originalModelName = modelName
 
       // Build initial messages
       const useTools = body.tools !== false
@@ -437,16 +441,53 @@ export function chatRoutes() {
         }
 
         if (!res.ok) {
-          // Rate-limited — surface 429 directly so clients can back off
+          // Rate-limited — try falling back to another gateway model before failing
           if (res.status === 429) {
             const errText = await res.text().catch(() => "")
             const retryAfter = res.headers.get("retry-after")
-            const headers: Record<string, string> = {}
-            if (retryAfter) headers["retry-after"] = retryAfter
-            // Parse detail from gateway JSON response if available
             let detail = errText.slice(0, 300)
             try { const j = JSON.parse(errText); if (j.detail) detail = j.detail } catch {}
-            return c.json({ error: "Rate limited by model provider", detail, retryAfterSeconds: retryAfter ? Number(retryAfter) : 30 }, 429)
+
+            // Attempt fallback: try all online gateway models until one succeeds
+            const fallbacks = await findFallbackModels(modelApiId)
+            let fallbackSucceeded = false
+            for (const fb of fallbacks) {
+              console.log(`[chat] 429 on ${modelApiId} — trying fallback ${fb.modelApiId}`)
+              const fbOutputLimit = fb.outputLimit ?? 4096
+              const fbContextLimit = fb.contextLimit ?? 32768
+              const fbReqBody = {
+                ...reqBody,
+                model: fb.modelApiId,
+                max_tokens: Math.min(
+                  requestedMaxTokens,
+                  fbOutputLimit,
+                  Math.max(512, fbContextLimit - estimatedInputTokens - 256),
+                ),
+              }
+              try {
+                const fbRes = await providerFetch(fb.endpoint, fb.apiKey, cloudProviderId, fbReqBody, inferenceTimeout)
+                if (fbRes.ok) {
+                  // Fallback succeeded — update references and continue
+                  endpoint = fb.endpoint
+                  modelApiId = fb.modelApiId
+                  modelName = fb.modelName
+                  providerName = fb.providerName
+                  apiKey = fb.apiKey
+                  res = fbRes
+                  fallbackSucceeded = true
+                  console.log(`[chat] Fallback to ${fb.modelApiId} succeeded`)
+                  break
+                }
+                // This fallback failed (403/429/etc.) — try next
+                console.log(`[chat] Fallback ${fb.modelApiId} failed (${fbRes.status}), trying next...`)
+                await fbRes.text().catch(() => {}) // drain body
+              } catch (fbErr) {
+                console.log(`[chat] Fallback ${fb.modelApiId} threw error, trying next...`)
+              }
+            }
+            if (!fallbackSucceeded) {
+              return c.json({ error: "Rate limited by model provider", detail, retryAfterSeconds: retryAfter ? Number(retryAfter) : 30, triedFallbacks: fallbacks.map(f => f.modelApiId) }, 429)
+            }
           }
           // Forbidden — model restricted for this API key (gateway ACL)
           if (res.status === 403) {
@@ -462,7 +503,7 @@ export function chatRoutes() {
               const retryRes = await providerFetch(endpoint, apiKey, cloudProviderId, reqBody, inferenceTimeout)
               if (retryRes.ok) {
                 const data = (await retryRes.json()) as any
-                return formatFinalResponse(c, data, Date.now() - start, modelName, providerName, totalInput, totalOutput, toolLog)
+                return formatFinalResponse(c, data, Date.now() - start, originalModelName, providerName, totalInput, totalOutput, toolLog)
               }
               const retryErrText = await retryRes.text().catch(() => "")
               let retryDetail = retryErrText.slice(0, 500)
@@ -470,10 +511,12 @@ export function chatRoutes() {
               return c.json({ error: `${providerName} unavailable (${retryRes.status}) after retry`, detail: retryDetail }, 503)
             } catch {}
           }
-          const errText = await res.text().catch(() => "")
-          let detail = errText.slice(0, 500)
-          try { const j = JSON.parse(errText); if (j.detail) detail = j.detail } catch {}
-          return c.json({ error: `${providerName} error (${res.status})`, detail }, 502)
+          if (!res.ok) {
+            const errText = await res.text().catch(() => "")
+            let detail = errText.slice(0, 500)
+            try { const j = JSON.parse(errText); if (j.detail) detail = j.detail } catch {}
+            return c.json({ error: `${providerName} error (${res.status})`, detail }, 502)
+          }
         }
 
         const data = (await res.json()) as any
@@ -488,6 +531,21 @@ export function chatRoutes() {
 
         // Log round info for debugging
         console.log(`[chat] Round ${round}: ${(msg.content ?? "").length} chars, ${msg.tool_calls?.length ?? 0} native calls, finish=${choice.finish_reason}`)
+
+        // ── Handle empty response from model ────────────────────
+        // Some models (e.g. gpt-oss-120b) occasionally return empty content.
+        // Nudge them to use tools instead of returning "(no response)".
+        if (useTools && !msg.content && (!msg.tool_calls || msg.tool_calls.length === 0)) {
+          if (round < 2) {
+            console.log(`[chat] Round ${round}: Empty response from ${modelApiId}, nudging model to use tools`)
+            messages.push({
+              role: "user",
+              content: "Your response was empty. You MUST respond by using the available tools. Include <tool_use> XML blocks in your reply. For example, to run a command: <tool_use><name>bash</name><input>{\"command\": \"echo hello\"}</input></tool_use>",
+            })
+            continue // retry round
+          }
+          console.log(`[chat] Round ${round}: Model ${modelApiId} keeps returning empty — giving up`)
+        }
 
         // ── Check for tool calls ────────────────────────────────
         if (msg.tool_calls && msg.tool_calls.length > 0 && useTools) {
@@ -549,14 +607,27 @@ export function chatRoutes() {
           }
         }
 
+        // ── Nudge: model replied with text but no tools on early rounds ─
+        // Some models (gpt-oss-120b, etc.) occasionally hallucinate answers
+        // instead of using <tool_use> XML blocks. Give them one retry.
+        if (useTools && round === 0 && msg.content && toolLog.length === 0) {
+          console.log(`[chat] Round 0: Model responded without tools, nudging to use <tool_use>`)
+          messages.push({ role: "assistant", content: msg.content })
+          messages.push({
+            role: "user",
+            content: "IMPORTANT: You MUST actually use tools to complete this task. Include <tool_use><name>TOOL</name><input>{JSON}</input></tool_use> blocks in your response. Do NOT fabricate file contents or command output. Use the appropriate tool to get real results.",
+          })
+          continue
+        }
+
         // ── No tool calls — final response ──────────────────────
-        return formatFinalResponse(c, data, Date.now() - start, modelName, providerName, totalInput, totalOutput, toolLog)
+        return formatFinalResponse(c, data, Date.now() - start, originalModelName, providerName, totalInput, totalOutput, toolLog)
       }
 
       // ── Max rounds exceeded ───────────────────────────────────
       return c.json({
         text: "(Reached maximum tool-call rounds. The model may need more iterations.)",
-        model: modelName,
+        model: originalModelName,
         provider: providerName,
         tokens: { input: totalInput, output: totalOutput },
         latencyMs: Date.now() - start,
@@ -797,6 +868,53 @@ function formatFinalResponse(
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
+/**
+ * Find fallback gateway models when the current one is rate-limited (429).
+ * Returns ALL candidates sorted by preference (cloud proxies first).
+ * Skips image-generation models that can't do chat.
+ */
+const IMAGE_MODEL_RE = /dall-e|stable-diffusion|midjourney|imagen/i
+async function findFallbackModels(
+  currentModelId: string,
+  skipIds: Set<string> = new Set(),
+): Promise<Array<{
+  endpoint: string; modelApiId: string; modelName: string; providerName: string
+  apiKey: string; contextLimit?: number; outputLimit?: number
+}>> {
+  const reg = await buildRegistry()
+  const gwEndpoint = env.VLLM_GATEWAY_URL ?? ""
+  const gwKey = env.VLLM_GATEWAY_KEY ?? ""
+
+  type Candidate = {
+    endpoint: string; apiKey: string; modelApiId: string; modelName: string
+    providerName: string; contextLimit?: number; outputLimit?: number; isCloud: boolean
+  }
+  const candidates: Candidate[] = []
+
+  for (const p of reg.local) {
+    if (p.status !== "online") continue
+    for (const m of p.models) {
+      if (m.id === currentModelId || skipIds.has(m.id)) continue
+      if (IMAGE_MODEL_RE.test(m.id) || IMAGE_MODEL_RE.test(m.name)) continue
+      candidates.push({
+        endpoint: gwEndpoint || p.endpoint,
+        apiKey: gwKey || "",
+        modelApiId: m.id,
+        modelName: m.name,
+        providerName: p.name,
+        contextLimit: m.contextLimit,
+        outputLimit: m.outputLimit,
+        isCloud: !!(m as any).isCloud,
+      })
+    }
+  }
+
+  // Prefer cloud-proxy models (gpt-3.5-turbo, gpt-4, etc.) — they're more reliable
+  candidates.sort((a, b) => (b.isCloud ? 1 : 0) - (a.isCloud ? 1 : 0))
+
+  return candidates
+}
+
 async function resolveModel(
   modelID?: string,
   providerID?: string,
@@ -860,9 +978,10 @@ async function resolveModel(
     throw Object.assign(new Error("No online vLLM provider found. Check that vLLM is running."), { status: 503 })
   }
 
-  // Specific model requested: look up in local providers
+  // Specific model requested: look up in local providers (online only)
   for (const p of reg.local) {
     if (providerID && p.id !== providerID) continue
+    if (p.status !== "online") continue
     for (const m of p.models) {
       if (m.id === modelID || m.name === modelID) {
         const { endpoint, apiKey } = localEndpoint(p)
@@ -897,6 +1016,17 @@ async function resolveModel(
           cloudProviderId: p.id,
           contextLimit: m.contextLimit,
           outputLimit: m.outputLimit,
+        }
+      }
+    }
+  }
+
+  // Check if the model exists in an offline provider — give a clear error
+  for (const p of reg.local) {
+    if (p.status === "offline") {
+      for (const m of p.models) {
+        if (m.id === modelID || m.name === modelID) {
+          throw Object.assign(new Error(`Model "${modelID}" is on gateway "${p.name}" which is currently offline. Please select a different model or wait for the gateway to come back online.`), { status: 503 })
         }
       }
     }

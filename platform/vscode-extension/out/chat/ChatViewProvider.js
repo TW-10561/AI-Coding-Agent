@@ -55,6 +55,9 @@ class ChatViewProvider {
     _isStreaming = false;
     _abortController = null;
     _modelConfigOverrides = {};
+    // ── HITL polling during streaming ─────────────────────────────
+    _hitlPollTimer = null;
+    _shownHitlIds = new Set();
     constructor(_extensionUri, client, _context, _workspace) {
         this._extensionUri = _extensionUri;
         this._context = _context;
@@ -179,7 +182,7 @@ class ChatViewProvider {
                     }
                     break;
                 case "refreshModels":
-                    this._loadModels();
+                    this._loadModels(true);
                     break;
                 case "refreshSkills":
                     this._loadSkills();
@@ -350,9 +353,9 @@ class ChatViewProvider {
             }
         });
     }
-    async _loadModels() {
+    async _loadModels(forceRefresh = false) {
         try {
-            this._post({ type: "modelsData", registry: await this._client.registry() });
+            this._post({ type: "modelsData", registry: await this._client.registry(forceRefresh) });
         }
         catch {
             this._post({ type: "modelsData", registry: { local: [], cloud: [], activeModel: "none" } });
@@ -385,6 +388,80 @@ class ChatViewProvider {
             this._post({ type: "hitlPending", requests: [] });
             this._post({ type: "hitlStats", stats: {} });
             this._post({ type: "hitlResolved", decisions: [] });
+        }
+    }
+    // ── HITL active polling during streaming ──────────────────────
+    // When the agentic loop is running (directChat in flight), the server
+    // may block on HITL approval.  Poll for pending requests every 2s and
+    // surface them as a VS Code modal dialog so the user can Allow / Deny.
+    _startHitlPolling() {
+        this._stopHitlPolling();
+        this._shownHitlIds.clear();
+        this._hitlPollTimer = setInterval(() => void this._pollHitlPending(), 2000);
+    }
+    _stopHitlPolling() {
+        if (this._hitlPollTimer) {
+            clearInterval(this._hitlPollTimer);
+            this._hitlPollTimer = null;
+        }
+    }
+    async _pollHitlPending() {
+        try {
+            const pending = (await this._client.hitlPending());
+            if (!pending || pending.length === 0)
+                return;
+            // Update the sidebar HITL panel
+            this._post({ type: "hitlPending", requests: pending });
+            for (const req of pending) {
+                if (!req.id || this._shownHitlIds.has(req.id))
+                    continue;
+                this._shownHitlIds.add(req.id);
+                // Post inline notification to the chat webview
+                this._post({
+                    type: "hitlApprovalNeeded",
+                    request: {
+                        id: req.id,
+                        action: req.action,
+                        command: req.command,
+                        filePath: req.filePath,
+                        url: req.url,
+                        severity: req.severity || req.riskLevel || "medium",
+                        riskScore: req.riskScore,
+                        reasons: req.reasons || [],
+                        description: req.description,
+                    },
+                });
+                // Show VS Code native modal dialog — runs async, doesn't block the poll loop
+                this._showHitlModal(req);
+            }
+        }
+        catch {
+            // Ignore polling errors (server may be busy)
+        }
+    }
+    async _showHitlModal(req) {
+        const severity = (req.severity || req.riskLevel || "medium").toUpperCase();
+        const action = req.action || "Unknown action";
+        const detail = req.command || req.filePath || req.url || "";
+        const reasons = (req.reasons || []).join("\n• ");
+        const score = req.riskScore != null ? ` (score: ${req.riskScore}/100)` : "";
+        const msg = [
+            `⚠️  HITL Approval Required  [${severity}]${score}`,
+            "",
+            `Action: ${action}`,
+            detail ? `Details: ${detail}` : "",
+            reasons ? `\nReasons:\n• ${reasons}` : "",
+        ].filter(Boolean).join("\n");
+        const choice = await vscode.window.showWarningMessage(msg, { modal: true, detail: `The AI agent wants to perform a ${severity.toLowerCase()}-risk action. Review and approve or deny.` }, "✅ Allow", "❌ Deny");
+        const decision = choice === "✅ Allow" ? "approved" : "denied";
+        try {
+            await this._client.resolveHitl(req.id, decision);
+            this._loadHitl();
+            // Notify webview that this request was resolved
+            this._post({ type: "hitlApprovalResolved", requestId: req.id, decision });
+        }
+        catch (e) {
+            vscode.window.showErrorMessage(`HITL resolve failed: ${e.message}`);
         }
     }
     async _onUserMessage(text) {
@@ -525,6 +602,9 @@ class ChatViewProvider {
                     // the full agentic tool-calling loop. Pass abort signal so stop works.
                     // Show a "Working" block so users see the agent is active
                     this._post({ type: "streamWorking", phase: "thinking" });
+                    // Start HITL polling — while directChat blocks, the server may pause
+                    // on HITL approval. We poll every 2s to surface pending approvals.
+                    this._startHitlPolling();
                     const resp = await this._client.directChat({
                         message: text,
                         modelID: this._currentModel || undefined,
@@ -678,9 +758,12 @@ class ChatViewProvider {
             }
         }
         finally {
+            this._stopHitlPolling();
             this._isStreaming = false;
             this._abortController = null;
             this._post({ type: "setLoading", loading: false });
+            // Refresh HITL panel after streaming ends
+            this._loadHitl();
         }
     }
     _post(msg) { this._view?.webview.postMessage(msg); }
@@ -779,7 +862,7 @@ class ChatViewProvider {
             </div>
           </div>
           <div class="sec">
-            <div class="st" data-i18n="gatewayModels">Gateway Models (Local)</div>
+            <div class="st" style="display:flex;align-items:center;justify-content:space-between;" data-i18n="gatewayModels">Gateway Models (Local)<button id="refreshModelsBtn" title="Refresh models & token limits" style="background:none;border:1px solid var(--vscode-button-border,#555);color:var(--vscode-foreground);cursor:pointer;padding:2px 8px;border-radius:4px;font-size:11px;display:inline-flex;align-items:center;gap:4px;">&#x21bb; Refresh</button></div>
             <div id="lcm"><div class="nd">Loading...</div></div>
           </div>
           <div class="sec">

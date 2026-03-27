@@ -201,19 +201,44 @@ async function probeGateway(): Promise<LocalProvider | null> {
     })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
 
-    const json = await res.json() as { data?: Array<{ id: string; max_model_len?: number; owned_by?: string; is_cloud?: boolean; deployment_origin?: string; origin_label?: string; cloud_provider_name?: string; backend_type?: string }> }
+    const json = await res.json() as { data?: Array<{
+      id: string
+      max_model_len?: number
+      max_completion_tokens?: number
+      max_output_tokens?: number
+      max_output_len?: number
+      output_limit?: number
+      owned_by?: string
+      is_cloud?: boolean
+      deployment_origin?: string
+      origin_label?: string
+      cloud_provider_name?: string
+      backend_type?: string
+    }> }
     const latencyMs = Date.now() - before
 
     const seen = new Set<string>()
     const models: LocalModel[] = []
     for (const m of json.data ?? []) {
-      if (seen.has(m.id)) continue
-      seen.add(m.id)
+      const normalizedId = (m.id ?? "").trim()
+      if (!normalizedId || seen.has(normalizedId)) continue
+      seen.add(normalizedId)
+
+      const contextLimit = m.max_model_len ?? 32768
+      // Dynamically determine outputLimit from gateway response fields.
+      // Check explicit output limit fields first, then derive from context.
+      const outputLimit =
+        m.max_completion_tokens ??
+        m.max_output_tokens ??
+        m.max_output_len ??
+        m.output_limit ??
+        Math.min(Math.floor(contextLimit * 0.25), 16384) // 25% of context, capped at 16K
+
       models.push({
-        id: m.id,
-        name: m.id,
-        contextLimit: m.max_model_len ?? 32768,
-        outputLimit: 4096,
+        id: normalizedId,
+        name: normalizedId,
+        contextLimit,
+        outputLimit,
         isCloud: m.is_cloud ?? false,
         originLabel: m.origin_label ?? (m.is_cloud ? "Cloud" : "Local"),
         cloudProviderName: m.cloud_provider_name ?? undefined,
