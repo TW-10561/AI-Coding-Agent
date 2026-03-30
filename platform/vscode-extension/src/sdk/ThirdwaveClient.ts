@@ -39,6 +39,7 @@ export interface DirectChatRequest {
   tools?: boolean;
   maxToolRounds?: number;
   workspaceRoot?: string;
+  sessionId?: string;  // VS Code session ID for chat log
 }
 
 export interface DirectChatResponse {

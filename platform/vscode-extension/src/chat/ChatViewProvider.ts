@@ -57,7 +57,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._currentLanguage = this._context.globalState.get<string>("thirdwave.language", "en");
   }
 
-  updateClient(client: ThirdwaveClient) { this._client = client; }
+  updateClient(client: ThirdwaveClient) {
+    this._client = client;
+    // Re-fetch data with the new client immediately
+    this._loadModels(); this._loadSkills(); this._loadHitl();
+  }
 
   /** Persist chat history for a session in extension global state */
   private _saveSessionHistory(sessionId: string, messages: ChatMessage[]) {
@@ -101,15 +105,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   async createSession() {
     const id = `sess_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-    const now = Date.now();
-    this._sessions = this._restoreSessions();
-    this._sessions.unshift({ id, title: "New chat", createdAt: now, updatedAt: now });
-    this._persistSessions();
     this._currentSessionId = id;
     this._history = [];
     this._post({ type: "sessionCreated", sessionId: id });
     this._post({ type: "clearChat" });
-    this._post({ type: "sessionsData", sessions: this._sessions });
+    // Don't persist yet — session is saved only when the first message is sent.
+    // This prevents empty "New chat" entries from cluttering session history.
   }
 
   resolveWebviewView(
@@ -123,6 +124,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       localResourceRoots: [this._extensionUri],
     };
     webviewView.webview.html = this._html(webviewView.webview);
+
+    // Re-load data whenever the sidebar becomes visible (covers cases where
+    // the server started after the extension and retries already exhausted)
+    webviewView.onDidChangeVisibility(() => {
+      if (webviewView.visible) {
+        console.log("[thirdwave] sidebar became visible — reloading data");
+        this._loadModels(); this._loadSkills(); this._loadHitl();
+      }
+    });
 
     webviewView.webview.onDidReceiveMessage(async (msg) => {
       switch (msg.type) {
@@ -168,7 +178,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             try { await vscode.workspace.getConfiguration("thirdwave").update("defaultAgent", msg.agent, vscode.ConfigurationTarget.Workspace); } catch {}
           }
           break;
-        case "refreshModels": this._loadModels(true); break;
+        case "refreshModels": this._loadModels(true); this._loadSkills(); this._loadHitl(); break;
         case "refreshSkills": this._loadSkills(); break;
         case "refreshSessions": this._loadSessions(); break;
         case "switchSession":
@@ -263,6 +273,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             try {
               await this._client.resolveHitl(rid, decision);
               this._loadHitl();
+              // Notify webview so inline card updates to resolved state
+              this._post({ type: "hitlApprovalResolved", requestId: rid, decision });
             } catch (e: any) { vscode.window.showErrorMessage(`HITL resolve failed: ${e.message}`); }
           }
           break;
@@ -322,13 +334,43 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
+  private _modelsRetryCount = 0;
+  private _skillsRetryCount = 0;
+  private _hitlRetryCount = 0;
+
   private async _loadModels(forceRefresh = false) {
-    try { this._post({ type: "modelsData", registry: await this._client.registry(forceRefresh) }); }
-    catch { this._post({ type: "modelsData", registry: { local: [], cloud: [], activeModel: "none" } }); }
+    try {
+      console.log("[thirdwave] _loadModels: fetching registry…");
+      const reg = await this._client.registry(forceRefresh);
+      console.log(`[thirdwave] _loadModels: got ${reg.local?.length ?? 0} local, ${reg.cloud?.length ?? 0} cloud providers`);
+      this._post({ type: "modelsData", registry: reg });
+      this._modelsRetryCount = 0; // success — reset
+    } catch (err) {
+      console.error("[thirdwave] _loadModels FAILED:", err);
+      this._post({ type: "modelsData", registry: { local: [], cloud: [], activeModel: "none" } });
+      // Keep retrying with back-off (5s, 10s, 15s … max 30s) until server is up
+      if (!forceRefresh) {
+        this._modelsRetryCount++;
+        const delay = Math.min(this._modelsRetryCount * 5000, 30000);
+        console.log(`[thirdwave] _loadModels: retry #${this._modelsRetryCount} in ${delay}ms`);
+        setTimeout(() => this._loadModels(), delay);
+      }
+    }
   }
   private async _loadSkills() {
-    try { this._post({ type: "skillsData", skills: await this._client.listSkills() }); }
-    catch { this._post({ type: "skillsData", skills: [] }); }
+    try {
+      console.log("[thirdwave] _loadSkills: fetching skills…");
+      const skills = await this._client.listSkills();
+      console.log(`[thirdwave] _loadSkills: got ${Array.isArray(skills) ? skills.length : 0} skills`);
+      this._post({ type: "skillsData", skills });
+      this._skillsRetryCount = 0;
+    } catch (err) {
+      console.error("[thirdwave] _loadSkills FAILED:", err);
+      this._post({ type: "skillsData", skills: [] });
+      this._skillsRetryCount++;
+      const delay = Math.min(this._skillsRetryCount * 5000, 30000);
+      setTimeout(() => this._loadSkills(), delay);
+    }
   }
   private _loadSessions() {
     this._sessions = this._restoreSessions();
@@ -344,10 +386,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this._post({ type: "hitlPending", requests: pending });
       this._post({ type: "hitlStats", stats });
       this._post({ type: "hitlResolved", decisions: resolved });
+      this._hitlRetryCount = 0;
     } catch {
       this._post({ type: "hitlPending", requests: [] });
       this._post({ type: "hitlStats", stats: {} });
       this._post({ type: "hitlResolved", decisions: [] });
+      this._hitlRetryCount++;
+      const delay = Math.min(this._hitlRetryCount * 5000, 30000);
+      setTimeout(() => this._loadHitl(), delay);
     }
   }
 
@@ -381,7 +427,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (!req.id || this._shownHitlIds.has(req.id)) continue;
         this._shownHitlIds.add(req.id);
 
-        // Post inline notification to the chat webview
+        // Post inline notification to the chat webview (resolved by user via inline buttons)
         this._post({
           type: "hitlApprovalNeeded",
           request: {
@@ -396,45 +442,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             description: req.description,
           },
         });
-
-        // Show VS Code native modal dialog — runs async, doesn't block the poll loop
-        this._showHitlModal(req);
       }
     } catch {
       // Ignore polling errors (server may be busy)
-    }
-  }
-
-  private async _showHitlModal(req: any) {
-    const severity = (req.severity || req.riskLevel || "medium").toUpperCase();
-    const action = req.action || "Unknown action";
-    const detail = req.command || req.filePath || req.url || "";
-    const reasons = (req.reasons || []).join("\n• ");
-    const score = req.riskScore != null ? ` (score: ${req.riskScore}/100)` : "";
-
-    const msg = [
-      `⚠️  HITL Approval Required  [${severity}]${score}`,
-      "",
-      `Action: ${action}`,
-      detail ? `Details: ${detail}` : "",
-      reasons ? `\nReasons:\n• ${reasons}` : "",
-    ].filter(Boolean).join("\n");
-
-    const choice = await vscode.window.showWarningMessage(
-      msg,
-      { modal: true, detail: `The AI agent wants to perform a ${severity.toLowerCase()}-risk action. Review and approve or deny.` },
-      "✅ Allow",
-      "❌ Deny"
-    );
-
-    const decision = choice === "✅ Allow" ? "approved" : "denied";
-    try {
-      await this._client.resolveHitl(req.id, decision);
-      this._loadHitl();
-      // Notify webview that this request was resolved
-      this._post({ type: "hitlApprovalResolved", requestId: req.id, decision });
-    } catch (e: any) {
-      vscode.window.showErrorMessage(`HITL resolve failed: ${e.message}`);
     }
   }
 
@@ -445,17 +455,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const userMsg: ChatMessage = { role: "user", content: text, timestamp: Date.now() };
     this._history.push(userMsg);
     this._post({ type: "addMessage", message: userMsg });
-    // Auto-title the session from the first user message
+    // Persist session on first real message (lazy — avoids saving empty sessions)
     if (this._history.length === 1 && this._currentSessionId) {
       const title = text.replace(/\s+/g, " ").trim().substring(0, 60);
+      const now = Date.now();
       this._sessions = this._restoreSessions();
       const si = this._sessions.findIndex(s => s.id === this._currentSessionId);
-      if (si >= 0 && this._sessions[si].title === "New chat") {
+      if (si >= 0) {
+        // Session was somehow already persisted — just update title
         this._sessions[si].title = title;
-        this._sessions[si].updatedAt = Date.now();
-        this._persistSessions();
-        this._post({ type: "sessionsData", sessions: this._sessions });
+        this._sessions[si].updatedAt = now;
+      } else {
+        // First message: create & persist the session record now
+        this._sessions.unshift({ id: this._currentSessionId, title, createdAt: now, updatedAt: now });
       }
+      this._persistSessions();
+      this._post({ type: "sessionsData", sessions: this._sessions });
     }
     this._post({ type: "setLoading", loading: true });
     this._isStreaming = true;
@@ -482,8 +497,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const agentAllowsTools = this._currentAgent === "build" || this._currentAgent === "general";
       const tools = cfg.get<boolean>("enableTools", true) && agentAllowsTools;
 
-      // Get workspace root to send with the request
+      // Get workspace root to send with the request — always use the current
+      // workspace folder so tools resolve paths against the correct directory.
       const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!wsRoot) {
+        console.warn("[ThirdwaveChat] No workspace folder open — tools will use server default directory");
+      }
 
       // Build system prompt: workspace context + selected skills
       const selectedIds = this._context.workspaceState.get<string[]>("thirdwave.selectedSkills", []);
@@ -599,6 +618,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             history: histSlice.length > 0 ? histSlice : undefined,
             tools,
             workspaceRoot: wsRoot,
+            sessionId: this._currentSessionId ?? undefined,
           }, abortSignal);
           fullText = resp.text;
           fullReasoning = resp.reasoning || "";
@@ -691,6 +711,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               history: histSlice.length > 0 ? histSlice : undefined,
               tools,
               workspaceRoot: wsRoot,
+              sessionId: this._currentSessionId ?? undefined,
             });
             fullText = resp.text;
             fullReasoning = resp.reasoning || "";
@@ -703,16 +724,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       const latency = meta.latencyMs || (Date.now() - startTime);
       // Only add to history if we got any content
-      if (fullText || fullReasoning) {
+      // Always produce a visible assistant message — never silently end the stream
+      const displayText = fullText
+        || fullReasoning
+        || (meta.toolCalls?.length > 0 ? "(Tool calls completed — see results above)" : "");
+      if (displayText) {
         const aMsg: ChatMessage = {
-          role: "assistant", content: fullText || "(stopped)", reasoning: fullReasoning || undefined,
+          role: "assistant", content: fullText || displayText, reasoning: fullReasoning || undefined,
           toolCalls: meta.toolCalls, tokens: meta.tokens, latencyMs: latency,
           model: meta.model, timestamp: Date.now(),
         };
         this._history.push(aMsg);
         this._post({ type: "streamEnd", message: aMsg });
       } else {
-        this._post({ type: "streamEnd" });
+        // Model returned absolutely nothing — show a helpful fallback
+        const fallback: ChatMessage = {
+          role: "assistant",
+          content: "The model returned an empty response. This can happen when:\n- The model is overloaded or timed out\n- The request was too complex for the model\n- A security policy blocked the action\n\nTry rephrasing your request or switching to a different model.",
+          tokens: meta.tokens, latencyMs: latency, model: meta.model, timestamp: Date.now(),
+        };
+        this._history.push(fallback);
+        this._post({ type: "streamEnd", message: fallback });
       }
       // Persist chat history locally so it survives session switching
       if (this._currentSessionId) {

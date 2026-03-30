@@ -35,6 +35,9 @@ export declare class ChatViewProvider implements vscode.WebviewViewProvider {
     notifyAgentChanged(agent: string): void;
     createSession(): Promise<void>;
     resolveWebviewView(webviewView: vscode.WebviewView, _ctx: vscode.WebviewViewResolveContext, _token: vscode.CancellationToken): void;
+    private _modelsRetryCount;
+    private _skillsRetryCount;
+    private _hitlRetryCount;
     private _loadModels;
     private _loadSkills;
     private _loadSessions;
@@ -42,7 +45,6 @@ export declare class ChatViewProvider implements vscode.WebviewViewProvider {
     private _startHitlPolling;
     private _stopHitlPolling;
     private _pollHitlPending;
-    private _showHitlModal;
     private _onUserMessage;
     private _post;
     private _html;

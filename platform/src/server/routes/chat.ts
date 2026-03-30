@@ -12,6 +12,8 @@ import { env } from "../../config/env"
 import { buildRegistry } from "../../services/provider-registry"
 import { defaultPolicyEngine } from "../../services/policy-engine"
 import { executeTool, getToolDefinitions } from "../../services/tool-executor"
+import type { WorkspaceManager } from "../../services/workspace-manager"
+import type { ChatLogStore } from "../../services/chat-log"
 
 const ChatBody = z.object({
   message: z.string().min(1),
@@ -27,29 +29,51 @@ const ChatBody = z.object({
   maxToolRounds: z.number().min(0).max(20).optional(),
   timeoutMs: z.number().min(5000).max(600000).optional(), // per-round fetch timeout
   workspaceRoot: z.string().optional(),    // VS Code workspace folder path
+  sessionId: z.string().optional(),        // VS Code extension session ID for chat log
 })
 
 // Per-round timeout for model inference calls (not total request timeout).
 // Reasoning models (MiniMax) can take 60-180s per call; allow 5 min to be safe.
 const DEFAULT_INFERENCE_TIMEOUT_MS = 300_000  // 5 min per inference call
 
-const DEFAULT_SYSTEM = `You are Thirdwave AI, an expert AI coding assistant with access to tools.
-Use tools to help the user: execute commands, read/write files, search code, and fetch URLs.
-Be concise and give direct answers. Prefer using tools over guessing.
-When making file edits, always read the file first to understand its content.
-After running commands, report results clearly.
+const DEFAULT_SYSTEM = `Your name is Thirdwave AI. You are an expert AI coding assistant created by Thirdwave, with access to tools.
+You are NOT ChatGPT, not GPT, not OpenAI, not Anthropic, not Google — you are Thirdwave AI. Always identify yourself as Thirdwave AI when asked.
+You solve tasks by reasoning step-by-step, using tools to verify assumptions, and iterating until the task is fully complete.
 
-QUALITY RULES — follow these strictly:
+REASONING PROTOCOL:
+1. ANALYZE: Before acting, briefly consider what the request needs and what information is missing.
+2. PLAN: For multi-step tasks, outline 2-4 concrete steps. For simple tasks, proceed directly.
+3. EXECUTE: Carry out one step at a time using tools. Verify each result before the next step.
+4. DIAGNOSE: If something fails, read the error carefully and try a different approach — never repeat the same failing command.
+5. VERIFY: After completing the task, verify the result works (run the code, check the file exists, etc.).
+6. SUMMARIZE: Provide a concise summary of what was done and the outcome.
+
+TOOL DISCIPLINE:
+- ALWAYS use tools to get real information — NEVER guess file contents, command output, or directory structure.
+- Prefer acting over explaining. Actually DO things with tools, don't just describe what you would do.
+- Read files before editing them. Check directories before creating files. Verify commands exist before running them.
+- When multiple independent operations are needed, include multiple <tool_use> blocks in one response for efficiency.
+
+ERROR RECOVERY:
+- If a tool fails, READ the full error message. Identify the root cause before retrying.
+- Try an alternative approach — different path, different command, install missing deps, fix syntax.
+- NEVER repeat the exact same failing command. Always change something.
+- Common fixes: check if path exists (list_dir), check permissions, use correct OS syntax, install missing packages.
+
+QUALITY RULES:
 - Before suggesting commands, verify the current directory and file paths exist using tools.
-- Always use tools (bash, write_file) to actually create files and run commands — do NOT just show code blocks and tell the user to run them manually.
-- When setting up projects, create ALL necessary files (requirements.txt, package.json, etc.) using write_file, then run install commands using bash.
-- Check the OS and environment before suggesting platform-specific packages (e.g. windows-curses is Windows-only).
-- If a command fails, diagnose the error and fix it yourself instead of telling the user to fix it.
-- When creating Python projects, always create a proper package structure with __init__.py files.
+- Always use tools (bash, write_file) to actually create files and run commands — do NOT just show code blocks.
+- When setting up projects, create ALL necessary files (requirements.txt, package.json, etc.) using write_file, then run install commands.
+- Check the OS and environment before suggesting platform-specific packages.
+- If a command fails, diagnose and fix it yourself — do not tell the user to fix it.
 - Test that your code actually works by running it after creating it.
-- SECURITY: If a tool returns "SECURITY RESTRICTION" or "Access restricted", you MUST tell the user that access to the file/resource is restricted for security purposes. NEVER claim the file does not exist when access is denied.`
+- NEVER say "I will do X" or "Let me do X" without actually doing it with tools in the same response.
+- SECURITY: If a tool returns "SECURITY RESTRICTION" or "Access restricted", tell the user access is restricted. NEVER claim the file does not exist when access is denied.
 
-const DIRECT_SYSTEM = `You are Thirdwave AI, a friendly and helpful AI coding assistant. When greeted, respond warmly and briefly introduce yourself — mention you can help with coding tasks, file management, and development workflows. Keep greetings short and natural. Always provide complete, thorough answers. Never say "I will explain" or "I'll do" — instead, actually explain and do it immediately. When asked about code, provide full working solutions with explanations. When asked to analyze or fix code, show the complete corrected code and explain every change. Do not be lazy or skip details.`
+Remember: You are Thirdwave AI. Never claim to be ChatGPT, GPT, OpenAI, Claude, Gemini, or any other AI.`
+
+const DIRECT_SYSTEM = `Your name is Thirdwave AI. You are a friendly and helpful AI coding assistant created by Thirdwave. You are NOT ChatGPT, not GPT, not OpenAI — always identify yourself as Thirdwave AI.
+When greeted, respond warmly and briefly introduce yourself as Thirdwave AI — mention you can help with coding tasks, file management, and development workflows. Keep greetings short and natural. Always provide complete, thorough answers. Never say "I will explain" or "I'll do" — instead, actually explain and do it immediately. When asked about code, provide full working solutions with explanations. When asked to analyze or fix code, show the complete corrected code and explain every change. Do not be lazy or skip details.`
 
 // ── Text-based tool calling ──────────────────────────────────────────
 // Many local models (MiniMax, LLaMA, Qwen, etc.) don't support native
@@ -143,34 +167,45 @@ function parseTextToolCalls(text: string): Array<{ name: string; args: Record<st
     // Extract everything after </name> as the params section
     const afterName = block.slice(block.indexOf("</name>") + 7).trim()
     let args: Record<string, any> = {}
+    let resolved = false
 
-    // Strategy 1: <input>{JSON}</input>
+    // Strategy 1: <input>{JSON}</input> — canonical format
     const inputMatch = afterName.match(/<input>\s*([\s\S]*?)\s*<\/input>/)
     if (inputMatch) {
       const inputContent = inputMatch[1].trim()
+      // Try strict JSON parse first
       try {
         args = JSON.parse(inputContent)
+        resolved = true
       } catch {
-        // Strategy 2: <input><key>val</key>...</input> (XML tags inside input)
-        const tagRegex2 = /<(\w+)>([\s\S]*?)<\/\1>/g
-        let tm
-        while ((tm = tagRegex2.exec(inputContent)) !== null) {
-          args[tm[1]] = tm[2]
+        // Try fixing trailing commas (common model mistake)
+        try {
+          args = JSON.parse(inputContent.replace(/,\s*}/g, '}').replace(/,\s*]/g, ']'))
+          resolved = true
+        } catch {
+          // Strategy 2: <input><key>val</key>...</input> (XML tags inside input)
+          const tagRegex2 = /<(\w+)>([\s\S]*?)<\/\1>/g
+          let tm
+          while ((tm = tagRegex2.exec(inputContent)) !== null) {
+            args[tm[1]] = tm[2]
+          }
+          if (Object.keys(args).length > 0) resolved = true
         }
       }
     }
 
     // Strategy 3: <parameter name="key">val</parameter> (no input wrapper)
-    if (Object.keys(args).length === 0) {
+    if (!resolved) {
       const paramRegex = /<parameter\s+name=["'](\w+)["']>([\s\S]*?)<\/parameter>/g
       let pm
       while ((pm = paramRegex.exec(afterName)) !== null) {
         args[pm[1]] = pm[2]
       }
+      if (Object.keys(args).length > 0) resolved = true
     }
 
     // Strategy 4: direct XML tags after </name> (no input wrapper)
-    if (Object.keys(args).length === 0) {
+    if (!resolved) {
       const tagRegex3 = /<(\w+)>([\s\S]*?)<\/\1>/g
       let tm3
       while ((tm3 = tagRegex3.exec(afterName)) !== null) {
@@ -178,12 +213,7 @@ function parseTextToolCalls(text: string): Array<{ name: string; args: Record<st
       }
     }
 
-    if (Object.keys(args).length > 0) {
-      calls.push({ name, args })
-    } else {
-      // Last resort: pass entire afterName as raw
-      calls.push({ name, args: { _raw: afterName } })
-    }
+    calls.push({ name, args })
   }
   return calls
 }
@@ -193,6 +223,89 @@ function parseTextToolCalls(text: string): Array<{ name: string; args: Record<st
  */
 function stripToolBlocks(text: string): string {
   return text.replace(/<tool_use>[\s\S]*?<\/tool_use>/g, "").trim()
+}
+
+/**
+ * Classify task complexity to decide agent planning depth.
+ */
+function classifyComplexity(message: string): "simple" | "moderate" | "complex" {
+  const words = message.split(/\s+/).length
+  const multiStep = /\b(and then|after that|also|then|step \d|first.*then|1\.|2\.|3\.|multiple|several|all|every|entire|full|complete)\b/i.test(message)
+  const bigTask = /\b(create|build|setup|implement|refactor|migrate|deploy|redesign|rewrite|project|application|app|system|architecture)\b/i.test(message)
+  if ((words > 40 && bigTask) || (multiStep && bigTask)) return "complex"
+  if (words > 25 || multiStep || bigTask) return "moderate"
+  return "simple"
+}
+
+/**
+ * Compress conversation context when it grows too large.
+ * Keeps system prompt + recent messages, summarizes the middle.
+ */
+function compressMessages(
+  msgs: Array<Record<string, any>>,
+  maxChars: number,
+): Array<Record<string, any>> {
+  const total = msgs.reduce((n, m) => n + (typeof m.content === "string" ? m.content.length : JSON.stringify(m).length), 0)
+  if (total <= maxChars) return msgs
+
+  const system = msgs[0]
+  const keepLast = 6
+  if (msgs.length <= keepLast + 1) return msgs
+  const recent = msgs.slice(-keepLast)
+  const middle = msgs.slice(1, -keepLast)
+  if (middle.length === 0) return msgs
+
+  let summary = "[Earlier conversation compressed for context]\n"
+  for (const m of middle) {
+    const role = m.role ?? "?"
+    const content = typeof m.content === "string" ? m.content : ""
+    if (role === "assistant") {
+      const toolCount = (content.match(/<tool_use>/g) || []).length
+      const text = stripToolBlocks(content).slice(0, 120)
+      summary += `\u2022 Assistant: ${text}${toolCount > 0 ? ` [${toolCount} tool calls]` : ""}\n`
+    } else if (role === "tool") {
+      summary += `\u2022 Tool result: ${content.slice(0, 80).replace(/\n/g, " ")}\u2026\n`
+    } else if (role === "user") {
+      summary += `\u2022 User: ${content.slice(0, 120)}\n`
+    }
+  }
+
+  return [system, { role: "user", content: summary }, ...recent]
+}
+
+/**
+ * Build contextual feedback after tool execution — error-aware and progress-aware.
+ */
+function buildToolFeedback(
+  results: Array<{ tool: string; success: boolean; output: string }>,
+  round: number,
+  maxRounds: number,
+): string {
+  const succeeded = results.filter(r => r.success)
+  const failed = results.filter(r => !r.success)
+
+  let fb = "Tool execution results:\n"
+  for (const r of results) {
+    fb += `\n<tool_result>\n<name>${r.tool}</name>\n<status>${r.success ? "success" : "error"}</status>\n<output>\n${r.output.slice(0, 3000)}\n</output>\n</tool_result>\n`
+  }
+
+  if (failed.length > 0) {
+    fb += `\n\u26A0\uFE0F ${failed.length} tool(s) FAILED. Read the error carefully and try a different approach:`
+    for (const f of failed) {
+      fb += `\n  \u2022 ${f.tool}: ${f.output.slice(0, 200)}`
+    }
+    fb += `\nDo NOT repeat the same command. Diagnose the root cause and fix it (wrong path? missing dependency? syntax error?).`
+  } else {
+    fb += `\n\u2713 All ${succeeded.length} tool(s) succeeded.`
+  }
+
+  const remaining = maxRounds - round
+  if (remaining <= 3 && remaining > 0) {
+    fb += `\n\u23F3 ${remaining} tool round(s) remaining \u2014 prioritize the most critical steps.`
+  }
+
+  fb += `\nContinue with the next step, or provide a final summary if the task is complete.`
+  return fb
 }
 
 const MAX_TOOL_ROUNDS = 15
@@ -327,7 +440,28 @@ async function fetchGoogle(endpoint: string, apiKey: string, body: Record<string
   return new Response(JSON.stringify(openaiData), { status: 200, headers: { "Content-Type": "application/json" } })
 }
 
-export function chatRoutes() {
+/**
+ * Returns true when the user's message is a task request that likely needs tools,
+ * rather than a simple conversational question.
+ * Avoids nudging models to use tools for "who are you?" type questions.
+ */
+function taskNeedsTools(message: string): boolean {
+  const trimmed = message.trim()
+
+  // Explicit action keywords common in tool-use tasks
+  const ACTION_PATTERN = /\b(create|make|list|show|display|read|write|edit|update|modify|run|execute|check|build|install|delete|remove|fix|find|locate|search|fetch|get|download|git|npm|pip|bun|deno|bash|shell|command|cmd|file|files|directory|folder|dir|code|script|project|deploy|test|debug|analyze|generate|refactor|open|close|start|stop|kill|process|port|log|error|import|require|package|setup|configure|init|mkdir|touch|cat|grep|ls|pwd|cd|mv|cp|curl|wget|docker|what.s in|what is in|contents? of|implement|add|append|insert)\b/i
+
+  // Conversational-only patterns: "who are you", "what can you do", "what is X", etc.
+  // These are short single-sentence questions with no file/code/action intent.
+  const CONVERSATIONAL_PATTERN = /^(who|what|how|why|when|where|which|can you|could you|are you|is it|do you|would you|tell me about|explain|describe|what('s| is) (a|an|the|your))\b.{0,80}\??\.?\s*$/i
+
+  const hasActions = ACTION_PATTERN.test(trimmed)
+  const looksConversational = CONVERSATIONAL_PATTERN.test(trimmed) && !hasActions
+
+  return !looksConversational
+}
+
+export function chatRoutes(workspacesMgr?: WorkspaceManager, chatLog?: ChatLogStore) {
   return new Hono()
 
     /**
@@ -369,22 +503,64 @@ export function chatRoutes() {
       // Preserve the original model the user selected — even after 429 fallback
       const originalModelName = modelName
 
+      // Auto-register VS Code workspace when workspaceRoot is provided
+      if (body.workspaceRoot && workspacesMgr) {
+        // Validate workspaceRoot is a real directory
+        try {
+          const { statSync } = await import("fs")
+          const stat = statSync(body.workspaceRoot)
+          if (!stat.isDirectory()) {
+            console.warn(`[chat] workspaceRoot is not a directory: ${body.workspaceRoot}`)
+            body.workspaceRoot = undefined
+          }
+        } catch {
+          console.warn(`[chat] workspaceRoot does not exist: ${body.workspaceRoot}`)
+          body.workspaceRoot = undefined
+        }
+
+        if (body.workspaceRoot) {
+          try {
+            const existing = workspacesMgr.findByDirectory(body.workspaceRoot)
+            if (!existing) {
+              const name = body.workspaceRoot.split("/").filter(Boolean).pop() ?? "workspace"
+              workspacesMgr.create({ name, directory: body.workspaceRoot, tags: ["vscode"] })
+            } else {
+              // Update last-accessed timestamp by switching (non-destructive)
+              workspacesMgr.update(existing.id, {})
+            }
+          } catch {
+            // Directory may not exist on the server — silently skip
+          }
+        }
+      }
+
       // Build initial messages
       const useTools = body.tools !== false
       const messages: Array<Record<string, any>> = []
 
-      // Build system prompt: base instructions + tool use format (for text-based fallback)
+      // Build system prompt: identity + base instructions + tool use format
+      // Identity MUST come first so models don't fall back to training defaults ("ChatGPT").
       let systemContent = body.system ?? (useTools ? DEFAULT_SYSTEM : DIRECT_SYSTEM)
       if (useTools) {
-        // Always prepend tool usage instructions so models that can't use native
-        // function calling know how to invoke tools via XML text blocks.
-        systemContent = TOOL_USE_INSTRUCTIONS + "\n\n" + systemContent
+        // Append tool usage instructions AFTER identity/rules so the model's
+        // persona is established before the long tool reference block.
+        systemContent = systemContent + "\n\n" + TOOL_USE_INSTRUCTIONS
+        // Tell the model which workspace directory tools operate in
+        if (body.workspaceRoot) {
+          systemContent += `\n\nIMPORTANT: The user's workspace root directory is: ${body.workspaceRoot}\nAll relative file paths in tool calls resolve relative to this directory. Use "." to refer to the workspace root.`
+        }
       }
       messages.push({ role: "system", content: systemContent })
       if (body.history?.length) {
         for (const h of body.history) messages.push({ role: h.role, content: h.content })
       }
       messages.push({ role: "user", content: body.message })
+
+      // For complex tasks, inject a planning nudge to encourage structured execution
+      const complexity = classifyComplexity(body.message)
+      if (useTools && complexity === "complex" && taskNeedsTools(body.message)) {
+        messages[messages.length - 1].content += "\n\n[Think step-by-step: plan your approach in 2-3 concrete steps, then begin executing immediately with tools. Verify each step before moving to the next.]"
+      }
 
       // Clamp max_tokens to respect model limits and prevent OOM
       const modelOutputLimit = resolved.outputLimit ?? 4096
@@ -411,6 +587,17 @@ export function chatRoutes() {
 
       // ── Agentic loop: call model → execute tools → feed back ──
       for (let round = 0; round <= maxRounds; round++) {
+        // Compress context when it grows too large (~80K chars ≈ 20K tokens)
+        if (round > 2) {
+          const beforeLen = messages.length
+          const compressed = compressMessages(messages, 80_000)
+          if (compressed.length < beforeLen) {
+            messages.length = 0
+            messages.push(...compressed)
+            console.log(`[chat] Round ${round}: Compressed context ${beforeLen} → ${compressed.length} messages`)
+          }
+        }
+
         const reqBody: Record<string, any> = {
           model: modelApiId,
           messages,
@@ -533,18 +720,24 @@ export function chatRoutes() {
         console.log(`[chat] Round ${round}: ${(msg.content ?? "").length} chars, ${msg.tool_calls?.length ?? 0} native calls, finish=${choice.finish_reason}`)
 
         // ── Handle empty response from model ────────────────────
-        // Some models (e.g. gpt-oss-120b) occasionally return empty content.
-        // Nudge them to use tools instead of returning "(no response)".
+        // Some models occasionally return empty content.
+        // Nudge them once more, then give a meaningful fallback.
         if (useTools && !msg.content && (!msg.tool_calls || msg.tool_calls.length === 0)) {
           if (round < 2) {
-            console.log(`[chat] Round ${round}: Empty response from ${modelApiId}, nudging model to use tools`)
+            console.log(`[chat] Round ${round}: Empty response from ${modelApiId}, nudging model to respond`)
             messages.push({
               role: "user",
-              content: "Your response was empty. You MUST respond by using the available tools. Include <tool_use> XML blocks in your reply. For example, to run a command: <tool_use><name>bash</name><input>{\"command\": \"echo hello\"}</input></tool_use>",
+              content: "Your response was empty. Please respond to the user's question directly. If you need to use tools, include <tool_use> XML blocks. If no tools are needed, just answer the question in plain text.",
             })
             continue // retry round
           }
-          console.log(`[chat] Round ${round}: Model ${modelApiId} keeps returning empty — giving up`)
+          console.log(`[chat] Round ${round}: Model ${modelApiId} keeps returning empty — returning fallback`)
+          // Synthesize a response so the user isn't left with nothing
+          const fallbackData = {
+            choices: [{ message: { role: "assistant", content: `I wasn't able to generate a response for this request. The model (${modelName}) returned empty content after ${round + 1} attempts.\n\nThis can happen when:\n- The model is overloaded or the request is too complex\n- The prompt exceeded the model's context window\n- A security policy restricted the action\n\nTry rephrasing your request, simplifying it, or switching to a different model.` }, finish_reason: "stop" }],
+            usage: { prompt_tokens: totalInput, completion_tokens: 0 },
+          }
+          return logAndReturn(c, fallbackData, Date.now() - start, originalModelName, providerName, totalInput, totalOutput, toolLog, chatLog, body.sessionId, body.message)
         }
 
         // ── Check for tool calls ────────────────────────────────
@@ -586,42 +779,54 @@ export function chatRoutes() {
             // Add assistant message to history
             messages.push({ role: "assistant", content: msg.content })
 
-            // Execute each text-based tool call
-            let toolResultsText = "Tool execution results:\n"
-            for (const tc of textToolCalls) {
-              const result = await executeTool(tc.name, tc.args, body.workspaceRoot)
+            // Execute text-based tool calls in parallel for speed
+            const toolPromises = textToolCalls.map(tc =>
+              executeTool(tc.name, tc.args, body.workspaceRoot).then(result => ({ tc, result }))
+            )
+            const toolOutcomes = await Promise.all(toolPromises)
+
+            const roundResults: Array<{ tool: string; success: boolean; output: string }> = []
+            for (const { tc, result } of toolOutcomes) {
               toolLog.push({
                 tool: tc.name,
                 args: tc.args,
                 result: result.output.slice(0, 2000),
                 success: result.success,
               })
-              toolResultsText += `\n<tool_result>\n<name>${tc.name}</name>\n<status>${result.success ? "success" : "error"}</status>\n<output>\n${result.output.slice(0, 3000)}\n</output>\n</tool_result>\n`
+              roundResults.push({ tool: tc.name, success: result.success, output: result.output })
             }
 
-            // Feed results back as a user message (since text-based tools
-            // don't have tool_call_id, we use user role for the results)
-            toolResultsText += "\nContinue with any remaining steps, or provide a summary of what was done."
+            // Feed results back with context-aware feedback
+            const toolResultsText = buildToolFeedback(roundResults, round, maxRounds)
             messages.push({ role: "user", content: toolResultsText })
             continue  // next round — model gets tool results
           }
         }
 
-        // ── Nudge: model replied with text but no tools on early rounds ─
-        // Some models (gpt-oss-120b, etc.) occasionally hallucinate answers
-        // instead of using <tool_use> XML blocks. Give them one retry.
-        if (useTools && round === 0 && msg.content && toolLog.length === 0) {
-          console.log(`[chat] Round 0: Model responded without tools, nudging to use <tool_use>`)
-          messages.push({ role: "assistant", content: msg.content })
-          messages.push({
-            role: "user",
-            content: "IMPORTANT: You MUST actually use tools to complete this task. Include <tool_use><name>TOOL</name><input>{JSON}</input></tool_use> blocks in your response. Do NOT fabricate file contents or command output. Use the appropriate tool to get real results.",
-          })
-          continue
+        // ── Self-correction: detect responses that promise action without tools ─
+        // Catches both round-0 no-tool replies AND later rounds where the model
+        // says "I'll do X" without actually invoking anything.
+        if (useTools && msg.content && round < maxRounds - 1 && taskNeedsTools(body.message)) {
+          const noToolsYet = toolLog.length === 0
+          const lazyPattern = /\b(i('ll| will| would| can| shall) (now |then )?(create|set up|run|execute|write|implement|build|make|add|install|fix|read|check|deploy|configure))/i
+          const isLazy = lazyPattern.test(msg.content) && noToolsYet
+          const isNoToolRound0 = round === 0 && noToolsYet
+
+          if (isLazy || isNoToolRound0) {
+            console.log(`[chat] Round ${round}: ${isLazy ? "Lazy response" : "No-tool reply"} detected — nudging to use tools`)
+            messages.push({ role: "assistant", content: msg.content })
+            messages.push({
+              role: "user",
+              content: round === 0
+                ? "IMPORTANT: You MUST actually use tools to complete this task. Include <tool_use><name>TOOL</name><input>{JSON}</input></tool_use> blocks in your response. Do NOT fabricate file contents or command output — use tools to get real results."
+                : "You described what you would do but did not use any tools. Use <tool_use> blocks to ACTUALLY execute the steps NOW. Do not describe — act.",
+            })
+            continue
+          }
         }
 
         // ── No tool calls — final response ──────────────────────
-        return formatFinalResponse(c, data, Date.now() - start, originalModelName, providerName, totalInput, totalOutput, toolLog)
+        return logAndReturn(c, data, Date.now() - start, originalModelName, providerName, totalInput, totalOutput, toolLog, chatLog, body.sessionId, body.message)
       }
 
       // ── Max rounds exceeded ───────────────────────────────────
@@ -825,9 +1030,54 @@ export function chatRoutes() {
         })),
       })
     })
+
+    /**
+     * GET /api/chat/sessions — list VS Code extension chat sessions from platform log
+     */
+    .get("/sessions", (c) => {
+      if (!chatLog) return c.json([])
+      const limit = c.req.query("limit") ? Number(c.req.query("limit")) : 50
+      return c.json(chatLog.listSessions(limit))
+    })
+
+    /**
+     * GET /api/chat/sessions/:id — get all messages in a session
+     */
+    .get("/sessions/:id", (c) => {
+      if (!chatLog) return c.json({ error: "not_found" }, 404)
+      const entries = chatLog.getEntries(c.req.param("id"))
+      if (entries.length === 0) return c.json({ error: "not_found" }, 404)
+      return c.json(entries)
+    })
 }
 
 // ── Response formatter ───────────────────────────────────────────────
+
+/** Log exchange to chat history and return response. */
+function logAndReturn(
+  c: any, data: any, latencyMs: number,
+  modelName: string, providerName: string,
+  extraInput: number, extraOutput: number,
+  toolLog: Array<{ tool: string; args: Record<string, any>; result: string; success: boolean }>,
+  chatLog: ChatLogStore | undefined,
+  sessionId: string | undefined,
+  userMessage: string,
+) {
+  if (chatLog && sessionId) {
+    const text = stripToolBlocks(data.choices?.[0]?.message?.content ?? "")
+    try {
+      chatLog.store({
+        sessionId,
+        userMessage,
+        assistantReply: text || "(no response)",
+        model: modelName,
+        toolCallCount: toolLog.length,
+        latencyMs,
+      })
+    } catch {}
+  }
+  return formatFinalResponse(c, data, latencyMs, modelName, providerName, extraInput, extraOutput, toolLog)
+}
 
 function formatFinalResponse(
   c: any,

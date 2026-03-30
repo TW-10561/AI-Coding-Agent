@@ -43,6 +43,7 @@ import { policyRoutes } from "./routes/policies"
 import { SkillManager } from "../services/skill-manager"
 import { PolicyEngine } from "../services/policy-engine"
 import { HITLService } from "../services/hitl-service"
+import { ChatLogStore } from "../services/chat-log"
 import { buildRegistry, startRegistryPolling } from "../services/provider-registry"
 import { hitlRoutes } from "./routes/hitl"
 
@@ -69,6 +70,7 @@ try { mkdirSync(dataDir, { recursive: true }) } catch {}
 const audit = new AuditLogger({ dbPath: dataDir + "/audit.db" })
 const budget = new BudgetManager({ dbPath: dataDir + "/budget.db" })
 const workspaces = new WorkspaceManager({ dbPath: dataDir + "/workspaces.db" })
+const chatLog = new ChatLogStore({ dbPath: dataDir + "/chat-log.db" })
 const taskTracker = new TaskStateTracker({ dbPath: dataDir + "/tasks.db" })
 const scalableQueue = new ScalableQueue({
   client,
@@ -165,48 +167,73 @@ app.get("/", async (c) => {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Thirdwave AI Coding Platform</title>
   <style>
+    :root {
+      --bg: #0a0a0f; --fg: #e0e0e8; --card: #13131a; --card-border: #1e1e2e;
+      --tab-bg: #1a1a24; --tab-border: #2a2a3a; --tab-hover: #22223a; --tab-fg: #888;
+      --muted: #888; --dim: #555; --pre-bg: #0e0e16; --code-bg: #1a1a24;
+      --td-border: #111118; --th-color: #555; --footer-color: #333;
+      --btn-sec-bg: #1e1e2e; --btn-sec-fg: #a78bfa; --btn-sec-border: #2e2e3e;
+    }
+    :root[data-theme="light"] {
+      --bg: #f4f4f8; --fg: #1a1a2e; --card: #ffffff; --card-border: #d4d4e4;
+      --tab-bg: #e8e8f0; --tab-border: #c8c8d8; --tab-hover: #d4d4e4; --tab-fg: #555;
+      --muted: #666; --dim: #999; --pre-bg: #f0f0f8; --code-bg: #e8e8f8;
+      --td-border: #e0e0f0; --th-color: #999; --footer-color: #aaa;
+      --btn-sec-bg: #e8e8f8; --btn-sec-fg: #6366f1; --btn-sec-border: #c8c8e8;
+    }
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: 'Inter', -apple-system, sans-serif; background: #0a0a0f; color: #e0e0e8; min-height: 100vh; }
+    body { font-family: 'Inter', -apple-system, sans-serif; background: var(--bg); color: var(--fg); min-height: 100vh; transition: background 0.2s, color 0.2s; }
     .container { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
     h1 { font-size: 2rem; font-weight: 700; background: linear-gradient(135deg, #6366f1, #a855f7, #ec4899); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 4px; }
-    .subtitle { color: #888; font-size: 0.9rem; margin-bottom: 24px; }
+    .subtitle { color: var(--muted); font-size: 0.9rem; margin-bottom: 24px; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin-bottom: 24px; }
-    .card { background: #13131a; border: 1px solid #1e1e2e; border-radius: 12px; padding: 18px; }
-    .card h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: #666; margin-bottom: 10px; }
+    .card { background: var(--card); border: 1px solid var(--card-border); border-radius: 12px; padding: 18px; }
+    .card h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--dim); margin-bottom: 10px; }
     .status { display: flex; align-items: center; gap: 8px; font-size: 1rem; font-weight: 600; }
-    .dot { width: 10px; height: 10px; border-radius: 50%; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
     .dot.ok { background: #22c55e; box-shadow: 0 0 8px #22c55e88; }
     .dot.err { background: #ef4444; box-shadow: 0 0 8px #ef444488; }
-
     .tabs { display: flex; gap: 4px; margin-bottom: 16px; flex-wrap: wrap; }
-    .tab { background: #1a1a24; border: 1px solid #2a2a3a; border-radius: 8px; padding: 8px 16px; cursor: pointer; color: #888; font-size: 0.85rem; transition: all 0.2s; }
-    .tab:hover { background: #22223a; color: #e0e0e8; }
+    .tab { background: var(--tab-bg); border: 1px solid var(--tab-border); border-radius: 8px; padding: 8px 16px; cursor: pointer; color: var(--tab-fg); font-size: 0.85rem; transition: all 0.2s; }
+    .tab:hover { background: var(--tab-hover); color: var(--fg); }
     .tab.active { background: #6366f1; border-color: #6366f1; color: #fff; }
     .panel { display: none; }
     .panel.active { display: block; }
     table { width: 100%; border-collapse: collapse; }
-    th { text-align: left; padding: 8px 12px; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: #555; border-bottom: 1px solid #1e1e2e; }
-    td { padding: 7px 12px; font-size: 0.85rem; border-bottom: 1px solid #111118; }
+    th { text-align: left; padding: 8px 12px; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--th-color); border-bottom: 1px solid var(--card-border); }
+    td { padding: 7px 12px; font-size: 0.85rem; border-bottom: 1px solid var(--td-border); }
     td a { color: #818cf8; text-decoration: none; }
     td a:hover { text-decoration: underline; }
-    code { background: #1a1a24; padding: 2px 6px; border-radius: 4px; font-size: 0.82rem; color: #a78bfa; }
+    code { background: var(--code-bg); padding: 2px 6px; border-radius: 4px; font-size: 0.82rem; color: #a78bfa; }
     .ok-text { color: #22c55e; } .err-text { color: #ef4444; } .warn-text { color: #f59e0b; }
-    .footer { margin-top: 32px; color: #333; font-size: 0.75rem; text-align: center; }
-    pre { background: #0e0e16; border: 1px solid #1e1e2e; border-radius: 8px; padding: 14px; overflow-x: auto; font-size: 0.82rem; color: #c4b5fd; max-height: 400px; overflow-y: auto; }
+    .footer { margin-top: 32px; color: var(--footer-color); font-size: 0.75rem; text-align: center; }
+    pre { background: var(--pre-bg); border: 1px solid var(--card-border); border-radius: 8px; padding: 14px; overflow-x: auto; font-size: 0.82rem; color: #c4b5fd; max-height: 400px; overflow-y: auto; }
+    :root[data-theme="light"] pre { color: #4c1d95; }
     .btn { background: #6366f1; color: #fff; border: none; border-radius: 8px; padding: 8px 18px; cursor: pointer; font-size: 0.85rem; margin: 4px; transition: background 0.2s; }
     .btn:hover { background: #4f46e5; }
-    .btn.secondary { background: #1e1e2e; color: #a78bfa; border: 1px solid #2e2e3e; }
-    .btn.secondary:hover { background: #2a2a3e; }
-    .stat-num { font-size: 1.8rem; font-weight: 700; color: #e0e0e8; }
-    .stat-label { font-size: 0.75rem; color: #666; margin-top: 2px; }
+    .btn.secondary { background: var(--btn-sec-bg); color: var(--btn-sec-fg); border: 1px solid var(--btn-sec-border); }
+    .btn.secondary:hover { background: var(--tab-hover); }
+    .stat-num { font-size: 1.8rem; font-weight: 700; color: var(--fg); }
+    .stat-label { font-size: 0.75rem; color: var(--dim); margin-top: 2px; }
     #output { margin-top: 12px; }
-    .refresh-note { color: #555; font-size: 0.75rem; margin-top: 8px; }
+    .refresh-note { color: var(--dim); font-size: 0.75rem; margin-top: 8px; }
+    .header-controls { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+    .ws-card { background: var(--pre-bg); border: 1px solid var(--card-border); border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }
+    .ws-name { font-weight: 600; font-size: 1rem; color: var(--fg); }
+    .ws-dir { font-size: 0.82rem; color: var(--muted); margin-top: 2px; font-family: monospace; }
+    .ws-tag { display: inline-block; background: var(--code-bg); color: #a78bfa; border-radius: 4px; padding: 1px 7px; font-size: 0.78rem; margin: 3px 3px 0 0; }
+    .ws-active-badge { background: #22c55e22; color: #22c55e; border: 1px solid #22c55e44; border-radius: 4px; padding: 1px 8px; font-size: 0.75rem; font-weight: 600; margin-left: 8px; }
+    .ws-meta { font-size: 0.78rem; color: var(--dim); margin-top: 4px; }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1>Thirdwave AI Coding Platform</h1>
-    <p class="subtitle">Self-hosted AI coding engine powered by local vLLM &mdash; no cloud APIs</p>
+    <div class="header-controls">
+      <h1 data-i18n="title">Thirdwave AI Coding Platform</h1>
+      <button class="btn secondary" id="theme-toggle" onclick="toggleTheme()" style="padding:5px 12px;font-size:0.85rem;margin-left:auto">☀️</button>
+      <button class="btn secondary" id="lang-toggle" onclick="toggleLang()" style="padding:5px 12px;font-size:0.85rem">日本語</button>
+    </div>
+    <p class="subtitle" data-i18n="subtitle">Self-hosted AI coding engine powered by local vLLM &mdash; no cloud APIs</p>
 
     <div class="grid">
       <div class="card">
@@ -215,7 +242,7 @@ app.get("/", async (c) => {
       </div>
       <div class="card">
         <h3>OpenCode Engine</h3>
-        <div class="status"><span class="dot ${health.ok ? 'ok' : 'err'}"></span> ${health.ok ? 'Connected' : 'Unreachable'}</div>
+        <div class="status"><span class="dot ${health.ok ? 'ok' : 'err'}"></span> ${health.ok ? 'Connected' : 'Starting up…'}</div>
       </div>
       <div class="card">
         <h3>LLM Provider</h3>
@@ -225,15 +252,14 @@ app.get("/", async (c) => {
 
     <!-- Tabbed Dashboard -->
     <div class="tabs">
-      <div class="tab active" data-tab="audit">Audit Logs</div>
-      <div class="tab" data-tab="budget">Budget</div>
-      <div class="tab" data-tab="workspaces">Workspaces</div>
-      <div class="tab" data-tab="queue">Queue</div>
-      <div class="tab" data-tab="orchestrations">Orchestrations</div>
-      <div class="tab" data-tab="parallel">Parallel</div>
-      <div class="tab" data-tab="sessions">Sessions</div>
-      <div class="tab" data-tab="models">Models</div>
-      <div class="tab" data-tab="api">API Reference</div>
+      <div class="tab active" data-tab="audit" data-i18n-tab="audit">Audit Logs</div>
+      <div class="tab" data-tab="workspaces" data-i18n-tab="workspaces">Workspaces</div>
+      <div class="tab" data-tab="queue" data-i18n-tab="queue">Queue</div>
+      <div class="tab" data-tab="orchestrations" data-i18n-tab="orchestrations">Orchestrations</div>
+      <div class="tab" data-tab="parallel" data-i18n-tab="parallel">Parallel</div>
+      <div class="tab" data-tab="sessions" data-i18n-tab="sessions">Sessions</div>
+      <div class="tab" data-tab="models" data-i18n-tab="models">Models</div>
+      <div class="tab" data-tab="api" data-i18n-tab="api">API Reference</div>
     </div>
 
     <!-- AUDIT PANEL -->
@@ -248,21 +274,14 @@ app.get("/", async (c) => {
       </div>
     </div>
 
-    <!-- BUDGET PANEL -->
-    <div class="panel" id="panel-budget">
-      <div class="card">
-        <h3>Budget Check <button class="btn secondary" style="float:right;padding:4px 12px;font-size:0.75rem" onclick="loadBudget()">Refresh</button></h3>
-        <div id="budget-check" style="margin-bottom:12px;color:#666">Loading...</div>
-        <h3>Usage Summary</h3>
-        <pre id="budget-summary">Loading...</pre>
-      </div>
-    </div>
-
     <!-- WORKSPACES PANEL -->
     <div class="panel" id="panel-workspaces">
       <div class="card">
-        <h3>Workspaces <button class="btn secondary" style="float:right;padding:4px 12px;font-size:0.75rem" onclick="loadWorkspaces()">Refresh</button></h3>
-        <pre id="workspaces-list">Loading...</pre>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+          <h3 style="margin:0" data-i18n="workspacesTitle">Workspaces</h3>
+          <button class="btn secondary" style="padding:4px 12px;font-size:0.75rem" onclick="loadWorkspaces()" data-i18n="refresh">Refresh</button>
+        </div>
+        <div id="workspaces-list"><div style="color:var(--muted)">Loading...</div></div>
       </div>
     </div>
 
@@ -343,8 +362,6 @@ app.get("/", async (c) => {
             <tr><td><code>POST</code></td><td>/api/sessions/:id/prompt</td><td>Send prompt to LLM</td></tr>
             <tr><td><code>GET</code></td><td><a href="/api/audit">/api/audit</a></td><td>Audit logs</td></tr>
             <tr><td><code>GET</code></td><td><a href="/api/audit/stats">/api/audit/stats</a></td><td>Audit statistics</td></tr>
-            <tr><td><code>GET</code></td><td><a href="/api/budget/summary">/api/budget/summary</a></td><td>Budget usage</td></tr>
-            <tr><td><code>GET</code></td><td><a href="/api/budget/check">/api/budget/check</a></td><td>Budget check</td></tr>
             <tr><td><code>GET</code></td><td><a href="/api/workspaces">/api/workspaces</a></td><td>List workspaces</td></tr>
             <tr><td><code>GET</code></td><td><a href="/api/queue/metrics">/api/queue/metrics</a></td><td>Queue metrics</td></tr>
             <tr><td><code>GET</code></td><td><a href="/api/orchestrations">/api/orchestrations</a></td><td>Orchestrations</td></tr>
@@ -375,6 +392,75 @@ app.get("/", async (c) => {
     function pretty(obj) { return JSON.stringify(obj, null, 2); }
     function esc(s) { const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
 
+    // ── i18n ──────────────────────────────────────────────────────────
+    const TRANSLATIONS = {
+      en: {
+        title: 'Thirdwave AI Coding Platform',
+        subtitle: 'Self-hosted AI coding engine powered by local vLLM \u2014 no cloud APIs',
+        refresh: 'Refresh',
+        workspacesTitle: 'Workspaces',
+        tabs: { audit: 'Audit Logs', workspaces: 'Workspaces', queue: 'Queue',
+                orchestrations: 'Orchestrations', parallel: 'Parallel',
+                sessions: 'Sessions', models: 'Models', api: 'API Reference' },
+        noWorkspaces: 'No workspaces yet. Open a project in VS Code and send a message to auto-register.',
+        loading: 'Loading...',
+        active: 'ACTIVE',
+        totalRequests: 'Total Requests',
+        errors: 'Errors',
+        avgDuration: 'Avg Duration (ms)',
+        noAudit: 'No audit entries yet.',
+      },
+      ja: {
+        title: 'Thirdwave AI \u30b3\u30fc\u30c7\u30a3\u30f3\u30b0\u30d7\u30e9\u30c3\u30c8\u30d5\u30a9\u30fc\u30e0',
+        subtitle: '\u30ed\u30fc\u30ab\u30eb vLLM \u3067\u52d5\u4f5c\u3059\u308b\u30bb\u30eb\u30d5\u30db\u30b9\u30c8\u578b AI \u30b3\u30fc\u30c7\u30a3\u30f3\u30b0\u30a8\u30f3\u30b8\u30f3',
+        refresh: '\u66f4\u65b0',
+        workspacesTitle: '\u30ef\u30fc\u30af\u30b9\u30da\u30fc\u30b9',
+        tabs: { audit: '\u76e3\u67fb\u30ed\u30b0', workspaces: '\u30ef\u30fc\u30af\u30b9\u30da\u30fc\u30b9', queue: '\u30ad\u30e5\u30fc',
+                orchestrations: '\u30aa\u30fc\u30b1\u30b9\u30c8\u30ec\u30fc\u30b7\u30e7\u30f3', parallel: '\u4e26\u5217\u5b9f\u884c',
+                sessions: '\u30bb\u30c3\u30b7\u30e7\u30f3', models: '\u30e2\u30c7\u30eb', api: 'API \u30ea\u30d5\u30a1\u30ec\u30f3\u30b9' },
+        noWorkspaces: 'VS Code \u3067\u30d7\u30ed\u30b8\u30a7\u30af\u30c8\u3092\u958b\u304d\u3001\u30e1\u30c3\u30bb\u30fc\u30b8\u3092\u9001\u4fe1\u3059\u308b\u3068\u81ea\u52d5\u767b\u9332\u3055\u308c\u307e\u3059\u3002',
+        loading: '\u8aad\u307f\u8fbc\u307f\u4e2d...',
+        active: '\u30a2\u30af\u30c6\u30a3\u30d6',
+        totalRequests: '\u30ea\u30af\u30a8\u30b9\u30c8\u6570',
+        errors: '\u30a8\u30e9\u30fc\u6570',
+        avgDuration: '\u5e73\u5747\u51e6\u7406\u6642\u9593 (ms)',
+        noAudit: '\u307e\u3060\u30a8\u30f3\u30c8\u30ea\u304c\u3042\u308a\u307e\u305b\u3093\u3002',
+      }
+    };
+    let currentLang = localStorage.getItem('lang') || 'en';
+    function applyLang(lang) {
+      const t = TRANSLATIONS[lang];
+      document.querySelectorAll('[data-i18n]').forEach(el => {
+        const key = el.dataset.i18n;
+        if (t[key]) el.textContent = t[key];
+      });
+      document.querySelectorAll('[data-i18n-tab]').forEach(el => {
+        const key = el.dataset.i18nTab;
+        if (t.tabs[key]) el.textContent = t.tabs[key];
+      });
+      document.getElementById('lang-toggle').textContent = lang === 'en' ? '\u65e5\u672c\u8a9e' : 'EN';
+    }
+    function toggleLang() {
+      currentLang = currentLang === 'en' ? 'ja' : 'en';
+      localStorage.setItem('lang', currentLang);
+      applyLang(currentLang);
+    }
+
+    // ── Theme ─────────────────────────────────────────────────────────
+    function applyTheme(theme) {
+      document.documentElement.dataset.theme = theme;
+      document.getElementById('theme-toggle').textContent = theme === 'dark' ? '\u2600\ufe0f' : '\ud83c\udf19';
+    }
+    function toggleTheme() {
+      const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+      localStorage.setItem('theme', next);
+      applyTheme(next);
+    }
+
+    // ── Init ──────────────────────────────────────────────────────────
+    applyTheme(localStorage.getItem('theme') || 'dark');
+    applyLang(currentLang);
+
     // Tab switching
     document.querySelectorAll('.tab').forEach(tab => {
       tab.addEventListener('click', () => {
@@ -382,8 +468,7 @@ app.get("/", async (c) => {
         document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
         tab.classList.add('active');
         document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
-        // Auto-load data for the tab
-        const loaders = { audit: loadAudit, budget: loadBudget, workspaces: loadWorkspaces, queue: loadQueue, orchestrations: loadOrchestrations, parallel: loadParallel, sessions: loadSessions, models: loadModels };
+        const loaders = { audit: loadAudit, workspaces: loadWorkspaces, queue: loadQueue, orchestrations: loadOrchestrations, parallel: loadParallel, sessions: loadSessions, models: loadModels };
         if (loaders[tab.dataset.tab]) loaders[tab.dataset.tab]();
       });
     });
@@ -391,47 +476,47 @@ app.get("/", async (c) => {
     async function loadAudit() {
       try {
         const stats = await fetchJSON('/api/audit/stats');
+        const t = TRANSLATIONS[currentLang];
         document.getElementById('audit-stats').innerHTML =
-          '<div class="card" style="padding:12px;text-align:center"><div class="stat-num">' + (stats.total||0) + '</div><div class="stat-label">Total Requests</div></div>' +
-          '<div class="card" style="padding:12px;text-align:center"><div class="stat-num ' + (stats.errors > 0 ? 'err-text' : 'ok-text') + '">' + (stats.errors||0) + '</div><div class="stat-label">Errors</div></div>' +
-          '<div class="card" style="padding:12px;text-align:center"><div class="stat-num">' + (stats.avgDuration||0) + '</div><div class="stat-label">Avg Duration (ms)</div></div>';
+          '<div class="card" style="padding:12px;text-align:center"><div class="stat-num">' + (stats.total||0) + '</div><div class="stat-label">' + t.totalRequests + '</div></div>' +
+          '<div class="card" style="padding:12px;text-align:center"><div class="stat-num ' + (stats.errors > 0 ? 'err-text' : 'ok-text') + '">' + (stats.errors||0) + '</div><div class="stat-label">' + t.errors + '</div></div>' +
+          '<div class="card" style="padding:12px;text-align:center"><div class="stat-num">' + (stats.avgDuration||0) + '</div><div class="stat-label">' + t.avgDuration + '</div></div>';
 
         const entries = await fetchJSON('/api/audit?limit=20');
         if (entries.length === 0) {
-          document.getElementById('audit-entries').textContent = 'No audit entries yet.';
+          document.getElementById('audit-entries').textContent = t.noAudit;
         } else {
           document.getElementById('audit-entries').textContent = entries.map(e => {
-            const t = new Date(e.timestamp).toLocaleTimeString();
+            const tm = new Date(e.timestamp).toLocaleTimeString();
             const meta = typeof e.metadata === 'object' ? (e.metadata || {}) : (e.metadata ? JSON.parse(e.metadata) : {});
-            return (e.success ? 'OK' : 'ERR') + '  ' + t + '  ' + e.action + '  ' + (meta.method||'') + ' ' + (meta.path||'');
+            return (e.success ? 'OK' : 'ERR') + '  ' + tm + '  ' + e.action + '  ' + (meta.method||'') + ' ' + (meta.path||'');
           }).join('\\n');
         }
       } catch(e) { document.getElementById('audit-entries').textContent = 'Error: ' + e; }
     }
 
-    async function loadBudget() {
-      try {
-        const check = await fetchJSON('/api/budget/check');
-        document.getElementById('budget-check').innerHTML =
-          '<span class="' + (check.allowed ? 'ok-text' : 'err-text') + '" style="font-size:1.2rem;font-weight:600">' +
-          (check.allowed ? '\\u2705 Budget OK — requests allowed' : '\\u274C Budget exceeded — requests blocked') + '</span>';
-
-        const summary = await fetchJSON('/api/budget/summary');
-        document.getElementById('budget-summary').textContent = pretty(summary);
-      } catch(e) { document.getElementById('budget-summary').textContent = 'Error: ' + e; }
-    }
-
     async function loadWorkspaces() {
+      const container = document.getElementById('workspaces-list');
       try {
         const list = await fetchJSON('/api/workspaces');
+        const t = TRANSLATIONS[currentLang];
         if (list.length === 0) {
-          document.getElementById('workspaces-list').textContent = 'No workspaces yet.\\nCreate one: POST /api/workspaces { "name": "my-project", "directory": "/path/to/project" }';
+          container.innerHTML = '<div style="color:var(--muted);padding:12px">' + esc(t.noWorkspaces) + '</div>';
         } else {
-          document.getElementById('workspaces-list').textContent = list.map(ws =>
-            (ws.active ? '[ACTIVE] ' : '         ') + ws.name + '  ' + ws.id.slice(0,8) + '\\n         ' + ws.directory + (ws.tags?.length ? '  tags: ' + ws.tags.join(', ') : '')
-          ).join('\\n\\n');
+          container.innerHTML = list.map(ws => {
+            const lastSeen = new Date(ws.lastAccessedAt).toLocaleString();
+            const tags = (ws.tags||[]).map(tag => '<span class="ws-tag">' + esc(tag) + '</span>').join('');
+            const activeBadge = ws.active ? '<span class="ws-active-badge">' + t.active + '</span>' : '';
+            return '<div class="ws-card">' +
+              '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px">' +
+              '<span class="ws-name">' + esc(ws.name) + '</span>' + activeBadge + tags +
+              '</div>' +
+              '<div class="ws-dir">' + esc(ws.directory) + '</div>' +
+              '<div class="ws-meta">' + lastSeen + ' &nbsp;&bull;&nbsp; id: ' + ws.id.slice(0,8) + '</div>' +
+              '</div>';
+          }).join('');
         }
-      } catch(e) { document.getElementById('workspaces-list').textContent = 'Error: ' + e; }
+      } catch(e) { container.innerHTML = '<div style="color:var(--muted)">Error: ' + esc(String(e)) + '</div>'; }
     }
 
     async function loadQueue() {
@@ -465,12 +550,16 @@ app.get("/", async (c) => {
 
     async function loadSessions() {
       try {
-        const list = await fetchJSON('/api/sessions');
-        if (list.length === 0) {
-          document.getElementById('sessions-list').textContent = 'No sessions yet.';
+        // Primary: VS Code extension chat log (platform-native)
+        const list = await fetchJSON('/api/chat/sessions');
+        const sessions = Array.isArray(list) ? list : [];
+        if (sessions.length === 0) {
+          document.getElementById('sessions-list').textContent = 'No chat sessions yet.\\n\\nSessions are recorded when you use the VS Code extension to chat with the agent.';
         } else {
-          document.getElementById('sessions-list').textContent = list.slice(0, 20).map(s =>
-            s.id.slice(0,12) + '  ' + (s.title || '(untitled)') + '\\n  ' + new Date(s.time?.created || s.createdAt).toLocaleString()
+          document.getElementById('sessions-list').textContent = sessions.map(s =>
+            new Date(s.lastMessageAt).toLocaleString() + '  [' + esc(s.model||'?') + ']' +
+            '\\n  ' + esc(s.title||'(untitled)') +
+            '\\n  ' + s.messageCount + ' messages  id: ' + s.id.slice(0,12)
           ).join('\\n\\n');
         }
       } catch(e) { document.getElementById('sessions-list').textContent = 'Error: ' + e; }
@@ -479,28 +568,27 @@ app.get("/", async (c) => {
     async function loadModels() {
       try {
         const reg = await fetchJSON('/api/registry');
-        let html = '<h4 style="color:#888;margin-bottom:8px">Local vLLM</h4>';
+        let html = '<h4 style="color:var(--muted);margin-bottom:8px">Local vLLM</h4>';
         if (reg.local && reg.local.length > 0) {
           for (const p of reg.local) {
             const dot = p.status === 'online' ? '<span class="dot ok"></span>' : '<span class="dot err"></span>';
-            html += '<div style="margin-bottom:12px;padding:10px;background:#0e0e16;border:1px solid #1e1e2e;border-radius:8px">';
+            html += '<div style="margin-bottom:12px;padding:10px;background:var(--pre-bg);border:1px solid var(--card-border);border-radius:8px">';
             html += '<div style="display:flex;align-items:center;gap:8px">' + dot + ' <strong>' + esc(p.name) + '</strong> <span style="color:' + (p.status==='online'?'#22c55e':'#ef4444') + '">' + esc(p.status) + '</span></div>';
-            html += '<div style="color:#555;font-size:0.8rem">' + esc(p.endpoint) + '</div>';
+            html += '<div style="color:var(--dim);font-size:0.8rem">' + esc(p.endpoint) + '</div>';
             for (const m of p.models) {
-              html += '<div style="color:#a78bfa;padding:2px 0 2px 16px">→ ' + esc(m.name||m.id) + (m.contextLimit ? ' <span style="color:#555">ctx:'+Math.floor(m.contextLimit/1000)+'k</span>':'') + '</div>';
+              html += '<div style="color:#a78bfa;padding:2px 0 2px 16px">→ ' + esc(m.name||m.id) + (m.contextLimit ? ' <span style="color:var(--dim)">ctx:'+Math.floor(m.contextLimit/1000)+'k</span>':'') + '</div>';
             }
             html += '</div>';
           }
-        } else { html += '<div style="color:#666">No local vLLM endpoints</div>'; }
+        } else { html += '<div style="color:var(--muted)">No local vLLM endpoints</div>'; }
         document.getElementById('local-models').innerHTML = html;
-        // Cloud providers → separate container
         let cloudHtml = '';
         if (reg.cloud) {
           for (const p of reg.cloud) {
-            cloudHtml += '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #111118"><span style="color:' + (p.configured?'#22c55e':'#555') + '">' + (p.configured?'✓':'○') + '</span> <span style="color:#e0e0e8">' + esc(p.name) + '</span> <span style="color:' + (p.configured?'#22c55e':'#666') + ';font-size:0.82rem">' + (p.configured?'Configured':'No API key — use /apikey in TUI') + '</span></div>';
+            cloudHtml += '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--td-border)"><span style="color:' + (p.configured?'#22c55e':'var(--dim)') + '">' + (p.configured?'✓':'○') + '</span> <span style="color:var(--fg)">' + esc(p.name) + '</span> <span style="color:' + (p.configured?'#22c55e':'var(--muted)') + ';font-size:0.82rem">' + (p.configured?'Configured':'No API key') + '</span></div>';
           }
         }
-        if (!cloudHtml) cloudHtml = '<div style="color:#666">No cloud providers</div>';
+        if (!cloudHtml) cloudHtml = '<div style="color:var(--muted)">No cloud providers</div>';
         document.getElementById('cloud-providers').innerHTML = cloudHtml;
       } catch(e) { document.getElementById('local-models').innerHTML = 'Error: ' + e; }
     }
@@ -530,7 +618,7 @@ app.route("/api/orchestrations", orchestrationRoutes(orchestrator))
 app.route("/api/queue", queueRoutes(scalableQueue, taskTracker))
 app.route("/api/parallel", parallelRoutes(parallelExecutor))
 app.route("/api/registry", registryRoutes())
-app.route("/api/chat", chatRoutes())
+app.route("/api/chat", chatRoutes(workspaces, chatLog))
 app.route("/api/skills", skillRoutes(skills))
 app.route("/api/policies", policyRoutes(policyEngine))
 app.route("/api/hitl", hitlRoutes(hitl))
@@ -614,6 +702,23 @@ app.notFound((c) => c.json({ error: "not_found", message: `${c.req.method} ${c.r
 
 // ── Start ─────────────────────────────────────────────────────────────
 
+// Auto-start OpenCode engine if not already running.
+// Skipped if this module was imported by start-all.ts (which starts OpenCode first).
+{
+  const { isPortFree } = await import("../config/env")
+  const ocPort = Number(new URL(env.OPENCODE_URL).port || "4096")
+  if (isPortFree(ocPort, "127.0.0.1")) {
+    // Port is free → OpenCode is not running → start it
+    try {
+      const { opencode } = await import("../services/opencode-process")
+      const ocUrl = await opencode.start({ directory: env.OPENCODE_DIR })
+      console.log(`[platform] OpenCode engine started at ${ocUrl}`)
+    } catch (e: any) {
+      console.warn(`[platform] Could not auto-start OpenCode: ${e.message} — platform will run in standalone mode`)
+    }
+  }
+}
+
 let serverPort = env.PORT
 
 // Auto-find a free port if requested (multi-user support)
@@ -638,12 +743,12 @@ const server = Bun.serve({
 })
 
 console.log(`
-┌─────────────────────────────────────────────────┐
-│  Thirdwave AI Coding Platform                     │
-│  Platform  →  http://${server.hostname}:${server.port}            │
-│  OpenCode  →  ${env.OPENCODE_URL}               │
-│  Env       →  ${env.NODE_ENV}                   │
-└─────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────┐
+│  Thirdwave AI Coding Platform                         │
+│  Platform  →  http://${server.hostname}:${server.port}│
+│  OpenCode  →  ${env.OPENCODE_URL}                     │
+│  Env       →  ${env.NODE_ENV}                         │
+└───────────────────────────────────────────────────────┘
 `)
 
 /** Gracefully stop the platform server and services */

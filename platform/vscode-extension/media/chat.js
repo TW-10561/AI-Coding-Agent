@@ -609,6 +609,37 @@
     }
   });
 
+  // ── Theme utilities ─────────────────────────────────────────────
+  var allThemeClasses = ['theme-vscode-light', 'theme-electric', 'theme-electric-light'];
+
+  function removeThemeClasses() {
+    allThemeClasses.forEach(function (c) { document.body.classList.remove(c); });
+  }
+
+  function isVSCodeLight() {
+    // Check VS Code's theme-kind attribute (set on body or html)
+    var kind = document.body.getAttribute('data-vscode-theme-kind')
+            || document.documentElement.getAttribute('data-vscode-theme-kind')
+            || '';
+    if (kind === 'vscode-light' || kind === 'vscode-high-contrast-light') return true;
+    if (kind) return false;
+    // Fallback: check body background luminance
+    var bg = getComputedStyle(document.body).backgroundColor || '';
+    var m = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+    if (!m) return false;
+    var luminance = (0.299 * parseInt(m[1]) + 0.587 * parseInt(m[2]) + 0.114 * parseInt(m[3])) / 255;
+    return luminance > 0.5;
+  }
+
+  function applyAutoTheme() {
+    var saved = localStorage.getItem('tw-theme') || '';
+    if (saved) return; // User has an explicit override — don't auto-detect
+    removeThemeClasses();
+    if (isVSCodeLight()) {
+      document.body.classList.add('theme-vscode-light');
+    }
+  }
+
   // ── Theme picker ───────────────────────────────────────────────
   var themePicker = document.getElementById('themePicker');
   if (themePicker) {
@@ -616,17 +647,27 @@
     var savedTheme = localStorage.getItem('tw-theme') || '';
     if (savedTheme === 'night') { savedTheme = ''; localStorage.setItem('tw-theme', ''); }
     if (savedTheme) {
-      document.body.className = 'theme-' + savedTheme;
+      removeThemeClasses();
+      document.body.classList.add('theme-' + savedTheme);
       themePicker.querySelectorAll('.theme-btn').forEach(function (b) {
         b.classList.toggle('sel', b.getAttribute('data-theme') === savedTheme);
       });
+    } else {
+      // Default "VS Code" theme — auto-detect light/dark
+      applyAutoTheme();
     }
     themePicker.addEventListener('click', function (e) {
       var btn = e.target.closest('.theme-btn');
       if (!btn) return;
       var theme = btn.getAttribute('data-theme');
-      // Remove all theme classes
-      document.body.className = theme ? 'theme-' + theme : '';
+      // Remove all custom theme classes
+      removeThemeClasses();
+      if (theme) {
+        document.body.classList.add('theme-' + theme);
+      } else {
+        // Default "VS Code" — auto-detect
+        applyAutoTheme();
+      }
       // Highlight selected button
       themePicker.querySelectorAll('.theme-btn').forEach(function (b) { b.classList.remove('sel'); });
       btn.classList.add('sel');
@@ -634,6 +675,11 @@
       localStorage.setItem('tw-theme', theme || '');
     });
   }
+
+  // Watch for VS Code theme changes (e.g. user switches theme via command palette)
+  var themeObserver = new MutationObserver(function () { applyAutoTheme(); });
+  themeObserver.observe(document.body, { attributes: true, attributeFilter: ['data-vscode-theme-kind'] });
+  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-vscode-theme-kind'] });
 
   // ── Language picker ────────────────────────────────────────────
   var langPicker = document.getElementById('langPicker');
@@ -2093,7 +2139,7 @@
   // Shown during active agent execution when HITL triggers "ask"
   function renderInlineHitlApproval(req) {
     if (!req || !req.id) return;
-    var msgsEl = document.getElementById('messages');
+    var msgsEl = document.getElementById('msgs');
     if (!msgsEl) return;
     var card = document.createElement('div');
     card.className = 'hitl-inline-card ' + esc(req.severity || 'medium');

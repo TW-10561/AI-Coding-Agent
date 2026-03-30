@@ -38,6 +38,7 @@ export interface DirectChatRequest {
     tools?: boolean;
     maxToolRounds?: number;
     workspaceRoot?: string;
+    sessionId?: string;
 }
 export interface DirectChatResponse {
     text: string;

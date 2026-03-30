@@ -249,7 +249,7 @@ body {
 .msgs::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background); border-radius: 3px; }
 
 .msg { padding: 10px 12px; border-bottom: 1px solid var(--bd); }
-.msg.user { background: rgba(0,136,255,.06); }
+.msg.user { background: var(--user-msg-bg, rgba(0,136,255,.06)); }
 .mh {
   display: flex; align-items: center; gap: 6px; margin-bottom: 6px;
   font-size: 11px; font-weight: 600;
@@ -277,7 +277,7 @@ body {
 .cpb {
   position: absolute; top: 6px; right: 6px; padding: 1px 8px;
   font-size: 10px; border: none; border-radius: 3px;
-  background: var(--vscode-button-secondaryBackground, rgba(255,255,255,.1));
+  background: var(--vscode-button-secondaryBackground, var(--hv));
   color: var(--fg); cursor: pointer; opacity: .7;
 }
 .cpb:hover { opacity: 1; }
@@ -340,7 +340,7 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
 /* Send button */
 .sb-send {
   padding: 0; width: 36px; height: 36px; border: none; border-radius: var(--r);
-  background: linear-gradient(135deg, #0088ff 0%, #0055cc 100%); color: #fff;
+  background: var(--accent); color: #fff;
   cursor: pointer; font-weight: 600; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
   transition: .15s; box-shadow: 0 2px 8px rgba(0,136,255,.25);
@@ -417,8 +417,8 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
 }
 @keyframes fadeInStep { from { opacity: 0; transform: translateX(-6px); } to { opacity: 1; transform: translateX(0); } }
 .tool-step-icon { font-size: 10px; width: 14px; text-align: center; flex-shrink: 0; }
-.tool-step-ok .tool-step-icon { color: #4ec9b0; }
-.tool-step-fail .tool-step-icon { color: #f14c4c; }
+.tool-step-ok .tool-step-icon { color: var(--ok); }
+.tool-step-fail .tool-step-icon { color: var(--err); }
 .tool-step-name { font-weight: 600; color: var(--fg); font-size: 11px; }
 .tool-step-arg {
   color: var(--mt); font-size: 10.5px; overflow: hidden;
@@ -625,7 +625,7 @@ select:focus, .si:focus { border-color: var(--vscode-focusBorder); }
   background: transparent; color: var(--fg); font-size: 12px; font-weight: 500;
   cursor: pointer; text-align: center; margin-bottom: 6px;
 }
-.cl-get-key-btn:hover { background: var(--vscode-editor-lineHighlightBackground, rgba(255,255,255,.04)); }
+.cl-get-key-btn:hover { background: var(--vscode-editor-lineHighlightBackground, var(--hv)); }
 .cl-note { font-size: 10px; color: var(--mt); line-height: 1.4; margin-bottom: 8px; }
 .cl-status-ok { font-size: 11px; color: var(--ok); margin-bottom: 8px; font-weight: 500; }
 .cl-save-btn {
@@ -647,7 +647,7 @@ select:focus, .si:focus { border-color: var(--vscode-focusBorder); }
   background: transparent; color: var(--mt); font-size: 14px; cursor: pointer;
   display: flex; align-items: center; justify-content: center; flex-shrink: 0;
 }
-.cl-model-clear:hover { color: var(--fg); background: var(--vscode-editor-lineHighlightBackground, rgba(255,255,255,.04)); }
+.cl-model-clear:hover { color: var(--fg); background: var(--vscode-editor-lineHighlightBackground, var(--hv)); }
 .cl-model-detail {
   margin-top: 10px; padding: 10px 12px; border: 1px solid var(--bd); border-radius: var(--r);
   background: var(--vscode-editor-lineHighlightBackground, rgba(255,255,255,.02));
@@ -678,7 +678,7 @@ select:focus, .si:focus { border-color: var(--vscode-focusBorder); }
   padding: 8px 12px; font-size: 11px; font-weight: 600; color: var(--fg);
   cursor: pointer; user-select: none;
 }
-.cl-config-summary:hover { background: rgba(255,255,255,.03); }
+.cl-config-summary:hover { background: var(--hv); }
 .cl-config-grid {
   display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 0 12px 10px;
 }
@@ -709,7 +709,7 @@ select:focus, .si:focus { border-color: var(--vscode-focusBorder); }
 }
 .cl-config-summary-bar b { color: var(--fg); }
 .cl-config-note {
-  padding: 4px 12px 8px; font-size: 10px; color: #d4a042; line-height: 1.4;
+  padding: 4px 12px 8px; font-size: 10px; color: var(--warn); line-height: 1.4;
 }
 
 /* INLINE DROPDOWNS — bottom toolbar */
@@ -863,7 +863,7 @@ select:focus, .si:focus { border-color: var(--vscode-focusBorder); }
 .slash-active { color: var(--ok); font-size: 14px; font-weight: 700; }
 
 /* ═══════════════════════════════════════════════════════════════
-   THEME: VS Code Light
+   THEME: VS Code Light  (also auto-applied when VS Code is light)
    Light theme using VS Code's own light variables with fallbacks
    ═══════════════════════════════════════════════════════════════ */
 body.theme-vscode-light {
@@ -877,13 +877,131 @@ body.theme-vscode-light {
   --cb: #f0f0f0;
   --accent: #0066cc;
   --dim: #0055aa;
+  --ok: #16a34a;
+  --warn: #ca8a04;
+  --err: #dc2626;
+  --user-msg-bg: rgba(0,102,204,.05);
 }
+/* Top bar */
 body.theme-vscode-light .topbar { background: #f8f8f8; border-color: #d1d5db; }
+/* Send button */
 body.theme-vscode-light .sb-send { background: linear-gradient(135deg, #0066cc 0%, #004499 100%); box-shadow: 0 2px 8px rgba(0,102,204,.2); }
-body.theme-vscode-light .msg.user { background: rgba(0,102,204,.05); }
 body.theme-vscode-light .sb-send.stop-mode { background: linear-gradient(135deg, #6b7280 0%, #4b5563 100%); }
+/* Messages */
+body.theme-vscode-light .msg.user { background: rgba(0,102,204,.05); }
+body.theme-vscode-light .msg { border-color: #e5e7eb; }
+/* Input */
 body.theme-vscode-light textarea { background: #fff; color: #1e1e1e; border-color: #d1d5db; }
 body.theme-vscode-light textarea:focus { border-color: #0066cc; }
+/* Sidebar + icons */
+body.theme-vscode-light .rsidebar { background: #ffffff; }
+body.theme-vscode-light .rs-icons { background: #f5f5f5; border-color: #d1d5db; }
+body.theme-vscode-light .rs-icon { color: #6e7681; }
+body.theme-vscode-light .rs-icon:hover { color: #1e1e1e; background: rgba(0,0,0,.06); }
+body.theme-vscode-light .rs-icon.active { color: #0066cc; background: rgba(0,102,204,.1); }
+/* Scrollbars */
+body.theme-vscode-light .msgs::-webkit-scrollbar-thumb,
+body.theme-vscode-light .scr::-webkit-scrollbar-thumb,
+body.theme-vscode-light .sks::-webkit-scrollbar-thumb,
+body.theme-vscode-light .it-dropdown::-webkit-scrollbar-thumb { background: #c0c0c0; }
+body.theme-vscode-light .msgs::-webkit-scrollbar-track,
+body.theme-vscode-light .scr::-webkit-scrollbar-track,
+body.theme-vscode-light .sks::-webkit-scrollbar-track,
+body.theme-vscode-light .it-dropdown::-webkit-scrollbar-track { background: #f0f0f0; }
+/* Model cards */
+body.theme-vscode-light .mc { border-color: #d1d5db; }
+body.theme-vscode-light .mc:hover { background: rgba(0,0,0,.03); border-color: #0066cc; }
+body.theme-vscode-light .mc.sel { border-color: #0066cc; background: rgba(0,102,204,.08); }
+/* Bottom toolbar buttons + dropdown */
+body.theme-vscode-light .it-btn { border-color: #d1d5db; color: #4b5563; }
+body.theme-vscode-light .it-btn:hover { border-color: #0066cc; color: #1e1e1e; }
+body.theme-vscode-light .it-dropdown { background: #ffffff; border-color: #d1d5db; box-shadow: 0 4px 16px rgba(0,0,0,.12); }
+body.theme-vscode-light .it-dd-item { color: #1e1e1e; }
+body.theme-vscode-light .it-dd-item:hover { background: rgba(0,0,0,.04); }
+body.theme-vscode-light .it-dd-item.active { color: #0066cc; background: rgba(0,102,204,.06); }
+body.theme-vscode-light .it-dd-header { color: #6e7681; border-color: #e5e7eb; }
+/* Selects + inputs */
+body.theme-vscode-light select,
+body.theme-vscode-light .si,
+body.theme-vscode-light .cline-select { background: #f5f5f5; color: #1e1e1e; border-color: #d1d5db; }
+body.theme-vscode-light .cl-key-inp { background: #f5f5f5; color: #1e1e1e; border-color: #d1d5db; }
+body.theme-vscode-light .cl-config-inp { background: #f5f5f5; color: #1e1e1e; border-color: #d1d5db; }
+/* Skills */
+body.theme-vscode-light .sk { border-color: #d1d5db; }
+body.theme-vscode-light .sk:hover { border-color: #0066cc; background: rgba(0,0,0,.02); }
+body.theme-vscode-light .sk.selected { border-color: #0066cc; background: rgba(0,102,204,.05); }
+body.theme-vscode-light .sk-hdr { border-color: #e5e7eb; }
+body.theme-vscode-light .sktg span { background: rgba(0,102,204,.08); color: #0066cc; }
+/* Working / streaming block */
+body.theme-vscode-light .stream-working { background: rgba(0,0,0,.025); border-left-color: #0066cc; }
+body.theme-vscode-light .working-dot { background: #0066cc; }
+body.theme-vscode-light .working-phase-dot { background: #0066cc; }
+/* Code blocks */
+body.theme-vscode-light .mb code { background: #e8e8e8; }
+body.theme-vscode-light .mb pre { background: #f0f0f0; }
+body.theme-vscode-light .cpb { background: rgba(0,0,0,.06); }
+/* Tool calls */
+body.theme-vscode-light .tc { background: rgba(0,0,0,.025); border-color: #e5e7eb; }
+/* Tool output in light */
+body.theme-vscode-light .tool-output-pre { background: #f5f5f5; color: #1e1e1e; }
+/* Diff blocks */
+body.theme-vscode-light .diff-content { background: #f8f8f8; }
+body.theme-vscode-light .diff-header { background: rgba(0,102,204,.06); }
+/* HITL cards */
+body.theme-vscode-light .hitl-card { border-color: #d1d5db; }
+body.theme-vscode-light .hitl-inline-card { background: rgba(0,102,204,.04); }
+body.theme-vscode-light .hitl-inline-card.medium { background: rgba(0,102,204,.04); }
+body.theme-vscode-light .hitl-inline-card.low { background: rgba(22,163,74,.04); }
+body.theme-vscode-light .hitl-inline-card.high { background: rgba(245,158,11,.06); }
+body.theme-vscode-light .hitl-inline-card.critical { background: rgba(220,38,38,.05); }
+/* Agent cards */
+body.theme-vscode-light .ag-card { border-color: #d1d5db; }
+body.theme-vscode-light .ag-card:hover { background: rgba(0,0,0,.02); border-color: #0066cc; }
+body.theme-vscode-light .ag-card.sel { border-color: #0066cc; background: rgba(0,102,204,.05); }
+body.theme-vscode-light .ag-ico { fill: #0066cc; }
+/* Session cards */
+body.theme-vscode-light .ssc { border-color: #d1d5db; }
+body.theme-vscode-light .ssc:hover { background: rgba(0,0,0,.02); }
+/* History overlay */
+body.theme-vscode-light .pnl-overlay { background: #ffffff; }
+/* Badges */
+body.theme-vscode-light .ct { background: rgba(0,102,204,.1); color: #0066cc; }
+body.theme-vscode-light .lt-local { background: rgba(22,163,74,.1); color: #16a34a; }
+body.theme-vscode-light .lt-cloud { background: rgba(147,51,234,.1); color: #9333ea; }
+body.theme-vscode-light .ms-badge-local { background: rgba(22,163,74,.08); color: #16a34a; }
+body.theme-vscode-light .ms-badge-cloud { background: rgba(147,51,234,.08); color: #9333ea; }
+/* File attach chips */
+body.theme-vscode-light .attach-chip { background: rgba(0,102,204,.08); border-color: rgba(0,102,204,.2); }
+/* Skill pills */
+body.theme-vscode-light .skill-pill { background: rgba(0,102,204,.08); color: #0066cc; border-color: rgba(0,102,204,.2); }
+/* Context compact */
+body.theme-vscode-light .ctx-compact { background: rgba(0,0,0,.02); }
+body.theme-vscode-light .ctx-compact-size { background: rgba(0,102,204,.08); color: #0066cc; }
+body.theme-vscode-light .ctx-skill-tag { background: rgba(22,163,74,.08); color: #16a34a; }
+body.theme-vscode-light .ctx-agent-tag { background: rgba(0,102,204,.08); color: #0066cc; }
+/* Popups */
+body.theme-vscode-light .slash-popup { background: #fff; border-color: #d1d5db; box-shadow: 0 -4px 16px rgba(0,0,0,.1); }
+body.theme-vscode-light .at-popup { background: #fff; border-color: #d1d5db; box-shadow: 0 -4px 16px rgba(0,0,0,.1); }
+/* Reasoning block */
+body.theme-vscode-light .rsn { background: rgba(0,0,0,.02); }
+body.theme-vscode-light .rh { background: rgba(0,0,0,.03); border-color: #e5e7eb; }
+body.theme-vscode-light .rh:hover { background: rgba(0,0,0,.05); }
+/* Config panels */
+body.theme-vscode-light .cl-config-details { background: rgba(0,0,0,.02); }
+body.theme-vscode-light .cl-model-detail { background: rgba(0,0,0,.02); }
+body.theme-vscode-light .cl-save-btn { background: #0066cc; }
+body.theme-vscode-light .cl-edit-key-btn { color: #0066cc; }
+body.theme-vscode-light .cl-edit-key-btn:hover { background: rgba(0,102,204,.06); }
+/* Theme/lang pickers */
+body.theme-vscode-light .theme-btn.sel { border-color: #0066cc; color: #0066cc; background: rgba(0,102,204,.08); }
+body.theme-vscode-light .lang-btn.sel { border-color: #0066cc; color: #0066cc; background: rgba(0,102,204,.08); }
+/* Empty state */
+body.theme-vscode-light .wb { background: #0066cc; }
+/* Retry button */
+body.theme-vscode-light .retry-btn { border-color: #dc2626; background: rgba(220,38,38,.06); color: #dc2626; }
+body.theme-vscode-light .retry-btn:hover { background: rgba(220,38,38,.12); }
+/* Sections & panels */
+body.theme-vscode-light .ssr input { background: #f5f5f5; border-color: #d1d5db; color: #1e1e1e; }
 
 /* ═══════════════════════════════════════════════════════════════
    THEME: Electric (black & white)
@@ -935,6 +1053,64 @@ body.theme-electric-light .msg.user { background: rgba(0,153,204,.04); }
 body.theme-electric-light .sb-send.stop-mode { background: linear-gradient(135deg, #6b7280 0%, #4b5563 100%); }
 body.theme-electric-light textarea { background: #fff; color: #000; border-color: #bbb; }
 body.theme-electric-light textarea:focus { border-color: #0099cc; }
+/* Sidebar + icons */
+body.theme-electric-light .rsidebar { background: #ffffff; }
+body.theme-electric-light .rs-icons { background: #f5f5f5; border-color: #ccc; }
+body.theme-electric-light .rs-icon { color: #666; }
+body.theme-electric-light .rs-icon:hover { color: #000; background: rgba(0,0,0,.06); }
+body.theme-electric-light .rs-icon.active { color: #0099cc; background: rgba(0,153,204,.1); }
+/* Scrollbars */
+body.theme-electric-light .msgs::-webkit-scrollbar-thumb,
+body.theme-electric-light .scr::-webkit-scrollbar-thumb,
+body.theme-electric-light .sks::-webkit-scrollbar-thumb,
+body.theme-electric-light .it-dropdown::-webkit-scrollbar-thumb { background: #bbb; }
+body.theme-electric-light .msgs::-webkit-scrollbar-track,
+body.theme-electric-light .scr::-webkit-scrollbar-track,
+body.theme-electric-light .sks::-webkit-scrollbar-track,
+body.theme-electric-light .it-dropdown::-webkit-scrollbar-track { background: #f0f0f0; }
+/* Model cards */
+body.theme-electric-light .mc { border-color: #ccc; }
+body.theme-electric-light .mc:hover { background: rgba(0,0,0,.03); border-color: #0099cc; }
+body.theme-electric-light .mc.sel { border-color: #0099cc; background: rgba(0,153,204,.08); }
+/* Bottom toolbar buttons + dropdown */
+body.theme-electric-light .it-btn { border-color: #ccc; color: #555; }
+body.theme-electric-light .it-btn:hover { border-color: #0099cc; color: #000; }
+body.theme-electric-light .it-dropdown { background: #ffffff; border-color: #ccc; box-shadow: 0 4px 16px rgba(0,0,0,.12); }
+body.theme-electric-light .it-dd-item { color: #000; }
+body.theme-electric-light .it-dd-item:hover { background: rgba(0,0,0,.04); }
+body.theme-electric-light .it-dd-item.active { color: #0099cc; background: rgba(0,153,204,.06); }
+body.theme-electric-light .it-dd-header { color: #666; border-color: #ddd; }
+/* Selects + inputs */
+body.theme-electric-light select,
+body.theme-electric-light .si,
+body.theme-electric-light .cline-select { background: #f5f5f5; color: #000; border-color: #bbb; }
+body.theme-electric-light .cl-key-inp { background: #f5f5f5; color: #000; border-color: #bbb; }
+/* Skills */
+body.theme-electric-light .sk { border-color: #ccc; }
+body.theme-electric-light .sk:hover { border-color: #0099cc; background: rgba(0,0,0,.02); }
+body.theme-electric-light .sk.selected { border-color: #0099cc; background: rgba(0,153,204,.05); }
+/* Tool output in light */
+body.theme-electric-light .tool-output-pre { background: #f5f5f5; color: #000; }
+/* Working / streaming block */
+body.theme-electric-light .stream-working { background: rgba(0,0,0,.025); }
+body.theme-electric-light .mb code { background: #e8e8e8; }
+body.theme-electric-light .mb pre { background: #f0f0f0; }
+body.theme-electric-light .cpb { background: rgba(0,0,0,.06); }
+body.theme-electric-light .tc { background: rgba(0,0,0,.025); border-color: #ccc; }
+body.theme-electric-light .diff-content { background: #f8f8f8; }
+body.theme-electric-light .hitl-card { border-color: #ccc; }
+body.theme-electric-light .hitl-inline-card { background: rgba(0,153,204,.04); }
+body.theme-electric-light .ag-card { border-color: #ccc; }
+body.theme-electric-light .ag-card.sel { border-color: #0099cc; background: rgba(0,153,204,.05); }
+body.theme-electric-light .pnl-overlay { background: #ffffff; }
+body.theme-electric-light .rsn { background: rgba(0,0,0,.02); }
+body.theme-electric-light .rh { background: rgba(0,0,0,.03); }
+body.theme-electric-light .cl-config-details { background: rgba(0,0,0,.02); }
+body.theme-electric-light .cl-config-inp { background: #f5f5f5; color: #000; border-color: #bbb; }
+body.theme-electric-light .slash-popup { background: #fff; border-color: #ccc; box-shadow: 0 -4px 16px rgba(0,0,0,.1); }
+body.theme-electric-light .at-popup { background: #fff; border-color: #ccc; box-shadow: 0 -4px 16px rgba(0,0,0,.1); }
+body.theme-electric-light .ssc { border-color: #ccc; }
+body.theme-electric-light .ssr input { background: #f5f5f5; border-color: #bbb; color: #000; }
 
 /* ═══════════════════════════════════════════════════════════════
    ACTIVE SKILLS INDICATOR — badges in bottom toolbar

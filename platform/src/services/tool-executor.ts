@@ -246,8 +246,8 @@ try {
   mkdirSync(AGENT_WORKSPACE, { recursive: true })
 } catch {}
 
-function resolvePath(p: string): string {
-  const baseDir = getProjectDir()
+function resolvePath(p: string, wsRoot?: string): string {
+  const baseDir = getProjectDir(wsRoot)
   const resolved = p.startsWith("/") ? p : `${baseDir}/${p}`
   const { resolve: pathResolve } = require("path")
   const { realpathSync, existsSync } = require("fs")
@@ -337,9 +337,9 @@ async function hitlCheck(ctx: {
 
 // ── Individual tool handlers ─────────────────────────────────────────
 
-async function execBash(args: { command: string; timeout?: number; workdir?: string }): Promise<ToolResult> {
+async function execBash(args: { command: string; timeout?: number; workdir?: string }, wsRoot?: string): Promise<ToolResult> {
   const command = args.command
-  const cwd = args.workdir ? resolvePath(args.workdir) : getProjectDir()
+  const cwd = args.workdir ? resolvePath(args.workdir, wsRoot) : getProjectDir(wsRoot)
   const timeout = Math.min(args.timeout ?? DEFAULT_TIMEOUT, MAX_TIMEOUT)
 
   // Check if bash command references sensitive files (bypass prevention)
@@ -394,8 +394,8 @@ async function execBash(args: { command: string; timeout?: number; workdir?: str
   }
 }
 
-async function execReadFile(args: { path: string; startLine?: number; endLine?: number }): Promise<ToolResult> {
-  const filepath = resolvePath(args.path)
+async function execReadFile(args: { path: string; startLine?: number; endLine?: number }, wsRoot?: string): Promise<ToolResult> {
+  const filepath = resolvePath(args.path, wsRoot)
 
   // Policy + HITL check
   const check = await hitlCheck({ action: "read", filePath: filepath })
@@ -421,10 +421,10 @@ async function execReadFile(args: { path: string; startLine?: number; endLine?: 
   }
 }
 
-async function execWriteFile(args: { path: string; content: string }): Promise<ToolResult> {
+async function execWriteFile(args: { path: string; content: string }, wsRoot?: string): Promise<ToolResult> {
   // For relative paths, write into the project directory (same as read_file).
   // Absolute paths are resolved against the project root as before.
-  const filepath = resolvePath(args.path)
+  const filepath = resolvePath(args.path, wsRoot)
 
   // Policy + HITL check — only pass diffSize for large files (>10KB) to avoid
   // triggering elevated risk for every normal write
@@ -446,8 +446,8 @@ async function execWriteFile(args: { path: string; content: string }): Promise<T
   }
 }
 
-async function execListDir(args: { path?: string; recursive?: boolean; depth?: number }): Promise<ToolResult> {
-  const dirpath = resolvePath(args.path || ".")
+async function execListDir(args: { path?: string; recursive?: boolean; depth?: number }, wsRoot?: string): Promise<ToolResult> {
+  const dirpath = resolvePath(args.path || ".", wsRoot)
   try {
     const { readdirSync, statSync } = await import("fs")
     const entries = readdirSync(dirpath)
@@ -470,8 +470,8 @@ async function execListDir(args: { path?: string; recursive?: boolean; depth?: n
   }
 }
 
-async function execGrepSearch(args: { pattern: string; path?: string; include?: string; maxResults?: number }): Promise<ToolResult> {
-  const searchPath = args.path ? resolvePath(args.path) : getProjectDir()
+async function execGrepSearch(args: { pattern: string; path?: string; include?: string; maxResults?: number }, wsRoot?: string): Promise<ToolResult> {
+  const searchPath = args.path ? resolvePath(args.path, wsRoot) : getProjectDir(wsRoot)
   const maxResults = args.maxResults ?? 50
 
   // Block grep on sensitive files
@@ -500,7 +500,7 @@ async function execGrepSearch(args: { pattern: string; path?: string; include?: 
     const lines = stdout.trim().split("\n").slice(0, maxResults)
     // Make paths relative to project and filter out sensitive file matches
     const relative = lines
-      .map((l) => l.replace(getProjectDir() + "/", ""))
+      .map((l) => l.replace(getProjectDir(wsRoot) + "/", ""))
       .filter((l) => !isSensitiveFile(l.split(":")[0] ?? ""))
     const { text, truncated } = truncateOutput(relative.join("\n"))
     return { success: true, output: `${relative.length} matches:\n${text}`, truncated }
@@ -534,10 +534,10 @@ async function execWebFetch(args: { url: string; maxBytes?: number }): Promise<T
 
 // ── Git tools ────────────────────────────────────────────────────────
 
-async function execGitStatus(_args: Record<string, unknown>): Promise<ToolResult> {
+async function execGitStatus(_args: Record<string, unknown>, wsRoot?: string): Promise<ToolResult> {
   try {
     const proc = Bun.spawn(["git", "status", "--porcelain", "-b"], {
-      cwd: getProjectDir(),
+      cwd: getProjectDir(wsRoot),
       stdout: "pipe",
       stderr: "pipe",
     })
@@ -552,15 +552,15 @@ async function execGitStatus(_args: Record<string, unknown>): Promise<ToolResult
   }
 }
 
-async function execGitDiff(args: { staged?: boolean; file?: string }): Promise<ToolResult> {
+async function execGitDiff(args: { staged?: boolean; file?: string }, wsRoot?: string): Promise<ToolResult> {
   try {
     const gitArgs = ["git", "diff"]
     if (args.staged) gitArgs.push("--cached")
-    if (args.file) gitArgs.push("--", resolvePath(args.file))
+    if (args.file) gitArgs.push("--", resolvePath(args.file, wsRoot))
     gitArgs.push("--stat")
 
     const proc = Bun.spawn(gitArgs, {
-      cwd: getProjectDir(),
+      cwd: getProjectDir(wsRoot),
       stdout: "pipe",
       stderr: "pipe",
     })
@@ -571,7 +571,7 @@ async function execGitDiff(args: { staged?: boolean; file?: string }): Promise<T
 
     // Also get the actual diff (limited)
     const diffProc = Bun.spawn([...gitArgs.filter(a => a !== "--stat")], {
-      cwd: getProjectDir(),
+      cwd: getProjectDir(wsRoot),
       stdout: "pipe",
       stderr: "pipe",
     })
@@ -587,11 +587,11 @@ async function execGitDiff(args: { staged?: boolean; file?: string }): Promise<T
   }
 }
 
-async function execGitLog(args: { count?: number }): Promise<ToolResult> {
+async function execGitLog(args: { count?: number }, wsRoot?: string): Promise<ToolResult> {
   try {
     const n = Math.min(args.count ?? 10, 50)
     const proc = Bun.spawn(["git", "log", `--oneline`, `-${n}`, "--decorate"], {
-      cwd: getProjectDir(),
+      cwd: getProjectDir(wsRoot),
       stdout: "pipe",
       stderr: "pipe",
     })
@@ -607,7 +607,7 @@ async function execGitLog(args: { count?: number }): Promise<ToolResult> {
 
 // ── Dispatcher ───────────────────────────────────────────────────
 
-const TOOL_HANDLERS: Record<string, (args: any) => Promise<ToolResult>> = {
+const TOOL_HANDLERS: Record<string, (args: any, wsRoot?: string) => Promise<ToolResult>> = {
   bash: execBash,
   read_file: execReadFile,
   write_file: execWriteFile,
@@ -622,7 +622,7 @@ const TOOL_HANDLERS: Record<string, (args: any) => Promise<ToolResult>> = {
 // Allow the chat route to override the workspace root dynamically
 let _workspaceRoot: string | null = null
 export function setWorkspaceRoot(root: string | null) { _workspaceRoot = root }
-function getProjectDir(): string { return _workspaceRoot || PROJECT_DIR }
+function getProjectDir(wsRoot?: string): string { return wsRoot || _workspaceRoot || PROJECT_DIR }
 
 /**
  * Execute a tool call returned by the model.
@@ -634,14 +634,12 @@ export async function executeTool(name: string, args: Record<string, unknown>, w
     return { success: false, output: `Unknown tool: ${name}. Available: ${Object.keys(TOOL_HANDLERS).join(", ")}` }
   }
 
-  const prev = _workspaceRoot
-  if (workspaceRoot) _workspaceRoot = workspaceRoot
+  // Pass workspaceRoot directly to the handler instead of mutating global state.
+  // This prevents race conditions when multiple tools execute in parallel.
   try {
-    return await handler(args)
+    return await handler(args, workspaceRoot || undefined)
   } catch (e: any) {
     return { success: false, output: `Tool ${name} crashed: ${e.message ?? e}` }
-  } finally {
-    _workspaceRoot = prev
   }
 }
 
