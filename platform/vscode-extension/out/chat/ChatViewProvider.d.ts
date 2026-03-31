@@ -46,6 +46,8 @@ export declare class ChatViewProvider implements vscode.WebviewViewProvider {
     private _stopHitlPolling;
     private _pollHitlPending;
     private _onUserMessage;
+    /** Parse raw API error messages into user-friendly text */
+    private _formatErrorMessage;
     private _post;
     private _html;
 }

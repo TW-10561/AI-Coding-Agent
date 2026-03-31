@@ -1086,8 +1086,24 @@
     var body = document.createElement('div');
     body.className = 'mb';
     if (m.role === 'system' && m.content && m.content.indexOf('Error:') === 0) {
-      // Localize the "Error:" prefix
-      body.textContent = t('error') + ':' + m.content.substring(6);
+      var errContent = m.content.substring(6).trim();
+      // Detect structured error types for styled rendering
+      if (/^⚠️ Model Access Denied/.test(errContent)) {
+        body.className = 'mb error-box error-access-denied';
+        body.innerHTML = '<div class="error-icon">⚠️</div><div class="error-body"><strong>' + esc(errContent.replace(/^⚠️\s*/, '').split('—')[0].trim()) + '</strong><br>' + esc(errContent.split('—').slice(1).join('—').trim()) + '</div>';
+      } else if (/^🛡️ Request Blocked/.test(errContent)) {
+        body.className = 'mb error-box error-policy';
+        body.innerHTML = '<div class="error-icon">🛡️</div><div class="error-body"><strong>' + esc(errContent.replace(/^🛡️\s*/, '').split('—')[0].trim()) + '</strong><br>' + esc(errContent.split('—').slice(1).join('—').trim()) + '</div>';
+      } else if (/^⏳ Rate Limited/.test(errContent)) {
+        body.className = 'mb error-box error-ratelimit';
+        body.innerHTML = '<div class="error-icon">⏳</div><div class="error-body"><strong>' + esc(errContent.replace(/^⏳\s*/, '').split('—')[0].trim()) + '</strong><br>' + esc(errContent.split('—').slice(1).join('—').trim()) + '</div>';
+      } else if (/^🔌 (Connection Failed|Service Unavailable)/.test(errContent)) {
+        body.className = 'mb error-box error-connection';
+        body.innerHTML = '<div class="error-icon">🔌</div><div class="error-body"><strong>' + esc(errContent.replace(/^🔌\s*/, '').split('—')[0].trim()) + '</strong><br>' + esc(errContent.split('—').slice(1).join('—').trim()) + '</div>';
+      } else {
+        // Generic error — localize prefix
+        body.textContent = t('error') + ': ' + errContent;
+      }
     } else if (m.role === 'user' || m.role === 'system') {
       body.textContent = m.content;
     } else {

@@ -54,6 +54,12 @@ export function parallelRoutes(executor: ParallelExecutionManager) {
       return c.json(executor.list({ status: status ?? undefined }))
     })
 
+    // List ad-hoc parallel tool executions from the agent loop
+    .get("/tool-executions", async (c) => {
+      const limit = Number(c.req.query("limit") ?? 50)
+      return c.json(executor.listToolExecutions(limit))
+    })
+
     // Get a specific execution
     .get("/:id", async (c) => {
       const exec = executor.get(c.req.param("id"))

@@ -224,6 +224,23 @@ export const TOOL_DEFINITIONS: ToolDef[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "file_exists",
+      description: "Check whether a file or directory exists at the given path. Use this BEFORE read_file or list_dir to avoid unnecessary errors when the existence of the path is uncertain.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: {
+            type: "string",
+            description: "Absolute or project-relative file or directory path to check",
+          },
+        },
+        required: ["path"],
+      },
+    },
+  },
 ]
 
 // ── Tool Execution ───────────────────────────────────────────────────
@@ -426,6 +443,10 @@ async function execWriteFile(args: { path: string; content: string }, wsRoot?: s
   // Absolute paths are resolved against the project root as before.
   const filepath = resolvePath(args.path, wsRoot)
 
+  if (!args.content && args.content !== "") {
+    return { success: false, output: `write_file error: no content provided for ${args.path}` }
+  }
+
   // Policy + HITL check — only pass diffSize for large files (>10KB) to avoid
   // triggering elevated risk for every normal write
   const contentSize = args.content?.length ?? 0
@@ -440,16 +461,42 @@ async function execWriteFile(args: { path: string; content: string }, wsRoot?: s
 
     await Bun.write(filepath, args.content)
     const lineCount = args.content.split("\n").length
-    return { success: true, output: `Wrote ${lineCount} lines to ${args.path}` }
+    const sizeKB = Math.round(contentSize / 1024)
+    const sizeNote = sizeKB > 50 ? ` (${sizeKB}KB)` : ""
+    return { success: true, output: `Wrote ${lineCount} lines${sizeNote} to ${args.path}` }
   } catch (e: any) {
     return { success: false, output: `Write error: ${e.message ?? e}` }
+  }
+}
+
+async function execFileExists(args: { path: string }, wsRoot?: string): Promise<ToolResult> {
+  try {
+    const resolved = resolvePath(args.path, wsRoot)
+    const { existsSync, statSync } = await import("fs")
+    if (!existsSync(resolved)) {
+      return { success: true, output: `NOT_FOUND: ${args.path} does not exist` }
+    }
+    const stat = statSync(resolved)
+    const kind = stat.isDirectory() ? "directory" : "file"
+    return { success: true, output: `EXISTS: ${args.path} is a ${kind} (${stat.isDirectory() ? '' : stat.size + ' bytes'})`.trimEnd() }
+  } catch (e: any) {
+    // Path traversal check throws — treat as not found
+    if (e.message?.includes('Path traversal')) return { success: true, output: `NOT_FOUND: ${args.path} is outside the project root` }
+    return { success: false, output: `Check error: ${e.message ?? e}` }
   }
 }
 
 async function execListDir(args: { path?: string; recursive?: boolean; depth?: number }, wsRoot?: string): Promise<ToolResult> {
   const dirpath = resolvePath(args.path || ".", wsRoot)
   try {
-    const { readdirSync, statSync } = await import("fs")
+    const { readdirSync, statSync, existsSync } = await import("fs")
+    // Pre-check: return a clear error if directory does not exist
+    if (!existsSync(dirpath)) {
+      return { success: false, output: `Directory not found: "${args.path || '.'}". Use file_exists to check paths before listing, or list_dir on a parent directory to see what exists.` }
+    }
+    if (!statSync(dirpath).isDirectory()) {
+      return { success: false, output: `Not a directory: "${args.path}". Use read_file to read a file's contents.` }
+    }
     const entries = readdirSync(dirpath)
     const results: string[] = []
     for (const entry of entries.slice(0, 500)) {
@@ -469,6 +516,7 @@ async function execListDir(args: { path?: string; recursive?: boolean; depth?: n
     return { success: false, output: `List error: ${e.message ?? e}` }
   }
 }
+
 
 async function execGrepSearch(args: { pattern: string; path?: string; include?: string; maxResults?: number }, wsRoot?: string): Promise<ToolResult> {
   const searchPath = args.path ? resolvePath(args.path, wsRoot) : getProjectDir(wsRoot)
@@ -612,6 +660,7 @@ const TOOL_HANDLERS: Record<string, (args: any, wsRoot?: string) => Promise<Tool
   read_file: execReadFile,
   write_file: execWriteFile,
   list_dir: execListDir,
+  file_exists: execFileExists,
   grep_search: execGrepSearch,
   web_fetch: execWebFetch,
   git_status: execGitStatus,

@@ -758,7 +758,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this._post({ type: "streamEnd" });
       // Don't show error for user-initiated abort
       if (e.name !== "AbortError") {
-        this._post({ type: "addMessage", message: { role: "system" as const, content: `Error: ${e.message}`, timestamp: Date.now() } });
+        const friendlyError = this._formatErrorMessage(e.message ?? String(e));
+        this._post({ type: "addMessage", message: { role: "system" as const, content: `Error: ${friendlyError}`, timestamp: Date.now() } });
       }
     } finally {
       this._stopHitlPolling();
@@ -768,6 +769,46 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Refresh HITL panel after streaming ends
       this._loadHitl();
     }
+  }
+
+  /** Parse raw API error messages into user-friendly text */
+  private _formatErrorMessage(raw: string): string {
+    // Try to extract JSON body from error format: "METHOD /path: STATUS — {json}"
+    const jsonMatch = raw.match(/:\s*(\d{3})\s*[—–-]\s*(\{[\s\S]+\})\s*$/);
+    if (jsonMatch) {
+      const status = parseInt(jsonMatch[1], 10);
+      try {
+        const body = JSON.parse(jsonMatch[2]);
+        // 403 — Model access denied (gateway ACL)
+        if (status === 403 && body.error && /model access denied/i.test(body.error)) {
+          const modelName = body.model || "the selected model";
+          return `⚠️ Model Access Denied — "${modelName}" is not available with your current API key. Try switching to a different model in the model selector above.`;
+        }
+        // 403 — Policy violation
+        if (status === 403 && body.error === "Policy violation") {
+          const reasons = Array.isArray(body.reasons) ? body.reasons.join(", ") : (body.reasons || "security policy");
+          return `🛡️ Request Blocked — Your message was blocked by a security policy: ${reasons}`;
+        }
+        // 429 — Rate limit
+        if (status === 429) {
+          return `⏳ Rate Limited — Too many requests. Please wait a moment and try again.`;
+        }
+        // 502/503 — Gateway unavailable
+        if (status === 502 || status === 503) {
+          return `🔌 Service Unavailable — The model provider is temporarily unavailable. Please try again in a few seconds.`;
+        }
+        // Generic with parsed error field
+        if (body.error) {
+          return body.error;
+        }
+      } catch { /* JSON parse failed, fall through */ }
+    }
+    // Network / fetch errors
+    if (/fetch failed|ECONNREFUSED|ENOTFOUND|network/i.test(raw)) {
+      return `🔌 Connection Failed — Cannot reach the backend server. Please check that the server is running.`;
+    }
+    // Fallback: return raw message
+    return raw;
   }
 
   private _post(msg: unknown) { this._view?.webview.postMessage(msg); }

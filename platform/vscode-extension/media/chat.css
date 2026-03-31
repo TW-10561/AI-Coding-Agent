@@ -268,7 +268,10 @@ body {
 .mb pre { background: var(--cb, rgba(0,0,0,.2)); padding: 10px 12px; border-radius: var(--r); overflow-x: auto; margin: 6px 0; line-height: 1.7; }
 .mb pre code { background: none; padding: 0; line-height: 1.7; font-size: 12px; display: block; white-space: pre; }
 .cbw > pre { padding-top: 24px; }
-.mb h1,.mb h2,.mb h3 { margin: 8px 0 4px; font-size: 13px; }
+.mb h1,.mb h2,.mb h3 { margin: 10px 0 4px; font-weight: 700; }
+.mb h1 { font-size: 15px; }
+.mb h2 { font-size: 14px; }
+.mb h3 { font-size: 13px; }
 .mb ul { padding-left: 18px; margin: 4px 0; }
 .mb blockquote { border-left: 3px solid var(--bd); padding-left: 8px; color: var(--mt); margin: 4px 0; }
 .mb strong { font-weight: 700; }
@@ -780,10 +783,22 @@ select:focus, .si:focus { border-color: var(--vscode-focusBorder); }
   padding: 4px 14px; border: none; border-radius: 4px;
   font-size: 11px; font-weight: 600; cursor: pointer; transition: .15s;
 }
-.hitl-btn.approve { background: var(--ok); color: #fff; }
-.hitl-btn.approve:hover { filter: brightness(1.15); }
-.hitl-btn.deny { background: var(--err); color: #fff; }
-.hitl-btn.deny:hover { filter: brightness(1.15); }
+.hitl-btn.approve {
+  background: var(--vscode-button-background, var(--accent));
+  color: var(--vscode-button-foreground, #fff);
+}
+.hitl-btn.approve:hover {
+  background: var(--vscode-button-hoverBackground, var(--accent));
+  filter: brightness(1.1);
+}
+.hitl-btn.deny {
+  background: var(--vscode-button-secondaryBackground, var(--ibg));
+  color: var(--vscode-button-secondaryForeground, var(--fg));
+  border: 1px solid var(--bd);
+}
+.hitl-btn.deny:hover {
+  background: var(--vscode-button-secondaryHoverBackground, var(--hv));
+}
 .hitl-stat {
   display: flex; justify-content: space-between; padding: 6px 0;
   font-size: 12px; border-bottom: 1px solid var(--bd);
@@ -794,7 +809,7 @@ select:focus, .si:focus { border-color: var(--vscode-focusBorder); }
 
 /* ── Inline HITL approval cards (in chat stream) ─────────── */
 .hitl-inline-card {
-  margin: 10px 0;
+  margin: 10px 12px;
   padding: 12px 14px;
   border-radius: var(--r);
   border: 2px solid var(--accent);
@@ -937,9 +952,11 @@ body.theme-vscode-light .stream-working { background: rgba(0,0,0,.025); border-l
 body.theme-vscode-light .working-dot { background: #0066cc; }
 body.theme-vscode-light .working-phase-dot { background: #0066cc; }
 /* Code blocks */
-body.theme-vscode-light .mb code { background: #e8e8e8; }
-body.theme-vscode-light .mb pre { background: #f0f0f0; }
-body.theme-vscode-light .cpb { background: rgba(0,0,0,.06); }
+body.theme-vscode-light .mb code { background: #e8e8e8; color: #1e1e1e; }
+body.theme-vscode-light .mb pre { background: #f0f0f0; border: 1px solid #d4d4d8; color: #1e1e1e; }
+body.theme-vscode-light .mb pre code { color: #1e1e1e; }
+body.theme-vscode-light .cpb { background: rgba(0,0,0,.06); color: #333; }
+body.theme-vscode-light .cl { color: #666; }
 /* Tool calls */
 body.theme-vscode-light .tc { background: rgba(0,0,0,.025); border-color: #e5e7eb; }
 /* Tool output in light */
@@ -1051,6 +1068,9 @@ body.theme-electric-light .topbar { background: #fafafa; border-color: #ccc; }
 body.theme-electric-light .sb-send { background: linear-gradient(135deg, #0099cc 0%, #006699 100%); box-shadow: 0 2px 8px rgba(0,153,204,.2); }
 body.theme-electric-light .msg.user { background: rgba(0,153,204,.04); }
 body.theme-electric-light .sb-send.stop-mode { background: linear-gradient(135deg, #6b7280 0%, #4b5563 100%); }
+body.theme-electric-light .mb code { background: #e8e8e8; color: #1e1e1e; }
+body.theme-electric-light .mb pre { background: #f0f0f0; border: 1px solid #d4d4d8; color: #1e1e1e; }
+body.theme-electric-light .mb pre code { color: #1e1e1e; }
 body.theme-electric-light textarea { background: #fff; color: #000; border-color: #bbb; }
 body.theme-electric-light textarea:focus { border-color: #0099cc; }
 /* Sidebar + icons */
@@ -1178,6 +1198,52 @@ body.theme-electric-light .ssr input { background: #f5f5f5; border-color: #bbb; 
   transform: translateY(-1px);
 }
 .retry-btn:active { transform: translateY(0); }
+
+/* ═══════════════════════════════════════════════════════════════
+   ERROR BOXES — styled error messages for access denied, policy, etc.
+   ═══════════════════════════════════════════════════════════════ */
+.error-box {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  border-left: 4px solid var(--err, #ef4444);
+  background: rgba(239,68,68,.08);
+  color: var(--fg);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.error-box .error-icon {
+  font-size: 18px;
+  flex-shrink: 0;
+  line-height: 1.3;
+}
+.error-box .error-body {
+  flex: 1;
+  min-width: 0;
+}
+.error-box .error-body strong {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 13px;
+}
+.error-access-denied { border-left-color: #f59e0b; background: rgba(245,158,11,.08); }
+.error-policy        { border-left-color: #8b5cf6; background: rgba(139,92,246,.08); }
+.error-ratelimit     { border-left-color: #3b82f6; background: rgba(59,130,246,.08); }
+.error-connection    { border-left-color: #6b7280; background: rgba(107,114,128,.08); }
+
+/* Light theme overrides for error boxes */
+body.theme-vscode-light .error-box,
+body.theme-electric-light .error-box { background: rgba(239,68,68,.05); }
+body.theme-vscode-light .error-access-denied,
+body.theme-electric-light .error-access-denied { background: rgba(245,158,11,.06); }
+body.theme-vscode-light .error-policy,
+body.theme-electric-light .error-policy { background: rgba(139,92,246,.06); }
+body.theme-vscode-light .error-ratelimit,
+body.theme-electric-light .error-ratelimit { background: rgba(59,130,246,.06); }
+body.theme-vscode-light .error-connection,
+body.theme-electric-light .error-connection { background: rgba(107,114,128,.06); }
 
 /* ═══════════════════════════════════════════════════════════════
    CONTEXT COMPACTION — collapsible bar showing what context was sent

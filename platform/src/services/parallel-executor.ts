@@ -405,4 +405,54 @@ export class ParallelExecutionManager {
   private emit(exec: ParallelExecution) {
     for (const cb of this.listeners) cb(exec)
   }
+
+  // ── Lightweight tool-execution tracking ──────────────────────
+  // Records ad-hoc parallel tool calls originating from the agent
+  // loop (chat.ts), so they appear in the "Parallel" dashboard tab.
+
+  private toolExecutions: ToolExecution[] = []
+
+  /** Record a set of tool calls that ran in parallel during a chat round */
+  recordToolExecution(record: {
+    sessionId?: string
+    round: number
+    prompt?: string
+    tools: Array<{ name: string; args: Record<string, any>; success: boolean; durationMs: number }>
+  }): string {
+    const id = ulid()
+    const now = Date.now()
+    const exec: ToolExecution = {
+      id,
+      type: "tool-calls",
+      sessionId: record.sessionId,
+      round: record.round,
+      prompt: record.prompt,
+      tools: record.tools,
+      status: record.tools.every(t => t.success) ? "completed" : "failed",
+      createdAt: now,
+      completedAt: now,
+    }
+    this.toolExecutions.push(exec)
+    // Keep last 200 entries
+    if (this.toolExecutions.length > 200) this.toolExecutions.splice(0, this.toolExecutions.length - 200)
+    return id
+  }
+
+  /** List tool executions (for dashboard) */
+  listToolExecutions(limit = 50): ToolExecution[] {
+    return this.toolExecutions.slice(-limit).reverse()
+  }
+}
+
+// Lightweight record for ad-hoc parallel tool calls from the agent loop
+export interface ToolExecution {
+  id: string
+  type: "tool-calls"
+  sessionId?: string
+  round: number
+  prompt?: string
+  tools: Array<{ name: string; args: Record<string, any>; success: boolean; durationMs: number }>
+  status: "completed" | "failed"
+  createdAt: number
+  completedAt: number
 }

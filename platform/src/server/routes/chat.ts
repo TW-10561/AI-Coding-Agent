@@ -14,6 +14,7 @@ import { defaultPolicyEngine } from "../../services/policy-engine"
 import { executeTool, getToolDefinitions } from "../../services/tool-executor"
 import type { WorkspaceManager } from "../../services/workspace-manager"
 import type { ChatLogStore } from "../../services/chat-log"
+import type { ParallelExecutionManager } from "../../services/parallel-executor"
 
 const ChatBody = z.object({
   message: z.string().min(1),
@@ -33,8 +34,11 @@ const ChatBody = z.object({
 })
 
 // Per-round timeout for model inference calls (not total request timeout).
-// Reasoning models (MiniMax) can take 60-180s per call; allow 5 min to be safe.
-const DEFAULT_INFERENCE_TIMEOUT_MS = 300_000  // 5 min per inference call
+// Reasoning models (MiniMax) can take 60-180s per call.
+// First round gets extra time (model must process all context); subsequent
+// rounds are shorter since context is already cached.
+const DEFAULT_FIRST_ROUND_TIMEOUT_MS = 480_000  // 8 min for first round
+const DEFAULT_INFERENCE_TIMEOUT_MS   = 300_000  // 5 min for subsequent rounds
 
 const DEFAULT_SYSTEM = `Your name is Thirdwave AI. You are an expert AI coding assistant created by Thirdwave, with access to tools.
 You are NOT ChatGPT, not GPT, not OpenAI, not Anthropic, not Google — you are Thirdwave AI. Always identify yourself as Thirdwave AI when asked.
@@ -115,6 +119,10 @@ List directory contents. Sorted (directories first, then files). Filters out noi
 Parameters: {"path": "."}
 Optional: {"recursive": true, "depth": 3}
 
+### file_exists
+Check whether a file or directory exists at a given path. Use this BEFORE read_file or list_dir when you are not certain the path exists. Returns "EXISTS" or "NOT_FOUND" with the type (file/directory).
+Parameters: {"path": "relative/path/to/check"}
+
 ### grep_search
 Search files for a pattern (regex supported).
 Parameters: {"pattern": "search term", "path": ".", "include": "*.py"}
@@ -142,6 +150,10 @@ Parameters: {"count": 10}
 4. You can make multiple tool_use calls in one response. Each will be executed.
 5. After your tools execute, you will receive the results and can continue with more tool calls or provide a summary.
 6. Always create necessary directories by using write_file (it auto-creates parent dirs) or bash with mkdir.
+7. For LARGE files (>200 lines): split the file into logical sections and write them using bash with heredoc (cat << 'EOF' > file.ext) or use write_file with the complete content. Never truncate file content.
+8. If one write_file fails, retry with bash: echo 'content' > file or cat << 'EOF' > file.
+9. ALWAYS use file_exists before read_file or list_dir when you are not 100% certain the path exists. This avoids wasted tool calls and errors. Example: call file_exists("src/components") before list_dir("src/components").
+10. When workspace is loading or you are starting a new task, use list_dir(".") first to understand the project structure before making assumptions about file locations.
 `
 
 /**
@@ -154,14 +166,37 @@ Parameters: {"count": 10}
  */
 function parseTextToolCalls(text: string): Array<{ name: string; args: Record<string, any> }> {
   const calls: Array<{ name: string; args: Record<string, any> }> = []
-  // Capture entire <tool_use> blocks
+  // Capture entire <tool_use> blocks (complete)
   const blockRegex = /<tool_use>([\s\S]*?)<\/tool_use>/g
   let blockMatch
   while ((blockMatch = blockRegex.exec(text)) !== null) {
-    const block = blockMatch[1]
-    // Extract tool name
+    const parsed = parseToolBlock(blockMatch[1])
+    if (parsed) calls.push(parsed)
+  }
+
+  // Handle truncated tool call: <tool_use> without closing </tool_use>
+  // This happens when model output is cut off mid-file-write by token limit
+  const lastOpen = text.lastIndexOf("<tool_use>")
+  if (lastOpen >= 0) {
+    const afterOpen = text.slice(lastOpen + 10)
+    if (!afterOpen.includes("</tool_use>")) {
+      const parsed = parseToolBlock(afterOpen)
+      if (parsed) {
+        // For truncated write_file, attempt to recover the content
+        if (parsed.name === "write_file" && parsed.args.content && typeof parsed.args.path === "string") {
+          console.log(`[chat] Recovered truncated write_file for ${parsed.args.path} (${parsed.args.content.length} chars)`)
+          calls.push(parsed)
+        }
+      }
+    }
+  }
+  return calls
+}
+
+/** Parse a single tool block's inner content */
+function parseToolBlock(block: string): { name: string; args: Record<string, any> } | null {
     const nameMatch = block.match(/<name>\s*([\s\S]*?)\s*<\/name>/)
-    if (!nameMatch) continue
+    if (!nameMatch) return null
     const name = nameMatch[1].trim()
 
     // Extract everything after </name> as the params section
@@ -171,8 +206,11 @@ function parseTextToolCalls(text: string): Array<{ name: string; args: Record<st
 
     // Strategy 1: <input>{JSON}</input> — canonical format
     const inputMatch = afterName.match(/<input>\s*([\s\S]*?)\s*<\/input>/)
-    if (inputMatch) {
-      const inputContent = inputMatch[1].trim()
+    // Also try truncated <input> without closing </input>
+    const inputContent = inputMatch
+      ? inputMatch[1].trim()
+      : (afterName.match(/<input>\s*([\s\S]+)/) ? afterName.match(/<input>\s*([\s\S]+)/)![1].trim() : null)
+    if (inputContent) {
       // Try strict JSON parse first
       try {
         args = JSON.parse(inputContent)
@@ -183,13 +221,32 @@ function parseTextToolCalls(text: string): Array<{ name: string; args: Record<st
           args = JSON.parse(inputContent.replace(/,\s*}/g, '}').replace(/,\s*]/g, ']'))
           resolved = true
         } catch {
-          // Strategy 2: <input><key>val</key>...</input> (XML tags inside input)
-          const tagRegex2 = /<(\w+)>([\s\S]*?)<\/\1>/g
-          let tm
-          while ((tm = tagRegex2.exec(inputContent)) !== null) {
-            args[tm[1]] = tm[2]
+          // Try recovering truncated JSON for write_file:
+          // {"path":"...","content":"...  (truncated mid-string)
+          if (name === "write_file") {
+            const pathMatch = inputContent.match(/"path"\s*:\s*"([^"]*)"/)
+            const contentStart = inputContent.match(/"content"\s*:\s*"/)
+            if (pathMatch && contentStart) {
+              const contentIdx = inputContent.indexOf(contentStart[0]) + contentStart[0].length
+              // Take everything after "content":" as the content, stripping any trailing incomplete escape
+              let rawContent = inputContent.slice(contentIdx)
+              // Remove trailing incomplete JSON tokens
+              rawContent = rawContent.replace(/\\?$/, "").replace(/"?\s*}?\s*$/, "")
+              // Unescape JSON string escapes
+              try { rawContent = JSON.parse('"' + rawContent + '"') } catch { /* use as-is */ }
+              args = { path: pathMatch[1], content: rawContent }
+              resolved = true
+            }
           }
-          if (Object.keys(args).length > 0) resolved = true
+          if (!resolved) {
+            // Strategy 2: <input><key>val</key>...</input> (XML tags inside input)
+            const tagRegex2 = /<(\w+)>([\s\S]*?)<\/\1>/g
+            let tm
+            while ((tm = tagRegex2.exec(inputContent)) !== null) {
+              args[tm[1]] = tm[2]
+            }
+            if (Object.keys(args).length > 0) resolved = true
+          }
         }
       }
     }
@@ -213,9 +270,7 @@ function parseTextToolCalls(text: string): Array<{ name: string; args: Record<st
       }
     }
 
-    calls.push({ name, args })
-  }
-  return calls
+    return { name, args }
 }
 
 /**
@@ -461,7 +516,7 @@ function taskNeedsTools(message: string): boolean {
   return !looksConversational
 }
 
-export function chatRoutes(workspacesMgr?: WorkspaceManager, chatLog?: ChatLogStore) {
+export function chatRoutes(workspacesMgr?: WorkspaceManager, chatLog?: ChatLogStore, parallelExecutor?: ParallelExecutionManager) {
   return new Hono()
 
     /**
@@ -578,7 +633,7 @@ export function chatRoutes(workspacesMgr?: WorkspaceManager, chatLog?: ChatLogSt
       const maxTokens = safeOutputLimit
       const temperature = body.temperature ?? 0.3
       const maxRounds = body.maxToolRounds ?? MAX_TOOL_ROUNDS
-      const inferenceTimeout = body.timeoutMs ?? DEFAULT_INFERENCE_TIMEOUT_MS
+      const userTimeout = body.timeoutMs
 
       const start = Date.now()
       let totalInput = 0
@@ -587,6 +642,9 @@ export function chatRoutes(workspacesMgr?: WorkspaceManager, chatLog?: ChatLogSt
 
       // ── Agentic loop: call model → execute tools → feed back ──
       for (let round = 0; round <= maxRounds; round++) {
+        // Progressive timeout: first round gets more time (fresh context processing)
+        const inferenceTimeout = userTimeout ?? (round === 0 ? DEFAULT_FIRST_ROUND_TIMEOUT_MS : DEFAULT_INFERENCE_TIMEOUT_MS)
+
         // Compress context when it grows too large (~80K chars ≈ 20K tokens)
         if (round > 2) {
           const beforeLen = messages.length
@@ -616,9 +674,15 @@ export function chatRoutes(workspacesMgr?: WorkspaceManager, chatLog?: ChatLogSt
         } catch (fetchErr: any) {
           // AbortSignal.timeout throws TimeoutError
           if (fetchErr?.name === "TimeoutError" || fetchErr?.name === "AbortError") {
+            const timeoutSecs = Math.round(inferenceTimeout / 1000)
+            const elapsed = Date.now() - start
+            console.log(`[chat] Round ${round}: Timeout after ${timeoutSecs}s (total elapsed: ${Math.round(elapsed / 1000)}s)`)
             return c.json({
               error: "Model inference timed out",
-              detail: `The model took longer than ${Math.round(inferenceTimeout / 1000)}s to respond. Try a simpler prompt or disable tool-calling.`,
+              detail: `The model took longer than ${timeoutSecs}s to respond. Try a simpler prompt or disable tool-calling.`,
+              hint: round === 0
+                ? "The first round takes longer because the model must process the full context. Try shortening your prompt or conversation history."
+                : `Timed out on round ${round + 1} of the agent loop. The model may be overloaded.`,
               model: modelName,
               provider: providerName,
               latencyMs: Date.now() - start,
@@ -780,9 +844,11 @@ export function chatRoutes(workspacesMgr?: WorkspaceManager, chatLog?: ChatLogSt
             messages.push({ role: "assistant", content: msg.content })
 
             // Execute text-based tool calls in parallel for speed
-            const toolPromises = textToolCalls.map(tc =>
-              executeTool(tc.name, tc.args, body.workspaceRoot).then(result => ({ tc, result }))
-            )
+            const parallelStart = Date.now()
+            const toolPromises = textToolCalls.map(tc => {
+              const t0 = Date.now()
+              return executeTool(tc.name, tc.args, body.workspaceRoot).then(result => ({ tc, result, durationMs: Date.now() - t0 }))
+            })
             const toolOutcomes = await Promise.all(toolPromises)
 
             const roundResults: Array<{ tool: string; success: boolean; output: string }> = []
@@ -794,6 +860,18 @@ export function chatRoutes(workspacesMgr?: WorkspaceManager, chatLog?: ChatLogSt
                 success: result.success,
               })
               roundResults.push({ tool: tc.name, success: result.success, output: result.output })
+            }
+
+            // Track parallel tool execution for the dashboard
+            if (parallelExecutor && toolOutcomes.length > 1) {
+              parallelExecutor.recordToolExecution({
+                sessionId: body.sessionId,
+                round,
+                prompt: body.message,
+                tools: toolOutcomes.map(({ tc, result, durationMs }) => ({
+                  name: tc.name, args: tc.args, success: result.success, durationMs,
+                })),
+              })
             }
 
             // Feed results back with context-aware feedback
