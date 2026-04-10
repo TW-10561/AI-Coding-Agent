@@ -13,7 +13,7 @@
 // ---------------------------------------------------------------------------
 
 import { ulid } from "ulid"
-import { OpenCodeClient } from "./opencode-client"
+import { AgentExecutor } from "./agent-executor"
 import type { TaskStateTracker } from "./task-state-tracker"
 import type { AuditLogger } from "./audit-logger"
 
@@ -70,17 +70,17 @@ type ExecutionCallback = (exec: ParallelExecution) => void
 
 export class ParallelExecutionManager {
   private executions = new Map<string, ParallelExecution>()
-  private client: OpenCodeClient
+  private executor: AgentExecutor
   private tracker?: TaskStateTracker
   private audit?: AuditLogger
   private listeners = new Set<ExecutionCallback>()
 
   constructor(opts: {
-    client: OpenCodeClient
+    executor?: AgentExecutor
     tracker?: TaskStateTracker
     audit?: AuditLogger
   }) {
-    this.client = opts.client
+    this.executor = opts.executor ?? new AgentExecutor()
     this.tracker = opts.tracker
     this.audit = opts.audit
   }
@@ -166,8 +166,7 @@ export class ParallelExecutionManager {
 
     for (const task of exec.tasks) {
       if (task.status === "pending") task.status = "cancelled"
-      if (task.status === "running" && task.sessionID) {
-        try { await this.client.abortSession(task.sessionID) } catch {}
+      if (task.status === "running") {
         task.status = "cancelled"
         task.completedAt = Date.now()
       }
@@ -309,9 +308,6 @@ export class ParallelExecutionManager {
     const taskTimeout = task.timeoutMs ?? exec.timeoutMs
 
     try {
-      const session = await this.client.createSession({ agentID: task.agentID })
-      task.sessionID = session.id
-
       // Build context from dependencies
       let context = ""
       if (task.dependsOn.length > 0) {
@@ -324,25 +320,20 @@ export class ParallelExecutionManager {
         }
       }
 
-      // Send with timeout
-      const response = await Promise.race([
-        this.client.prompt(session.id, {
-          content: context + task.prompt,
+      // Run via AgentExecutor with timeout
+      const agentResult = await Promise.race([
+        this.executor.run({
+          prompt: task.prompt,
           agentID: task.agentID,
+          context: context || undefined,
+          timeoutMs: taskTimeout,
         }),
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error("Task timeout")), taskTimeout)
         ),
       ])
 
-      // Extract text
-      let text = ""
-      const parts = (response as any).parts ?? (response as any).message?.parts ?? []
-      for (const part of parts) {
-        if (part.type === "text" && part.text) text += part.text
-      }
-
-      task.result = text
+      task.result = agentResult.text
       task.status = "completed"
       task.completedAt = Date.now()
     } catch (err) {
@@ -363,18 +354,11 @@ export class ParallelExecutionManager {
         .map(t => `[${t.label}]:\n${t.result}`)
         .join("\n\n---\n\n")
 
-      const session = await this.client.createSession()
-      const response = await this.client.prompt(session.id, {
-        content: `${exec.fanInPrompt}\n\n${results}`,
+      const session = await this.executor.run({
+        prompt: `${exec.fanInPrompt}\n\n${results}`,
       })
 
-      let text = ""
-      const parts = (response as any).parts ?? (response as any).message?.parts ?? []
-      for (const part of parts) {
-        if (part.type === "text" && part.text) text += part.text
-      }
-
-      exec.aggregatedResult = text
+      exec.aggregatedResult = session.text
     } catch (err) {
       exec.aggregatedResult = `[Fan-in failed: ${err}]`
     }

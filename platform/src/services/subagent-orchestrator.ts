@@ -11,7 +11,7 @@
 // ---------------------------------------------------------------------------
 
 import { ulid } from "ulid"
-import { OpenCodeClient } from "./opencode-client"
+import { AgentExecutor } from "./agent-executor"
 import type { AuditLogger } from "./audit-logger"
 
 export type SubagentStatus = "pending" | "running" | "completed" | "failed" | "cancelled"
@@ -63,13 +63,13 @@ type OrchestrationCallback = (orch: Orchestration) => void
 
 export class SubagentOrchestrator {
   private orchestrations = new Map<string, Orchestration>()
-  private client: OpenCodeClient
+  private executor: AgentExecutor
   private audit?: AuditLogger
   private maxConcurrentPerOrch: number
   private listeners = new Set<OrchestrationCallback>()
 
-  constructor(opts: { client: OpenCodeClient; audit?: AuditLogger; maxConcurrentPerOrch?: number }) {
-    this.client = opts.client
+  constructor(opts: { executor?: AgentExecutor; audit?: AuditLogger; maxConcurrentPerOrch?: number }) {
+    this.executor = opts.executor ?? new AgentExecutor()
     this.audit = opts.audit
     this.maxConcurrentPerOrch = opts.maxConcurrentPerOrch ?? 3
   }
@@ -150,10 +150,7 @@ export class SubagentOrchestrator {
     for (const task of orch.tasks) {
       if (task.status === "pending") {
         task.status = "cancelled"
-      } else if (task.status === "running" && task.sessionID) {
-        try {
-          await this.client.abortSession(task.sessionID)
-        } catch {}
+      } else if (task.status === "running") {
         task.status = "cancelled"
         task.completedAt = Date.now()
       }
@@ -223,10 +220,6 @@ export class SubagentOrchestrator {
     this.emit(orch)
 
     try {
-      // Create a session for this subtask
-      const session = await this.client.createSession({ agentID: task.agentID })
-      task.sessionID = session.id
-
       // Build context from completed dependencies
       let contextPrefix = ""
       if (task.dependsOn.length > 0) {
@@ -239,21 +232,14 @@ export class SubagentOrchestrator {
         }
       }
 
-      // Send prompt
-      const response = await this.client.prompt(session.id, {
-        content: contextPrefix + task.prompt,
+      // Run via AgentExecutor — calls LLM + tools locally
+      const agentResult = await this.executor.run({
+        prompt: task.prompt,
+        agentID: task.agentID,
+        context: contextPrefix || undefined,
       })
 
-      // Extract text from response
-      let text = ""
-      const parts = response.parts ?? (response as any).message?.parts ?? []
-      for (const part of parts) {
-        if (part.type === "text" && part.text) {
-          text += part.text
-        }
-      }
-
-      task.result = text
+      task.result = agentResult.text
       task.status = "completed"
       task.completedAt = Date.now()
     } catch (err) {

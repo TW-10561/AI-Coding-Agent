@@ -1,36 +1,16 @@
+# syntax=docker/dockerfile:1
 # ── Thirdwave AI — Development Dockerfile ─────────────────────────────
 # Builds the platform server for development use.
-# Includes all dependencies for the backend, TUI, and OpenCode engine.
+# Includes all dependencies for the backend and TUI.
+# OpenCode removed in Phase 2 — platform uses standalone AgentExecutor.
 # ────────────────────────────────────────────────────────────────────────
 
-# ── Stage 1: Build OpenCode from source ────────────────────────────────
-FROM oven/bun:1.3.10-alpine AS opencode-build
-
-WORKDIR /build
-
-# Copy monorepo package files for install
-COPY package.json bun.lock* turbo.json ./
-COPY packages/opencode/package.json packages/opencode/ 2>/dev/null || true
-COPY packages/script/ packages/script/ 2>/dev/null || true
-
-# Install deps
-RUN bun install --frozen-lockfile 2>/dev/null || bun install
-
-# Copy opencode source and build
-COPY packages/opencode/ packages/opencode/ 2>/dev/null || true
-RUN if [ -d packages/opencode ]; then cd packages/opencode && bun run build -- --single --skip-install; fi
-
-# ── Stage 2: Platform runtime ─────────────────────────────────────────
 FROM oven/bun:1.3.10-alpine AS runtime
 
 # Install system deps needed by the platform
 RUN apk add --no-cache git ripgrep curl docker-cli
 
 WORKDIR /app
-
-# Copy OpenCode binary if it was built
-COPY --from=opencode-build /build/packages/opencode/dist/opencode-*/bin/opencode /usr/local/bin/opencode 2>/dev/null || true
-RUN chmod +x /usr/local/bin/opencode 2>/dev/null || echo "OpenCode binary not found — will use system opencode if available"
 
 # Install platform dependencies
 COPY platform/package.json ./platform/
@@ -49,7 +29,8 @@ COPY platform/HITL ./platform/HITL
 COPY platform/util ./platform/util
 COPY platform/skills ./platform/skills
 COPY platform/tsconfig.json ./platform/
-COPY platform/.env ./platform/.env 2>/dev/null || true
+# Create empty .env fallback; env vars are supplied via docker-compose environment: at runtime
+RUN touch ./platform/.env
 
 # Create workspace directory for agent operations
 RUN mkdir -p /workspace/.agent-workspace
@@ -61,11 +42,9 @@ ENV PORT=3100
 ENV HOST=0.0.0.0
 ENV NODE_ENV=development
 ENV LOG_LEVEL=debug
-ENV OPENCODE_URL=http://127.0.0.1:4096
-ENV OPENCODE_BIN=opencode
 ENV OPENCODE_DIR=/workspace
 
-EXPOSE 3100 4096
+EXPOSE 3100
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=60s \
   CMD wget -qO- http://localhost:3100/health/ready || exit 1

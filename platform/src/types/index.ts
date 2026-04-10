@@ -113,7 +113,7 @@ export interface TaskRun {
 
 export interface HealthStatus {
   platform: "ok" | "degraded" | "down"
-  opencode: "ok" | "unreachable"
+  opencode: "ok" | "unreachable" | "standalone"
   uptime: number
   version: string
 }

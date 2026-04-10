@@ -1,16 +1,12 @@
 // ---------------------------------------------------------------------------
 // Budget Manager — tracks and enforces per-user token/request/cost limits.
 // ---------------------------------------------------------------------------
-// Every prompt deducts from the user's budget. The budget system supports:
-//  - Token limits (input + output)
-//  - Request count limits
-//  - Cost caps (for future paid providers)
-//  - Per-hour, per-day, per-month windows
-//  - Hard limits (reject) and soft limits (warn + log)
+// Supports PostgreSQL (preferred) with SQLite fallback.
 // ---------------------------------------------------------------------------
 
 import { Database } from "bun:sqlite"
 import { ulid } from "ulid"
+import { sql as pgSql, pgEnabled } from "../config/db"
 
 export type BudgetWindow = "hour" | "day" | "month" | "total"
 
@@ -47,8 +43,10 @@ export interface BudgetCheckResult {
 
 export class BudgetManager {
   private db: Database
+  private usePG: boolean
 
   constructor(opts?: { dbPath?: string }) {
+    this.usePG = pgEnabled
     this.db = new Database(opts?.dbPath ?? "platform-budget.db")
     this.db.run("PRAGMA journal_mode = WAL")
     this.db.run("PRAGMA synchronous = NORMAL")
@@ -114,6 +112,17 @@ export class BudgetManager {
     `, [limit.id, limit.userID, limit.window, limit.maxTokens ?? null,
        limit.maxRequests ?? null, limit.maxCostCents ?? null,
        limit.hardLimit ? 1 : 0, Date.now()])
+
+    if (this.usePG) {
+      pgSql`
+        INSERT INTO budget_limits (user_id, window, max_tokens, max_requests, max_cost_cents, hard_limit)
+        VALUES (${limit.userID}, ${limit.window}, ${limit.maxTokens ?? null}, ${limit.maxRequests ?? null}, ${limit.maxCostCents ?? null}, ${limit.hardLimit})
+        ON CONFLICT (user_id, window)
+        DO UPDATE SET max_tokens = EXCLUDED.max_tokens, max_requests = EXCLUDED.max_requests,
+                      max_cost_cents = EXCLUDED.max_cost_cents, hard_limit = EXCLUDED.hard_limit
+      `.catch(e => console.warn(`[budget-pg] setLimit error: ${e.message}`))
+    }
+
     return limit
   }
 
@@ -146,6 +155,13 @@ export class BudgetManager {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [ulid(), entry.userID, Date.now(), entry.tokensInput, entry.tokensOutput,
        entry.costCents ?? 0, entry.sessionID ?? null, entry.taskID ?? null, entry.modelID ?? null])
+
+    if (this.usePG) {
+      pgSql`
+        INSERT INTO budget_usage (user_id, tokens_input, tokens_output, cost_cents, session_id, task_id, model_id)
+        VALUES (${entry.userID}, ${entry.tokensInput}, ${entry.tokensOutput}, ${entry.costCents ?? 0}, ${entry.sessionID ?? null}, ${entry.taskID ?? null}, ${entry.modelID ?? null})
+      `.catch(e => console.warn(`[budget-pg] recordUsage error: ${e.message}`))
+    }
   }
 
   /** Check if a user can make a request (pre-flight check) */

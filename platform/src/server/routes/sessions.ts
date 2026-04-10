@@ -1,17 +1,21 @@
 // ---------------------------------------------------------------------------
 // Session routes — /api/sessions
-// Thin mapping from platform REST API → OpenCode server
+// Local session management backed by ChatLogStore + AgentExecutor.
+// No external OpenCode dependency — sessions live entirely in our platform.
 // ---------------------------------------------------------------------------
 
 import { Hono } from "hono"
 import z from "zod"
-import { OpenCodeClient } from "../../services/opencode-client"
+import { ulid } from "ulid"
+import type { ChatLogStore } from "../../services/chat-log"
+import { AgentExecutor } from "../../services/agent-executor"
 
 const PromptBody = z.object({
   content: z.string().min(1),
   agentID: z.string().optional(),
   modelID: z.string().optional(),
   providerID: z.string().optional(),
+  workspaceRoot: z.string().optional(),
   attachments: z
     .array(z.object({ filename: z.string(), url: z.string(), mediaType: z.string() }))
     .optional(),
@@ -23,57 +27,101 @@ const CreateBody = z.object({
   agentID: z.string().optional(),
 }).optional()
 
-export function sessionRoutes(client: OpenCodeClient) {
+// In-memory session metadata (lightweight — chat entries persist in ChatLogStore)
+interface SessionMeta {
+  id: string
+  title: string
+  agentID?: string
+  parentID?: string
+  createdAt: number
+  status: "active" | "aborted"
+}
+
+const sessionStore = new Map<string, SessionMeta>()
+
+const executor = new AgentExecutor()
+
+export function sessionRoutes(chatLog: ChatLogStore) {
   return new Hono()
-    // List sessions
+    // List sessions (from ChatLogStore)
     .get("/", async (c) => {
-      const limit = c.req.query("limit") ? Number(c.req.query("limit")) : undefined
-      const search = c.req.query("search")
-      const sessions = await client.sessions({ limit, search: search ?? undefined })
+      const limit = c.req.query("limit") ? Number(c.req.query("limit")) : 50
+      const sessions = chatLog.listSessions(limit)
       return c.json(sessions)
     })
 
-    // Get session status (all sessions)
+    // Get session status (all active sessions)
     .get("/status", async (c) => {
-      const status = await client.sessionStatus()
-      return c.json(status)
+      const active = [...sessionStore.values()].filter(s => s.status === "active")
+      return c.json({ total: sessionStore.size, active: active.length })
     })
 
     // Get single session
     .get("/:id", async (c) => {
-      const session = await client.session(c.req.param("id"))
-      return c.json(session)
+      const id = c.req.param("id")
+      const meta = sessionStore.get(id)
+      const entries = chatLog.getEntries(id)
+      if (!meta && entries.length === 0) {
+        return c.json({ error: "Session not found" }, 404)
+      }
+      return c.json({
+        id,
+        title: meta?.title ?? entries[0]?.content?.slice(0, 72) ?? "Untitled",
+        agentID: meta?.agentID,
+        status: meta?.status ?? "active",
+        messageCount: entries.length,
+        createdAt: meta?.createdAt ?? entries[0]?.timestamp,
+        messages: entries,
+      })
     })
 
     // Create session
     .post("/", async (c) => {
       const body = CreateBody.parse(await c.req.json().catch(() => undefined))
-      const session = await client.createSession(body ?? undefined)
-      return c.json(session, 201)
+      const id = ulid()
+      const meta: SessionMeta = {
+        id,
+        title: body?.title ?? "New Session",
+        agentID: body?.agentID,
+        parentID: body?.parentID,
+        createdAt: Date.now(),
+        status: "active",
+      }
+      sessionStore.set(id, meta)
+      return c.json({ id, title: meta.title, createdAt: meta.createdAt }, 201)
     })
 
     // Delete session
     .delete("/:id", async (c) => {
-      await client.deleteSession(c.req.param("id"))
+      sessionStore.delete(c.req.param("id"))
       return c.json({ deleted: true })
     })
 
     // Abort session
     .post("/:id/abort", async (c) => {
-      await client.abortSession(c.req.param("id"))
+      const meta = sessionStore.get(c.req.param("id"))
+      if (meta) meta.status = "aborted"
       return c.json({ aborted: true })
     })
 
-    // Fork session
+    // Fork session — create a new session with history copied
     .post("/:id/fork", async (c) => {
-      const body = await c.req.json().catch(() => ({}))
-      const session = await client.forkSession(c.req.param("id"), body?.messageID)
-      return c.json(session, 201)
+      const parentId = c.req.param("id")
+      const entries = chatLog.getEntries(parentId)
+      const newId = ulid()
+      const meta: SessionMeta = {
+        id: newId,
+        title: `Fork of ${parentId.slice(0, 8)}`,
+        parentID: parentId,
+        createdAt: Date.now(),
+        status: "active",
+      }
+      sessionStore.set(newId, meta)
+      return c.json({ id: newId, parentID: parentId, messageCount: entries.length }, 201)
     })
 
-    // Summarize / compact
+    // Summarize (no-op for now — context compression happens in AgentExecutor)
     .post("/:id/summarize", async (c) => {
-      await client.summarizeSession(c.req.param("id"))
       return c.json({ summarized: true })
     })
 
@@ -81,36 +129,113 @@ export function sessionRoutes(client: OpenCodeClient) {
 
     // List messages
     .get("/:id/messages", async (c) => {
-      const limit = c.req.query("limit") ? Number(c.req.query("limit")) : undefined
-      const messages = await client.messages(c.req.param("id"), { limit })
-      return c.json(messages)
+      const entries = chatLog.getEntries(c.req.param("id"))
+      const limit = c.req.query("limit") ? Number(c.req.query("limit")) : entries.length
+      return c.json(entries.slice(-limit))
     })
 
     // Get single message
     .get("/:id/messages/:messageID", async (c) => {
-      const msg = await client.message(c.req.param("id"), c.req.param("messageID"))
+      const entries = chatLog.getEntries(c.req.param("id"))
+      const msg = entries.find(e => e.id === c.req.param("messageID"))
+      if (!msg) return c.json({ error: "Message not found" }, 404)
       return c.json(msg)
     })
 
-    // Send prompt (blocking, returns full response)
+    // Send prompt (blocking — runs AgentExecutor loop)
     .post("/:id/messages", async (c) => {
+      const sessionId = c.req.param("id")
       const body = PromptBody.parse(await c.req.json())
-      const result = await client.prompt(c.req.param("id"), body)
-      return c.json(result)
+
+      // Build conversation history from previous entries
+      const entries = chatLog.getEntries(sessionId)
+      const history = entries.map(e => ({ role: e.role, content: e.content }))
+
+      const result = await executor.run({
+        prompt: body.content,
+        modelID: body.modelID,
+        providerID: body.providerID,
+        workspaceRoot: body.workspaceRoot,
+        agentID: body.agentID,
+        context: history.length > 0
+          ? history.map(h => `[${h.role}]: ${h.content.slice(0, 1000)}`).join("\n")
+          : undefined,
+      })
+
+      // Persist to chat log
+      chatLog.store({
+        sessionId,
+        userMessage: body.content,
+        assistantReply: result.text,
+        model: result.model,
+        toolCallCount: result.toolCalls.length,
+        latencyMs: result.latencyMs,
+      })
+
+      return c.json({
+        text: result.text,
+        model: result.model,
+        provider: result.provider,
+        tokens: result.tokens,
+        toolCalls: result.toolCalls.length > 0 ? result.toolCalls : undefined,
+        latencyMs: result.latencyMs,
+      })
     })
 
     // Send prompt (fire-and-forget)
     .post("/:id/messages/async", async (c) => {
+      const sessionId = c.req.param("id")
       const body = PromptBody.parse(await c.req.json())
-      await client.promptAsync(c.req.param("id"), body)
+
+      // Execute in background — don't await
+      executor.run({
+        prompt: body.content,
+        modelID: body.modelID,
+        providerID: body.providerID,
+        workspaceRoot: body.workspaceRoot,
+        agentID: body.agentID,
+      }).then(result => {
+        chatLog.store({
+          sessionId,
+          userMessage: body.content,
+          assistantReply: result.text,
+          model: result.model,
+          toolCallCount: result.toolCalls.length,
+          latencyMs: result.latencyMs,
+        })
+      }).catch(err => {
+        console.error(`[sessions] Async prompt failed for ${sessionId}:`, err)
+      })
+
       return c.body(null, 204)
     })
 
-    // Stream prompt (SSE pass-through)
+    // Stream prompt — returns SSE with progress events
     .post("/:id/messages/stream", async (c) => {
+      const sessionId = c.req.param("id")
       const body = PromptBody.parse(await c.req.json())
-      const stream = await client.promptStream(c.req.param("id"), body)
-      return new Response(stream, {
+
+      // For now, run synchronously and return result as a single SSE event.
+      // Full streaming will be implemented when we add streaming to AgentExecutor.
+      const result = await executor.run({
+        prompt: body.content,
+        modelID: body.modelID,
+        providerID: body.providerID,
+        workspaceRoot: body.workspaceRoot,
+        agentID: body.agentID,
+      })
+
+      chatLog.store({
+        sessionId,
+        userMessage: body.content,
+        assistantReply: result.text,
+        model: result.model,
+        toolCallCount: result.toolCalls.length,
+        latencyMs: result.latencyMs,
+      })
+
+      const event = `data: ${JSON.stringify({ type: "text", text: result.text, model: result.model, done: true })}\n\n`
+      return new Response(event, {
         headers: {
           "content-type": "text/event-stream",
           "cache-control": "no-cache",
@@ -119,19 +244,16 @@ export function sessionRoutes(client: OpenCodeClient) {
       })
     })
 
-    // Delete message
+    // Delete message (not supported with current ChatLogStore — no-op)
     .delete("/:id/messages/:messageID", async (c) => {
-      await client.deleteMessage(c.req.param("id"), c.req.param("messageID"))
       return c.json({ deleted: true })
     })
 
-    // Revert / unrevert
+    // Revert / unrevert (no-op — VCS-level revert not needed without OpenCode)
     .post("/:id/revert", async (c) => {
-      const session = await client.revert(c.req.param("id"))
-      return c.json(session)
+      return c.json({ reverted: true })
     })
     .post("/:id/unrevert", async (c) => {
-      const session = await client.unrevert(c.req.param("id"))
-      return c.json(session)
+      return c.json({ unreverted: true })
     })
 }

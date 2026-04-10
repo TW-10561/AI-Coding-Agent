@@ -1,10 +1,10 @@
 // ---------------------------------------------------------------------------
 // Task queue — enqueue prompts, track status, persist runs.
-// Provides the async job layer on top of OpenCode's prompt API.
+// Provides the async job layer backed by AgentExecutor (local tools + LLM).
 // ---------------------------------------------------------------------------
 
 import { ulid } from "ulid"
-import { OpenCodeClient } from "./opencode-client"
+import { AgentExecutor } from "./agent-executor"
 import type { TaskRun, PromptInput } from "../types"
 
 type TaskCallback = (run: TaskRun) => void
@@ -14,11 +14,11 @@ export class TaskQueue {
   private queue: string[] = []
   private active = 0
   private concurrency: number
-  private client: OpenCodeClient
+  private executor: AgentExecutor
   private listeners = new Set<TaskCallback>()
 
-  constructor(opts: { client: OpenCodeClient; concurrency?: number }) {
-    this.client = opts.client
+  constructor(opts: { executor?: AgentExecutor; concurrency?: number }) {
+    this.executor = opts.executor ?? new AgentExecutor()
     this.concurrency = opts.concurrency ?? 1
   }
 
@@ -72,8 +72,7 @@ export class TaskQueue {
       this.emit(run)
       return true
     }
-    if (run.status === "running" && run.sessionID) {
-      await this.client.abortSession(run.sessionID)
+    if (run.status === "running") {
       run.status = "aborted"
       run.completedAt = Date.now()
       this.emit(run)
@@ -112,18 +111,13 @@ export class TaskQueue {
       run.status = "running"
       this.emit(run)
 
-      // Create a session if we don't already have one
-      if (!run.sessionID) {
-        const session = await this.client.createSession()
-        run.sessionID = session.id
-        this.emit(run)
-      }
-
-      // Fire-and-forget prompt — we track progress via events
-      await this.client.promptAsync(run.sessionID, {
-        content: run.prompt,
+      // Run via AgentExecutor — calls LLM + tools locally
+      const result = await this.executor.run({
+        prompt: run.prompt,
+        workspaceRoot: run.directory,
       })
 
+      run.sessionID = run.id // Use task ID as session reference
       run.status = "completed"
       run.completedAt = Date.now()
     } catch (err) {

@@ -14,13 +14,13 @@
 // ---------------------------------------------------------------------------
 
 import { ulid } from "ulid"
-import { OpenCodeClient } from "./opencode-client"
+import { AgentExecutor } from "./agent-executor"
 import { TaskStateTracker, type TrackedTask, type TaskState } from "./task-state-tracker"
 import type { AuditLogger } from "./audit-logger"
 import type { BudgetManager } from "./budget-manager"
 
 export interface ScalableQueueOptions {
-  client: OpenCodeClient
+  executor?: AgentExecutor
   tracker: TaskStateTracker
   audit?: AuditLogger
   budget?: BudgetManager
@@ -40,7 +40,7 @@ interface Worker {
 }
 
 export class ScalableQueue {
-  private client: OpenCodeClient
+  private executor: AgentExecutor
   private tracker: TaskStateTracker
   private audit?: AuditLogger
   private budget?: BudgetManager
@@ -56,7 +56,7 @@ export class ScalableQueue {
   private readonly pollIntervalMs: number
 
   constructor(opts: ScalableQueueOptions) {
-    this.client = opts.client
+    this.executor = opts.executor ?? new AgentExecutor()
     this.tracker = opts.tracker
     this.audit = opts.audit
     this.budget = opts.budget
@@ -164,8 +164,7 @@ export class ScalableQueue {
       this.tracker.transition(taskID, "aborted")
       return true
     }
-    if (task.state === "running" && task.sessionID) {
-      try { await this.client.abortSession(task.sessionID) } catch {}
+    if (task.state === "running") {
       this.tracker.transition(taskID, "aborted")
       this.workers.delete(taskID)
       return true
@@ -231,36 +230,27 @@ export class ScalableQueue {
 
     try {
       this.tracker.transition(task.id, "running")
-      this.tracker.updateProgress(task.id, 10, "Creating session...")
+      this.tracker.updateProgress(task.id, 10, "Starting agent execution...")
 
-      // Create session
-      const session = await this.client.createSession({ agentID: task.agentID })
-      this.tracker.setSession(task.id, session.id)
-      this.tracker.updateProgress(task.id, 30, "Sending prompt to vLLM...")
-
-      // Send prompt
-      const response = await this.client.prompt(session.id, {
-        content: task.prompt,
-        agentID: task.agentID,
+      // Run via AgentExecutor — calls LLM + tools locally
+      const agentResult = await this.executor.run({
+        prompt: task.prompt,
         modelID: task.modelID,
+        agentID: task.agentID,
+        workspaceRoot: task.workspaceID ? undefined : undefined,
       })
 
-      // Extract result
-      let result = ""
-      const parts = response.parts ?? (response as any).message?.parts ?? []
-      for (const part of parts) {
-        if (part.type === "text" && part.text) result += part.text
-      }
+      this.tracker.updateProgress(task.id, 90, "Finalizing...")
 
+      const result = agentResult.text
       this.tracker.transition(task.id, "completed", { result, progress: 100 })
 
-      // Record budget usage (estimate tokens from text length)
+      // Record budget usage from actual token counts
       if (this.budget) {
         this.budget.recordUsage({
           userID: task.userID,
-          tokensInput: Math.ceil(task.prompt.length / 4),
-          tokensOutput: Math.ceil(result.length / 4),
-          sessionID: session.id,
+          tokensInput: agentResult.tokens.input,
+          tokensOutput: agentResult.tokens.output,
           taskID: task.id,
         })
       }
@@ -270,7 +260,7 @@ export class ScalableQueue {
         userID: task.userID,
         taskID: task.id,
         workspaceID: task.workspaceID,
-        metadata: { resultLength: result.length, sessionID: session.id },
+        metadata: { resultLength: result.length, model: agentResult.model, rounds: agentResult.rounds },
         success: true,
       })
 

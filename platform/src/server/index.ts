@@ -1,18 +1,18 @@
 // ---------------------------------------------------------------------------
-// Platform server — slim Hono backend that wraps self-hosted OpenCode
+// Platform server — standalone Hono backend with local agentic execution
 // ---------------------------------------------------------------------------
 //
 // Architecture:
-//   Client  →  Platform (:3100)  →  OpenCode engine (:4096)
+//   Client  →  Platform (:3100)  →  LLM providers (vLLM / cloud APIs)
 //
-// The platform adds:  auth, rate-limiting, task queue, event fan-out,
-// clean REST API, and the SDK entry-point.
+// The platform provides: auth, rate-limiting, task queue, event fan-out,
+// clean REST API, agentic tool loop, and the SDK entry-point.
 // ---------------------------------------------------------------------------
 
 import { Hono } from "hono"
 import { cors } from "hono/cors"
 import { env } from "../config/env"
-import { OpenCodeClient } from "../services/opencode-client"
+import { AgentExecutor } from "../services/agent-executor"
 import { TaskQueue } from "../services/task-queue"
 import { AuditLogger } from "../services/audit-logger"
 import { BudgetManager } from "../services/budget-manager"
@@ -47,16 +47,14 @@ import { ChatLogStore } from "../services/chat-log"
 import { buildRegistry, startRegistryPolling } from "../services/provider-registry"
 import { hitlRoutes } from "./routes/hitl"
 
+// ── Database ──────────────────────────────────────────────────────────
+import { dbReady, dbClose, pgEnabled } from "../config/db"
+
 // ── Instantiate services ──────────────────────────────────────────────
 
-const client = new OpenCodeClient({
-  url: env.OPENCODE_URL,
-  directory: env.OPENCODE_DIR,
-  username: env.OPENCODE_SERVER_USERNAME,
-  password: env.OPENCODE_SERVER_PASSWORD,
-})
+const executor = new AgentExecutor()
 
-const queue = new TaskQueue({ client, concurrency: 4 })
+const queue = new TaskQueue({ executor, concurrency: 4 })
 
 // ── New production services ──────────────────────────────────────────
 
@@ -73,16 +71,16 @@ const workspaces = new WorkspaceManager({ dbPath: dataDir + "/workspaces.db" })
 const chatLog = new ChatLogStore({ dbPath: dataDir + "/chat-log.db" })
 const taskTracker = new TaskStateTracker({ dbPath: dataDir + "/tasks.db" })
 const scalableQueue = new ScalableQueue({
-  client,
+  executor,
   tracker: taskTracker,
   audit,
   budget,
   concurrency: 4,
   maxQueueDepth: 200,
 })
-const orchestrator = new SubagentOrchestrator({ client, audit })
+const orchestrator = new SubagentOrchestrator({ executor, audit })
 const parallelExecutor = new ParallelExecutionManager({
-  client,
+  executor,
   tracker: taskTracker,
   audit,
 })
@@ -107,8 +105,9 @@ const hitl = new HITLService(policyEngine, audit)
 console.log(`[hitl] Human-in-the-Loop service initialized`)
 
 // Wire HITL into tool executor so risky tool calls trigger approval flow
-import { setToolHITL } from "../services/tool-executor"
+import { setToolHITL, setSkillManager } from "../services/tool-executor"
 setToolHITL(hitl)
+setSkillManager(skills)
 
 // Start the scalable queue
 scalableQueue.start()
@@ -152,7 +151,7 @@ app.use("/api/*", async (c, next) => {
 
 // ── Root landing page ────────────────────────────────────────────────
 app.get("/", async (c) => {
-  const health = await client.health().catch(() => ({ ok: false }))
+  const health = { ok: true, standalone: true }
   // Use our provider registry — not OpenCode
   let registry: any = { local: [], cloud: [] }
   try { registry = await buildRegistry() } catch {}
@@ -1079,12 +1078,12 @@ app.get("/", async (c) => {
 })
 
 // Mount routes
-app.route("/health", healthRoutes(client))
-app.route("/api/sessions", sessionRoutes(client))
+app.route("/health", healthRoutes())
+app.route("/api/sessions", sessionRoutes(chatLog))
 app.route("/api/tasks", taskRoutes(queue, scalableQueue, taskTracker))
-app.route("/api/providers", providerRoutes(client))
-app.route("/api/files", fileRoutes(client))
-app.route("/api/events", eventRoutes(client, queue))
+app.route("/api/providers", providerRoutes(skills))
+app.route("/api/files", fileRoutes())
+app.route("/api/events", eventRoutes(queue))
 
 // New production routes
 app.route("/api/audit", auditRoutes(audit))
@@ -1139,16 +1138,25 @@ app.get("/api/install", (c) => {
   }
 })
 
-// Convenience: project + config pass-through
-app.get("/api/project", async (c) => c.json(await client.currentProject()))
-app.get("/api/projects", async (c) => c.json(await client.projects()))
-app.get("/api/config", async (c) => c.json(await client.config()))
+// Convenience: project + config — local fallback
+app.get("/api/project", async (c) => c.json({ id: "default", directory: env.OPENCODE_DIR, name: "default" }))
+app.get("/api/projects", async (c) => c.json([{ id: "default", directory: env.OPENCODE_DIR, name: "default" }]))
+app.get("/api/config", async (c) => c.json({ standalone: true, providers: Object.keys(process.env).filter(k => k.endsWith("_API_KEY")).map(k => k.replace("_API_KEY", "").toLowerCase()) }))
 app.patch("/api/config", async (c) => {
-  const body = await c.req.json()
-  return c.json(await client.updateConfig(body))
+  return c.json({ ok: false, message: "Config is managed via environment variables" }, 501)
 })
-app.get("/api/vcs", async (c) => c.json(await client.vcs()))
-app.get("/api/paths", async (c) => c.json(await client.paths()))
+app.get("/api/vcs", async (c) => {
+  // Simple git info
+  try {
+    const proc = Bun.spawn(["git", "log", "--format=%H %s", "-1"], { cwd: env.OPENCODE_DIR, stdout: "pipe", stderr: "pipe" })
+    const out = await new Response(proc.stdout).text()
+    const [sha, ...rest] = out.trim().split(" ")
+    const branchProc = Bun.spawn(["git", "branch", "--show-current"], { cwd: env.OPENCODE_DIR, stdout: "pipe", stderr: "pipe" })
+    const branch = (await new Response(branchProc.stdout).text()).trim()
+    return c.json({ branch, sha: sha || "unknown", message: rest.join(" ") || "" })
+  } catch { return c.json({ branch: "unknown", sha: "unknown", message: "" }) }
+})
+app.get("/api/paths", async (c) => c.json({ root: env.OPENCODE_DIR, platform: env.OPENCODE_DIR + "/platform" }))
 
 // Global error handler
 app.onError((err, c) => {
@@ -1177,23 +1185,7 @@ app.onError((err, c) => {
 app.notFound((c) => c.json({ error: "not_found", message: `${c.req.method} ${c.req.path} not found` }, 404))
 
 // ── Start ─────────────────────────────────────────────────────────────
-
-// Auto-start OpenCode engine if not already running.
-// Skipped if this module was imported by start-all.ts (which starts OpenCode first).
-{
-  const { isPortFree } = await import("../config/env")
-  const ocPort = Number(new URL(env.OPENCODE_URL).port || "4096")
-  if (isPortFree(ocPort, "127.0.0.1")) {
-    // Port is free → OpenCode is not running → start it
-    try {
-      const { opencode } = await import("../services/opencode-process")
-      const ocUrl = await opencode.start({ directory: env.OPENCODE_DIR })
-      console.log(`[platform] OpenCode engine started at ${ocUrl}`)
-    } catch (e: any) {
-      console.warn(`[platform] Could not auto-start OpenCode: ${e.message} — platform will run in standalone mode`)
-    }
-  }
-}
+// Platform runs standalone — no external engine needed.
 
 let serverPort = env.PORT
 
@@ -1218,11 +1210,19 @@ const server = Bun.serve({
   idleTimeout: 0,
 })
 
+// ── Initialize PostgreSQL (non-blocking — server starts immediately) ──
+if (pgEnabled) {
+  dbReady
+    .then(() => console.log(`[db] PostgreSQL ready`))
+    .catch((err) => console.error(`[db] PostgreSQL unavailable: ${err.message} — SQLite fallback active`))
+}
+
 console.log(`
 ┌───────────────────────────────────────────────────────┐
 │  Thirdwave AI Coding Platform                         │
 │  Platform  →  http://${server.hostname}:${server.port}│
 │  OpenCode  →  ${env.OPENCODE_URL}                     │
+│  Database  →  ${pgEnabled ? "PostgreSQL" : "SQLite (legacy)"}${" ".repeat(38 - (pgEnabled ? "PostgreSQL" : "SQLite (legacy)").length)}│
 │  Env       →  ${env.NODE_ENV}                         │
 └───────────────────────────────────────────────────────┘
 `)
@@ -1236,6 +1236,7 @@ async function shutdownPlatform() {
   try { taskTracker.dispose() } catch {}
   try { workspaces.dispose() } catch {}
   try { budget.dispose() } catch {}
+  try { await dbClose() } catch {}
   try { clearInterval(rateLimitCleanupInterval) } catch {}
   console.log("[platform] Server stopped.")
 }

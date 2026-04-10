@@ -23,6 +23,16 @@ const EnqueueBody = z.object({
   priority: z.number().min(0).max(100).optional(),
 })
 
+/** Normalize a TrackedTask into the SDK-compatible TaskRun shape. */
+function toTaskRun(t: import("../../services/task-state-tracker").TrackedTask) {
+  return {
+    ...t,
+    status: t.state,               // SDK expects `status`, tracker uses `state`
+    directory: t.workspaceID ?? "", // SDK expects `directory`
+    sessionID: t.sessionID ?? "",
+  }
+}
+
 export function taskRoutes(
   queue: TaskQueue,
   scalableQueue: ScalableQueue,
@@ -45,7 +55,7 @@ export function taskRoutes(
         modelID: body.modelID,
         priority: body.priority,
       })
-      return c.json(task, 201)
+      return c.json(toTaskRun(task), 201)
     })
 
     // List tasks — reads from tracker (persistent) + legacy queue (in-memory)
@@ -67,7 +77,7 @@ export function taskRoutes(
 
       // Convert legacy runs to a compatible format and merge
       const merged = [
-        ...tasks,
+        ...tasks.map(toTaskRun),
         ...legacyRuns
           .filter(r => !trackerIDs.has(r.id))
           .map(r => ({
@@ -101,7 +111,7 @@ export function taskRoutes(
     .get("/:id", async (c) => {
       const id = c.req.param("id")
       const task = tracker.get(id)
-      if (task) return c.json(task)
+      if (task) return c.json(toTaskRun(task))
 
       const legacyRun = queue.get(id)
       if (legacyRun) return c.json(legacyRun)

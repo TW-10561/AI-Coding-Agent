@@ -1,13 +1,12 @@
 // ---------------------------------------------------------------------------
 // Audit Logger — persistent, structured event log for every platform action.
 // ---------------------------------------------------------------------------
-// Every API call, prompt, session create/delete, task run, config change, etc.
-// is recorded here. The log is append-only, stored in SQLite for query-ability
-// and exported via REST for compliance / debugging.
+// Supports PostgreSQL (preferred) with SQLite fallback.
 // ---------------------------------------------------------------------------
 
 import { Database } from "bun:sqlite"
 import { ulid } from "ulid"
+import { sql as pgSql, pgEnabled } from "../config/db"
 
 export type AuditAction =
   | "session.create"
@@ -82,10 +81,12 @@ export class AuditLogger {
   private buffer: AuditEntry[] = []
   private flushInterval: ReturnType<typeof setInterval>
   private flushSize: number
+  private usePG: boolean
 
   constructor(opts?: { dbPath?: string; flushIntervalMs?: number; flushSize?: number }) {
     const dbPath = opts?.dbPath ?? "platform-audit.db"
     this.flushSize = opts?.flushSize ?? 50
+    this.usePG = pgEnabled
     this.db = new Database(dbPath)
     this.db.run("PRAGMA journal_mode = WAL")
     this.db.run("PRAGMA synchronous = NORMAL")
@@ -250,7 +251,7 @@ export class AuditLogger {
     return { total, byAction, errors, avgDuration: Math.round(avgDur) }
   }
 
-  /** Flush buffer to SQLite */
+  /** Flush buffer to SQLite (and PostgreSQL if enabled) */
   flush() {
     if (this.buffer.length === 0) return
     const entries = this.buffer.splice(0)
@@ -269,6 +270,25 @@ export class AuditLogger {
       }
     })
     tx()
+
+    // Mirror to PostgreSQL (fire-and-forget)
+    if (this.usePG) {
+      Promise.all(entries.map(e => {
+        const meta = {
+          ...e.metadata,
+          ...(e.sessionID && { _session_id: e.sessionID }),
+          ...(e.taskID && { _task_id: e.taskID }),
+          ...(e.workspaceID && { _workspace_id: e.workspaceID }),
+          ...(e.duration != null && { _duration_ms: e.duration }),
+          ...(e.ip && { _ip: e.ip }),
+          ...(e.error && { _error: e.error }),
+        }
+        return pgSql`
+          INSERT INTO audit_log (action, result, resource, metadata, timestamp)
+          VALUES (${e.action}, ${e.success ? "ok" : "error"}, ${e.sessionID || e.taskID || null}, ${JSON.stringify(meta)}::jsonb, ${new Date(e.timestamp).toISOString()})
+        `
+      })).catch(err => console.warn(`[audit-pg] write error: ${err.message}`))
+    }
   }
 
   /** Clean up resources */

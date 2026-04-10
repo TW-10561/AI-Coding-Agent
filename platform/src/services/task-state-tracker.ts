@@ -1,18 +1,12 @@
 // ---------------------------------------------------------------------------
 // Task State Machine — persistent state tracking for all platform tasks.
 // ---------------------------------------------------------------------------
-// Tracks full lifecycle of every task: queued → running → completed/failed.
-// Supports:
-//  - State transitions with validation
-//  - Persistent SQLite storage (survives restarts)
-//  - Event emission on state change
-//  - Progress tracking (percent, current step)
-//  - Task metadata and result storage
-//  - Filtering, pagination, search
+// Supports PostgreSQL (preferred) with SQLite fallback.
 // ---------------------------------------------------------------------------
 
 import { Database } from "bun:sqlite"
 import { ulid } from "ulid"
+import { sql as pgSql, pgEnabled } from "../config/db"
 
 export type TaskState = "queued" | "running" | "completed" | "failed" | "aborted" | "paused" | "retrying"
 
@@ -57,8 +51,10 @@ type StateChangeCallback = (task: TrackedTask, from: TaskState, to: TaskState) =
 export class TaskStateTracker {
   private db: Database
   private listeners = new Set<StateChangeCallback>()
+  private usePG: boolean
 
   constructor(opts?: { dbPath?: string }) {
+    this.usePG = pgEnabled
     this.db = new Database(opts?.dbPath ?? "platform-tasks.db")
     this.db.run("PRAGMA journal_mode = WAL")
     this.db.run("PRAGMA synchronous = NORMAL")
@@ -138,6 +134,19 @@ export class TaskStateTracker {
        task.progress, task.retries, task.maxRetries, task.priority, task.createdAt,
        task.orchestrationID ?? null, JSON.stringify(task.metadata)])
 
+    if (this.usePG) {
+      pgSql`
+        INSERT INTO tasks (id, user_id, workspace_id, type, state, title, prompt, agent_id, model_id,
+                           progress, retries, max_retries, priority, created_at, orchestration_id, metadata)
+        VALUES (${task.id}, ${task.userID}, ${task.workspaceID ?? null}, ${task.type}, ${task.state},
+                ${task.title}, ${task.prompt}, ${task.agentID ?? null}, ${task.modelID ?? null},
+                ${task.progress}, ${task.retries}, ${task.maxRetries}, ${task.priority},
+                ${new Date(task.createdAt).toISOString()}, ${task.orchestrationID ?? null},
+                ${JSON.stringify(task.metadata)}::jsonb)
+        ON CONFLICT (id) DO NOTHING
+      `.catch(e => console.warn(`[task-pg] create error: ${e.message}`))
+    }
+
     return task
   }
 
@@ -171,6 +180,20 @@ export class TaskStateTracker {
     const setClauses = Object.keys(updates).map(k => `${k} = ?`).join(", ")
     const values = Object.values(updates)
     this.db.run(`UPDATE tasks SET ${setClauses} WHERE id = ?`, ...(values as any[]), id)
+
+    // Mirror state change to PostgreSQL
+    if (this.usePG) {
+      pgSql`
+        UPDATE tasks SET state = ${to},
+          started_at = ${updates.started_at ? new Date(updates.started_at as number).toISOString() : null},
+          completed_at = ${updates.completed_at ? new Date(updates.completed_at as number).toISOString() : null},
+          error = ${(updates.error as string) ?? null},
+          result = ${(updates.result as string) ?? null},
+          progress = ${(updates.progress as number) ?? null},
+          retries = ${(updates.retries as number) ?? null}
+        WHERE id = ${id}
+      `.catch(e => console.warn(`[task-pg] transition error: ${e.message}`))
+    }
 
     const updated = this.get(id)!
     for (const cb of this.listeners) cb(updated, from, to)

@@ -3,27 +3,29 @@
 // ---------------------------------------------------------------------------
 
 import { Hono } from "hono"
-import { OpenCodeClient } from "../../services/opencode-client"
+import { dbHealth, pgEnabled } from "../../config/db"
 import type { HealthStatus } from "../../types"
 
 const startedAt = Date.now()
 
-export function healthRoutes(client: OpenCodeClient) {
+export function healthRoutes() {
   return new Hono()
     .get("/", async (c) => {
-      const oc = await client.health()
       const status: HealthStatus = {
         platform: "ok",
-        opencode: oc.ok ? "ok" : "unreachable",
+        opencode: "standalone",
         uptime: Date.now() - startedAt,
         version: "0.1.0",
       }
-      // Platform is always healthy if it can respond; OpenCode being down is degraded, not failed
       return c.json(status, 200)
     })
     .get("/ready", async (c) => {
-      const oc = await client.health()
-      // Ready means platform is up; OpenCode is optional
-      return c.json({ ready: true, opencode: oc.ok })
+      return c.json({ ready: true, standalone: true })
+    })
+    // ── Database health (Phase 1) ─────────────────────────────────────
+    .get("/db", async (c) => {
+      const health = await dbHealth()
+      const httpStatus = health.status === "ok" ? 200 : health.status === "degraded" ? 200 : 503
+      return c.json(health, httpStatus)
     })
 }

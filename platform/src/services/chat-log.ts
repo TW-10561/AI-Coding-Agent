@@ -1,10 +1,12 @@
 // ---------------------------------------------------------------------------
-// ChatLogStore — SQLite-backed log of /api/chat conversations.
-// Stores VS Code extension chat sessions so the dashboard can display them.
+// ChatLogStore — log of /api/chat conversations.
+// ---------------------------------------------------------------------------
+// Supports PostgreSQL (preferred) with SQLite fallback.
 // ---------------------------------------------------------------------------
 
 import { Database } from "bun:sqlite"
 import { ulid } from "ulid"
+import { sql as pgSql, pgEnabled } from "../config/db"
 
 export interface ChatSession {
   id: string
@@ -28,8 +30,10 @@ export interface ChatEntry {
 
 export class ChatLogStore {
   private db: Database
+  private usePG: boolean
 
   constructor(opts?: { dbPath?: string }) {
+    this.usePG = pgEnabled
     this.db = new Database(opts?.dbPath ?? "chat-log.db")
     this.db.run("PRAGMA journal_mode = WAL")
     this.db.run("PRAGMA synchronous = NORMAL")
@@ -97,6 +101,20 @@ export class ChatLogStore {
        VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?)`,
       [ulid(), opts.sessionId, opts.assistantReply, opts.model, opts.toolCallCount ?? 0, opts.latencyMs ?? null, now]
     )
+
+    // Mirror to PostgreSQL
+    if (this.usePG) {
+      const title = opts.userMessage.slice(0, 72) + (opts.userMessage.length > 72 ? "…" : "")
+      const userTs = now - (opts.latencyMs ?? 0)
+      pgSql`
+        INSERT INTO chat_sessions (id, title, model, message_count, last_message_at, created_at)
+        VALUES (${opts.sessionId}, ${title}, ${opts.model}, 2, ${new Date(now).toISOString()}, ${new Date(now).toISOString()})
+        ON CONFLICT (id) DO UPDATE SET message_count = chat_sessions.message_count + 2, last_message_at = EXCLUDED.last_message_at, model = EXCLUDED.model
+      `.then(() => Promise.all([
+        pgSql`INSERT INTO chat_entries (id, session_id, role, content, model, tool_call_count, latency_ms, timestamp) VALUES (${ulid()}, ${opts.sessionId}, 'user', ${opts.userMessage}, ${opts.model}, 0, ${null}, ${new Date(userTs).toISOString()})`,
+        pgSql`INSERT INTO chat_entries (id, session_id, role, content, model, tool_call_count, latency_ms, timestamp) VALUES (${ulid()}, ${opts.sessionId}, 'assistant', ${opts.assistantReply}, ${opts.model}, ${opts.toolCallCount ?? 0}, ${opts.latencyMs ?? null}, ${new Date(now).toISOString()})`,
+      ])).catch(e => console.warn(`[chatlog-pg] write error: ${e.message}`))
+    }
   }
 
   /** List recent sessions, newest first. */

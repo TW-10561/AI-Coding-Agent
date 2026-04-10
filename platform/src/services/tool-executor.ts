@@ -241,6 +241,226 @@ export const TOOL_DEFINITIONS: ToolDef[] = [
       },
     },
   },
+  // ── New tools (Phase 1 — RBAC-tracked in tool_metadata) ────────────
+  {
+    type: "function",
+    function: {
+      name: "edit",
+      description:
+        "Edit a specific section of a file by replacing old text with new text. Safer than write_file for targeted changes — preserves the rest of the file. Use for surgical edits.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "File path (absolute or project-relative)" },
+          oldText: { type: "string", description: "Exact text to find and replace (must match exactly, including whitespace)" },
+          newText: { type: "string", description: "Replacement text" },
+        },
+        required: ["path", "oldText", "newText"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "multiedit",
+      description:
+        "Apply multiple edits across one or more files in a single call. Each edit specifies a file, old text, and new text. All edits are applied atomically — if one fails, all are rolled back.",
+      parameters: {
+        type: "object",
+        properties: {
+          edits: {
+            type: "array",
+            description: "Array of edits to apply",
+            items: {
+              type: "object",
+              properties: {
+                path: { type: "string", description: "File path" },
+                oldText: { type: "string", description: "Text to find" },
+                newText: { type: "string", description: "Replacement text" },
+              },
+              required: ["path", "oldText", "newText"],
+            },
+          },
+        },
+        required: ["edits"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "apply_patch",
+      description:
+        "Apply a unified diff patch to a file. Use standard unified diff format (output of `diff -u` or `git diff`). Handles context lines and line offsets.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "File to patch" },
+          patch: { type: "string", description: "Unified diff content (starts with --- and +++)" },
+        },
+        required: ["path", "patch"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "glob",
+      description:
+        "Find files matching a glob pattern. Returns matching file paths. Use for discovering files by extension, name pattern, or directory structure.",
+      parameters: {
+        type: "object",
+        properties: {
+          pattern: { type: "string", description: "Glob pattern (e.g. '**/*.ts', 'src/**/*.test.*', '*.json')" },
+          path: { type: "string", description: "Base directory to search from (default: project root)" },
+          maxResults: { type: "number", description: "Max results to return (default: 100)" },
+        },
+        required: ["pattern"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "codesearch",
+      description:
+        "Semantic code search — find function definitions, class declarations, imports, type definitions, and symbol references. More precise than grep for code structure queries.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "What to search for (e.g. 'function handleAuth', 'class UserService', 'import express')" },
+          path: { type: "string", description: "Directory to search in (default: project root)" },
+          language: { type: "string", description: "Filter by language (e.g. 'typescript', 'python', 'rust')" },
+          maxResults: { type: "number", description: "Max results (default: 20)" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "websearch",
+      description:
+        "Search the web for information. Returns search results with titles, URLs, and snippets. Use for finding documentation, Stack Overflow answers, or API references.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Search query" },
+          maxResults: { type: "number", description: "Max results (default: 5)" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "batch",
+      description:
+        "Execute multiple independent tool calls in parallel. Use when you need to perform several operations that don't depend on each other (e.g. read multiple files, search + list simultaneously).",
+      parameters: {
+        type: "object",
+        properties: {
+          calls: {
+            type: "array",
+            description: "Array of tool calls to execute in parallel",
+            items: {
+              type: "object",
+              properties: {
+                tool: { type: "string", description: "Tool name to call" },
+                args: { type: "object", description: "Arguments for the tool" },
+              },
+              required: ["tool", "args"],
+            },
+          },
+        },
+        required: ["calls"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "task",
+      description:
+        "Create a background task for long-running operations. The task is queued and executed asynchronously. Use for operations that may take a long time (builds, test suites, deployments).",
+      parameters: {
+        type: "object",
+        properties: {
+          title: { type: "string", description: "Short title for the task" },
+          command: { type: "string", description: "Shell command to execute" },
+          timeout: { type: "number", description: "Timeout in ms (default: 300000 = 5 min)" },
+        },
+        required: ["title", "command"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "plan",
+      description:
+        "Create a structured execution plan for a complex task. Breaks down the task into numbered steps with descriptions. Use this to organize multi-step work before executing.",
+      parameters: {
+        type: "object",
+        properties: {
+          goal: { type: "string", description: "What you want to accomplish" },
+          steps: {
+            type: "array",
+            description: "Ordered list of steps",
+            items: {
+              type: "object",
+              properties: {
+                step: { type: "number", description: "Step number" },
+                action: { type: "string", description: "What to do" },
+                tool: { type: "string", description: "Which tool to use (optional)" },
+              },
+              required: ["step", "action"],
+            },
+          },
+        },
+        required: ["goal", "steps"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "question",
+      description:
+        "Ask the user a clarifying question before proceeding. Use when the request is ambiguous, requires a choice between alternatives, or needs more information to proceed correctly.",
+      parameters: {
+        type: "object",
+        properties: {
+          question: { type: "string", description: "The question to ask the user" },
+          options: {
+            type: "array",
+            description: "Optional list of choices for the user",
+            items: { type: "string" },
+          },
+          context: { type: "string", description: "Brief context about why you're asking" },
+        },
+        required: ["question"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "skill",
+      description:
+        "Load a skill (knowledge module) into context for specialized guidance. Skills provide best practices for specific domains like testing, debugging, API design, etc. List available skills or load one by name.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", description: "'list' to see available skills, 'load' to load a specific skill" },
+          name: { type: "string", description: "Skill name to load (required when action='load')" },
+        },
+        required: ["action"],
+      },
+    },
+  },
 ]
 
 // ── Tool Execution ───────────────────────────────────────────────────
@@ -655,6 +875,409 @@ async function execGitLog(args: { count?: number }, wsRoot?: string): Promise<To
 
 // ── Dispatcher ───────────────────────────────────────────────────
 
+// ── Edit tool — surgical find-and-replace ────────────────────────────
+
+async function execEdit(args: { path: string; oldText: string; newText: string }, wsRoot?: string): Promise<ToolResult> {
+  const filepath = resolvePath(args.path, wsRoot)
+
+  const check = await hitlCheck({ action: "edit", filePath: filepath })
+  if (!("proceed" in check)) return check
+
+  try {
+    const file = Bun.file(filepath)
+    if (!(await file.exists())) {
+      return { success: false, output: `File not found: ${args.path}` }
+    }
+    const content = await file.text()
+    const idx = content.indexOf(args.oldText)
+    if (idx === -1) {
+      return { success: false, output: `edit failed: oldText not found in ${args.path}. Make sure the text matches exactly (including whitespace and newlines).` }
+    }
+    // Check for multiple matches
+    const secondIdx = content.indexOf(args.oldText, idx + 1)
+    if (secondIdx !== -1) {
+      return { success: false, output: `edit failed: oldText matches multiple locations in ${args.path}. Add more surrounding context to make it unique.` }
+    }
+    const updated = content.slice(0, idx) + args.newText + content.slice(idx + args.oldText.length)
+    await Bun.write(filepath, updated)
+    return { success: true, output: `Edited ${args.path}: replaced ${args.oldText.length} chars with ${args.newText.length} chars` }
+  } catch (e: any) {
+    return { success: false, output: `Edit error: ${e.message ?? e}` }
+  }
+}
+
+// ── Multiedit tool — batch edits with rollback ───────────────────────
+
+async function execMultiedit(args: { edits: Array<{ path: string; oldText: string; newText: string }> }, wsRoot?: string): Promise<ToolResult> {
+  if (!args.edits || !Array.isArray(args.edits) || args.edits.length === 0) {
+    return { success: false, output: "multiedit: no edits provided" }
+  }
+
+  // Save originals for rollback
+  const originals = new Map<string, string>()
+  const results: string[] = []
+
+  try {
+    for (const edit of args.edits) {
+      const filepath = resolvePath(edit.path, wsRoot)
+
+      const check = await hitlCheck({ action: "edit", filePath: filepath })
+      if (!("proceed" in check)) return check
+
+      const file = Bun.file(filepath)
+      if (!(await file.exists())) {
+        throw new Error(`File not found: ${edit.path}`)
+      }
+
+      // Read original (cache to avoid re-reading if editing same file multiple times)
+      let content = originals.get(filepath)
+      if (content === undefined) {
+        content = await file.text()
+        originals.set(filepath, content)
+      }
+
+      const idx = content.indexOf(edit.oldText)
+      if (idx === -1) {
+        throw new Error(`oldText not found in ${edit.path}`)
+      }
+
+      content = content.slice(0, idx) + edit.newText + content.slice(idx + edit.oldText.length)
+      // Update in-memory state for subsequent edits to same file
+      originals.set(filepath, content)
+      await Bun.write(filepath, content)
+      results.push(`  ✓ ${edit.path}: replaced ${edit.oldText.length} → ${edit.newText.length} chars`)
+    }
+
+    return { success: true, output: `Applied ${args.edits.length} edits:\n${results.join("\n")}` }
+  } catch (e: any) {
+    // Rollback: restore originals
+    for (const [filepath, original] of originals) {
+      try { await Bun.write(filepath, original) } catch {}
+    }
+    return { success: false, output: `multiedit rolled back: ${e.message ?? e}` }
+  }
+}
+
+// ── Apply patch tool — unified diff ──────────────────────────────────
+
+async function execApplyPatch(args: { path: string; patch: string }, wsRoot?: string): Promise<ToolResult> {
+  const filepath = resolvePath(args.path, wsRoot)
+
+  const check = await hitlCheck({ action: "edit", filePath: filepath })
+  if (!("proceed" in check)) return check
+
+  try {
+    // Write patch to temp file and apply with `patch` command
+    const tmpPatch = `/tmp/thirdwave-patch-${Date.now()}.diff`
+    await Bun.write(tmpPatch, args.patch)
+
+    const proc = Bun.spawn(["patch", "--no-backup-if-mismatch", filepath, tmpPatch], {
+      cwd: getProjectDir(wsRoot),
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    const stdout = await new Response(proc.stdout).text()
+    const stderr = await new Response(proc.stderr).text()
+    const exitCode = await proc.exited
+
+    // Clean up temp file
+    try { const { unlinkSync } = await import("fs"); unlinkSync(tmpPatch) } catch {}
+
+    if (exitCode !== 0) {
+      return { success: false, output: `Patch failed:\n${stderr || stdout}` }
+    }
+    return { success: true, output: `Patched ${args.path}:\n${stdout}` }
+  } catch (e: any) {
+    return { success: false, output: `Patch error: ${e.message ?? e}` }
+  }
+}
+
+// ── Glob tool — find files by pattern ────────────────────────────────
+
+async function execGlob(args: { pattern: string; path?: string; maxResults?: number }, wsRoot?: string): Promise<ToolResult> {
+  const baseDir = args.path ? resolvePath(args.path, wsRoot) : getProjectDir(wsRoot)
+  const maxResults = args.maxResults ?? 100
+
+  try {
+    const { Glob } = require("bun")
+    const glob = new Glob(args.pattern)
+    const matches: string[] = []
+
+    for (const match of glob.scanSync({ cwd: baseDir, absolute: false })) {
+      // Skip noise directories
+      if (match.includes("node_modules/") || match.includes(".git/")) continue
+      matches.push(match)
+      if (matches.length >= maxResults) break
+    }
+
+    if (matches.length === 0) {
+      return { success: true, output: `No files match "${args.pattern}" in ${args.path || "."}` }
+    }
+    matches.sort()
+    const { text, truncated } = truncateOutput(matches.join("\n"))
+    return { success: true, output: `${matches.length} matches:\n${text}`, truncated }
+  } catch (e: any) {
+    return { success: false, output: `Glob error: ${e.message ?? e}` }
+  }
+}
+
+// ── Codesearch tool — symbol-aware grep ──────────────────────────────
+
+async function execCodesearch(args: { query: string; path?: string; language?: string; maxResults?: number }, wsRoot?: string): Promise<ToolResult> {
+  const searchPath = args.path ? resolvePath(args.path, wsRoot) : getProjectDir(wsRoot)
+  const maxResults = args.maxResults ?? 20
+
+  // Build language-specific include patterns
+  const langMap: Record<string, string> = {
+    typescript: "*.ts", javascript: "*.js", python: "*.py", rust: "*.rs",
+    go: "*.go", java: "*.java", cpp: "*.cpp", c: "*.c", ruby: "*.rb",
+    php: "*.php", swift: "*.swift", kotlin: "*.kt", css: "*.css",
+    html: "*.html", yaml: "*.yml", json: "*.json", sql: "*.sql",
+  }
+
+  // Build regex patterns for common code structures
+  const query = args.query
+  const patterns: string[] = []
+
+  // Direct search
+  patterns.push(query)
+
+  // Also search for common definition patterns
+  const words = query.replace(/^(function|class|type|interface|import|export|const|let|var|def|fn)\s+/i, "").trim()
+  if (words !== query) {
+    patterns.push(words) // Also search the bare identifier
+  }
+
+  try {
+    const grepArgs = ["grep", "-rn", "--color=never", "-m", String(maxResults * 3)]
+    if (args.language && langMap[args.language.toLowerCase()]) {
+      grepArgs.push(`--include=${langMap[args.language.toLowerCase()]}`)
+    }
+    // Exclude noise
+    grepArgs.push("--exclude-dir=node_modules", "--exclude-dir=.git", "--exclude-dir=dist", "--exclude-dir=build")
+    grepArgs.push("-e", patterns[0]!)
+    for (const p of patterns.slice(1)) {
+      grepArgs.push("-e", p)
+    }
+    grepArgs.push(searchPath)
+
+    const proc = Bun.spawn(grepArgs, { stdout: "pipe", stderr: "pipe" })
+    const stdout = await new Response(proc.stdout).text()
+    await proc.exited
+
+    if (!stdout.trim()) {
+      return { success: true, output: `No code matches for "${args.query}"${args.language ? ` in ${args.language} files` : ""}` }
+    }
+
+    const lines = stdout.trim().split("\n")
+    // Make paths relative and filter sensitive files
+    const relative = lines
+      .map(l => l.replace(getProjectDir(wsRoot) + "/", ""))
+      .filter(l => !isSensitiveFile(l.split(":")[0] ?? ""))
+      .slice(0, maxResults)
+
+    const { text, truncated } = truncateOutput(relative.join("\n"))
+    return { success: true, output: `${relative.length} code matches:\n${text}`, truncated }
+  } catch (e: any) {
+    return { success: false, output: `Codesearch error: ${e.message ?? e}` }
+  }
+}
+
+// ── Websearch tool — search the web ──────────────────────────────────
+
+async function execWebsearch(args: { query: string; maxResults?: number }): Promise<ToolResult> {
+  const maxResults = args.maxResults ?? 5
+
+  // Policy + HITL check
+  const check = await hitlCheck({ action: "web_fetch", url: `search:${args.query}` })
+  if (!("proceed" in check)) return check
+
+  try {
+    // Use DuckDuckGo HTML search (no API key required)
+    const q = encodeURIComponent(args.query)
+    const resp = await fetch(`https://html.duckduckgo.com/html/?q=${q}`, {
+      headers: { "User-Agent": "Thirdwave-AI/1.0" },
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (!resp.ok) {
+      return { success: false, output: `Search failed: HTTP ${resp.status}` }
+    }
+    const html = await resp.text()
+
+    // Parse results from DuckDuckGo HTML
+    const results: Array<{ title: string; url: string; snippet: string }> = []
+    const resultRegex = /<a[^>]+class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]+class="result__snippet"[^>]*>([\s\S]*?)<\/a>/gi
+    let match
+    while ((match = resultRegex.exec(html)) !== null && results.length < maxResults) {
+      const url = decodeURIComponent((match[1] ?? "").replace(/.*uddg=/, "").replace(/&.*/, ""))
+      const title = (match[2] ?? "").replace(/<[^>]+>/g, "").trim()
+      const snippet = (match[3] ?? "").replace(/<[^>]+>/g, "").trim()
+      if (url && title) {
+        results.push({ title, url, snippet })
+      }
+    }
+
+    if (results.length === 0) {
+      return { success: true, output: `No search results for "${args.query}"` }
+    }
+
+    const formatted = results.map((r, i) =>
+      `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`
+    ).join("\n\n")
+    return { success: true, output: `Search results for "${args.query}":\n\n${formatted}` }
+  } catch (e: any) {
+    return { success: false, output: `Search error: ${e.message ?? e}` }
+  }
+}
+
+// ── Batch tool — parallel execution ──────────────────────────────────
+
+async function execBatch(args: { calls: Array<{ tool: string; args: Record<string, unknown> }> }, wsRoot?: string): Promise<ToolResult> {
+  if (!args.calls || !Array.isArray(args.calls) || args.calls.length === 0) {
+    return { success: false, output: "batch: no tool calls provided" }
+  }
+  if (args.calls.length > 10) {
+    return { success: false, output: "batch: max 10 parallel calls allowed" }
+  }
+
+  // Policy + HITL check
+  const check = await hitlCheck({ action: "batch" })
+  if (!("proceed" in check)) return check
+
+  const results = await Promise.allSettled(
+    args.calls.map(async (call, i) => {
+      const handler = TOOL_HANDLERS[call.tool]
+      if (!handler) return { index: i, tool: call.tool, result: { success: false, output: `Unknown tool: ${call.tool}` } as ToolResult }
+      const result = await handler(call.args, wsRoot)
+      return { index: i, tool: call.tool, result }
+    })
+  )
+
+  const output = results.map((r, i) => {
+    if (r.status === "fulfilled") {
+      const v = r.value
+      return `[${i + 1}] ${v.tool}: ${v.result.success ? "✓" : "✗"}\n${v.result.output}`
+    }
+    return `[${i + 1}] ${args.calls[i]!.tool}: ✗ (crashed: ${r.reason})`
+  }).join("\n\n---\n\n")
+
+  const allSuccess = results.every(r => r.status === "fulfilled" && r.value.result.success)
+  return { success: allSuccess, output: `Batch (${args.calls.length} calls):\n\n${output}` }
+}
+
+// ── Task tool — queue a background task ──────────────────────────────
+
+async function execTask(args: { title: string; command: string; timeout?: number }, wsRoot?: string): Promise<ToolResult> {
+  const check = await hitlCheck({ action: "bash", command: args.command })
+  if (!("proceed" in check)) return check
+
+  const timeout = Math.min(args.timeout ?? 300_000, 600_000) // max 10 min
+  const cwd = getProjectDir(wsRoot)
+
+  try {
+    const proc = Bun.spawn(["bash", "-c", args.command], {
+      cwd,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env as Record<string, string>, HOME: process.env.HOME ?? "/root" },
+    })
+
+    const timer = setTimeout(() => {
+      try { proc.kill("SIGTERM") } catch {}
+      setTimeout(() => { try { proc.kill("SIGKILL") } catch {} }, 3000)
+    }, timeout)
+
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ])
+    const exitCode = await proc.exited
+    clearTimeout(timer)
+
+    let output = ""
+    if (stdout.trim()) output += stdout
+    if (stderr.trim()) output += (output ? "\n" : "") + stderr
+    if (!output) output = exitCode === 0 ? "(completed, no output)" : `Exit code: ${exitCode}`
+
+    const { text, truncated } = truncateOutput(output)
+    return {
+      success: exitCode === 0,
+      output: `Task "${args.title}" ${exitCode === 0 ? "completed" : "failed (exit " + exitCode + ")"}:\n${text}`,
+      truncated,
+    }
+  } catch (e: any) {
+    return { success: false, output: `Task error: ${e.message ?? e}` }
+  }
+}
+
+// ── Plan tool — structured execution plan ────────────────────────────
+
+async function execPlan(args: { goal: string; steps: Array<{ step: number; action: string; tool?: string }> }): Promise<ToolResult> {
+  if (!args.goal || !args.steps || args.steps.length === 0) {
+    return { success: false, output: "plan: provide a goal and at least one step" }
+  }
+
+  const formatted = args.steps.map(s =>
+    `  ${s.step}. ${s.action}${s.tool ? ` [tool: ${s.tool}]` : ""}`
+  ).join("\n")
+
+  return {
+    success: true,
+    output: `📋 Plan: ${args.goal}\n\n${formatted}\n\nReady to execute. Proceed step by step.`,
+  }
+}
+
+// ── Question tool — ask user for clarification ───────────────────────
+
+async function execQuestion(args: { question: string; options?: string[]; context?: string }): Promise<ToolResult> {
+  let output = `❓ ${args.question}`
+  if (args.context) output = `Context: ${args.context}\n\n${output}`
+  if (args.options && args.options.length > 0) {
+    output += "\n\nOptions:\n" + args.options.map((o, i) => `  ${i + 1}. ${o}`).join("\n")
+  }
+  return { success: true, output }
+}
+
+// ── Skill tool — load knowledge modules ──────────────────────────────
+
+let _skillManager: { search: (q: string, n: number) => Array<{ skill: { id: string; displayName: string; description: string }; relevance: number }>; get: (id: string) => { content: string; displayName: string } | undefined; list: () => Array<{ id: string; displayName: string; description: string; category: string }> } | null = null
+export function setSkillManager(sm: any) { _skillManager = sm }
+
+async function execSkill(args: { action: string; name?: string }): Promise<ToolResult> {
+  if (!_skillManager) {
+    return { success: false, output: "Skill manager not initialized" }
+  }
+
+  if (args.action === "list") {
+    const skills = _skillManager.list()
+    if (skills.length === 0) return { success: true, output: "No skills installed" }
+    const formatted = skills.map(s => `  • ${s.displayName} (${s.id}) — ${s.description}`).join("\n")
+    return { success: true, output: `Available skills (${skills.length}):\n${formatted}` }
+  }
+
+  if (args.action === "load" && args.name) {
+    const skill = _skillManager.get(args.name)
+    if (!skill) {
+      // Try search
+      const results = _skillManager.search(args.name, 1)
+      if (results.length > 0) {
+        const found = _skillManager.get(results[0]!.skill.id)
+        if (found) {
+          const { text, truncated } = truncateOutput(found.content, 30_000)
+          return { success: true, output: `Skill: ${found.displayName}\n\n${text}`, truncated }
+        }
+      }
+      return { success: false, output: `Skill "${args.name}" not found. Use skill(action="list") to see available skills.` }
+    }
+    const { text, truncated } = truncateOutput(skill.content, 30_000)
+    return { success: true, output: `Skill: ${skill.displayName}\n\n${text}`, truncated }
+  }
+
+  return { success: false, output: 'skill: action must be "list" or "load" (with name)' }
+}
+
+// ── Handler registry ─────────────────────────────────────────────────
+
 const TOOL_HANDLERS: Record<string, (args: any, wsRoot?: string) => Promise<ToolResult>> = {
   bash: execBash,
   read_file: execReadFile,
@@ -666,6 +1289,24 @@ const TOOL_HANDLERS: Record<string, (args: any, wsRoot?: string) => Promise<Tool
   git_status: execGitStatus,
   git_diff: execGitDiff,
   git_log: execGitLog,
+  // Phase 1 tools
+  edit: execEdit,
+  multiedit: execMultiedit,
+  apply_patch: execApplyPatch,
+  glob: execGlob,
+  codesearch: execCodesearch,
+  websearch: execWebsearch,
+  batch: execBatch,
+  task: execTask,
+  plan: execPlan,
+  question: execQuestion,
+  skill: execSkill,
+  // Aliases (PLAN names → existing tools)
+  read: execReadFile,
+  write: execWriteFile,
+  ls: execListDir,
+  grep: execGrepSearch,
+  webfetch: execWebFetch,
 }
 
 // Allow the chat route to override the workspace root dynamically

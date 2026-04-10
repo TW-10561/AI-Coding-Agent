@@ -104,6 +104,7 @@ To use a tool, you MUST include the following XML block in your response:
 ### bash
 Execute a shell command. Commands run in the project workspace directory.
 Parameters: {"command": "the shell command to run"}
+Optional: {"timeout": 30000, "workdir": "relative/path"}
 
 ### write_file
 Create or overwrite a file. Creates parent directories automatically. Use RELATIVE paths from the project root.
@@ -114,6 +115,18 @@ Read file contents. Use RELATIVE paths.
 Parameters: {"path": "relative/path/to/file.py"}
 Optional: {"startLine": 1, "endLine": 50}
 
+### edit
+Edit a specific section of a file by replacing old text with new text. Safer than write_file — preserves the rest of the file.
+Parameters: {"path": "file.ts", "oldText": "exact text to find", "newText": "replacement text"}
+
+### multiedit
+Apply multiple edits across one or more files atomically. If one edit fails, all are rolled back.
+Parameters: {"edits": [{"path": "file.ts", "oldText": "old", "newText": "new"}, ...]}
+
+### apply_patch
+Apply a unified diff patch to a file.
+Parameters: {"path": "file.ts", "patch": "--- a/file.ts\\n+++ b/file.ts\\n@@ ..."}
+
 ### list_dir
 List directory contents. Sorted (directories first, then files). Filters out noise dirs (node_modules, .git, etc.).
 Parameters: {"path": "."}
@@ -123,13 +136,28 @@ Optional: {"recursive": true, "depth": 3}
 Check whether a file or directory exists at a given path. Use this BEFORE read_file or list_dir when you are not certain the path exists. Returns "EXISTS" or "NOT_FOUND" with the type (file/directory).
 Parameters: {"path": "relative/path/to/check"}
 
+### glob
+Find files matching a glob pattern. Returns matching file paths.
+Parameters: {"pattern": "**/*.ts"}
+Optional: {"path": "src/", "maxResults": 100}
+
 ### grep_search
 Search files for a pattern (regex supported).
 Parameters: {"pattern": "search term", "path": ".", "include": "*.py"}
 
+### codesearch
+Semantic code search — find function/class/type definitions and symbol references. More precise than grep for code structure.
+Parameters: {"query": "function handleAuth"}
+Optional: {"path": "src/", "language": "typescript", "maxResults": 20}
+
 ### web_fetch
 Fetch content from a URL.
 Parameters: {"url": "https://example.com"}
+
+### websearch
+Search the web for information. Returns results with titles, URLs, and snippets.
+Parameters: {"query": "search terms"}
+Optional: {"maxResults": 5}
 
 ### git_status
 Show git branch and modified files.
@@ -143,6 +171,28 @@ Parameters: {"staged": false, "file": "optional/path"}
 Show recent commits.
 Parameters: {"count": 10}
 
+### batch
+Execute multiple independent tool calls in parallel. Max 10 calls.
+Parameters: {"calls": [{"tool": "read_file", "args": {"path": "a.ts"}}, {"tool": "read_file", "args": {"path": "b.ts"}}]}
+
+### task
+Run a long-running command as a background task (builds, test suites).
+Parameters: {"title": "Run tests", "command": "npm test"}
+Optional: {"timeout": 300000}
+
+### plan
+Create a structured execution plan for complex tasks.
+Parameters: {"goal": "what to accomplish", "steps": [{"step": 1, "action": "what to do", "tool": "optional tool"}]}
+
+### question
+Ask the user a clarifying question when the request is ambiguous.
+Parameters: {"question": "Which database?"}
+Optional: {"options": ["PostgreSQL", "MySQL"], "context": "reason for asking"}
+
+### skill
+Load specialized knowledge into context. Use action="list" to see available skills, action="load" with name to load one.
+Parameters: {"action": "list"} or {"action": "load", "name": "skill-name"}
+
 ## CRITICAL RULES
 1. You MUST use write_file tool to actually create files. Do NOT just show file content as markdown code blocks. Actually create them with write_file.
 2. You MUST use bash tool to run commands. Do NOT just describe what commands to run.
@@ -154,6 +204,9 @@ Parameters: {"count": 10}
 8. If one write_file fails, retry with bash: echo 'content' > file or cat << 'EOF' > file.
 9. ALWAYS use file_exists before read_file or list_dir when you are not 100% certain the path exists. This avoids wasted tool calls and errors. Example: call file_exists("src/components") before list_dir("src/components").
 10. When workspace is loading or you are starting a new task, use list_dir(".") first to understand the project structure before making assumptions about file locations.
+11. For surgical edits to existing files, prefer edit over write_file to avoid accidentally overwriting content.
+12. Use batch to parallelize independent operations (e.g. reading multiple files at once).
+13. Use plan to organize complex multi-step tasks before executing.
 `
 
 /**

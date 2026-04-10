@@ -1,26 +1,34 @@
 // ---------------------------------------------------------------------------
 // Event routes — /api/events
-// SSE proxy from OpenCode bus events → platform clients
+// SSE bus for platform events → clients
 // ---------------------------------------------------------------------------
 
 import { Hono } from "hono"
 import { streamSSE } from "hono/streaming"
-import { OpenCodeClient } from "../../services/opencode-client"
 import { TaskQueue } from "../../services/task-queue"
 
-export function eventRoutes(client: OpenCodeClient, queue: TaskQueue) {
+// Module-level event bus so any service can emit events
+type PlatformEvent = { type: string; [key: string]: unknown }
+type EventCB = (ev: PlatformEvent) => void
+const _listeners = new Set<EventCB>()
+export function emitPlatformEvent(ev: PlatformEvent) {
+  for (const cb of _listeners) cb(ev)
+}
+
+export function eventRoutes(queue: TaskQueue) {
   return new Hono().get("/", async (c) => {
     c.header("X-Accel-Buffering", "no")
     c.header("X-Content-Type-Options", "nosniff")
 
     return streamSSE(c, async (stream) => {
-      // 1. Forward all OpenCode bus events
-      const unsub = client.subscribe((event) => {
+      // 1. Forward platform-level events
+      const onEvent: EventCB = (event) => {
         stream.writeSSE({
           event: event.type,
           data: JSON.stringify(event),
         }).catch(() => {})
-      })
+      }
+      _listeners.add(onEvent)
 
       // 2. Forward task queue updates
       const unsubTasks = queue.onUpdate((run) => {
@@ -47,7 +55,7 @@ export function eventRoutes(client: OpenCodeClient, queue: TaskQueue) {
       await new Promise<void>((resolve) => {
         stream.onAbort(() => {
           clearInterval(heartbeat)
-          unsub()
+          _listeners.delete(onEvent)
           unsubTasks()
           resolve()
         })

@@ -12,6 +12,44 @@
 #   thirdwave --tui-only   (or: THIRDWAVE_URL=http://host:3100 bun run tui/src/main.ts)
 
 services:
+  # ── PostgreSQL ──────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: thirdwave-postgres
+    environment:
+      POSTGRES_DB: thirdwave
+      POSTGRES_USER: ${POSTGRES_USER:-thirdwave}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-thirdwave_secret}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../src/config/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ../src/config/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-thirdwave}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # ── PgBouncer ───────────────────────────────────────────────────────
+  pgbouncer:
+    image: edoburu/pgbouncer:1.22.0
+    container_name: thirdwave-pgbouncer
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-thirdwave}:${POSTGRES_PASSWORD:-thirdwave_secret}@postgres:5432/thirdwave
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 100
+      DEFAULT_POOL_SIZE: 30
+    ports:
+      - "${PGBOUNCER_PORT:-6432}:5432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Platform ────────────────────────────────────────────────────────
   platform:
     build:
       context: ../..
@@ -35,9 +73,15 @@ services:
       VLLM_CONTEXT_LIMIT: "${VLLM_CONTEXT_LIMIT:-30000}"
       VLLM_OUTPUT_LIMIT: "${VLLM_OUTPUT_LIMIT:-4096}"
       PLATFORM_API_KEY: "${PLATFORM_API_KEY:-}"
+      # PostgreSQL — use PgBouncer for connection pooling
+      POSTGRES_URL: "postgresql://${POSTGRES_USER:-thirdwave}:${POSTGRES_PASSWORD:-thirdwave_secret}@pgbouncer:5432/thirdwave"
+      JWT_SECRET: "${JWT_SECRET:-}"
     volumes:
       - ${PROJECT_DIR:-.}:/workspace:rw
       - opencode-state:/root/.local/share/opencode
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3100/health/ready"]
@@ -47,3 +91,4 @@ services:
 
 volumes:
   opencode-state:
+  pgdata:

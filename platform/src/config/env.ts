@@ -102,6 +102,20 @@ const Schema = z.object({
   PLATFORM_API_KEY: z.string().optional(),
   PLATFORM_JWT_SECRET: z.string().optional(),
 
+  // ── PostgreSQL ─────────────────────────────────────────────────────
+  // Required for Phase 1+.  Falls back to SQLite-only mode when unset.
+  POSTGRES_URL: z.string().url().optional(),
+  PGBOUNCER_URL: z.string().url().optional(),
+
+  // ── JWT auth (Phase 3+) ────────────────────────────────────────────
+  JWT_SECRET: z.string().optional(),
+  JWT_EXPIRY: z.string().default("8h"),
+  ONBOARDING_TOKEN_EXPIRY: z.string().default("24h"),
+
+  // ── Slack (Phase 5+) ──────────────────────────────────────────────
+  SLACK_WEBHOOK_URL: z.string().url().optional(),
+  APPROVAL_EXPIRY_MINUTES: z.coerce.number().default(30),
+
   // ── Logging ────────────────────────────────────────────────────────
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
 

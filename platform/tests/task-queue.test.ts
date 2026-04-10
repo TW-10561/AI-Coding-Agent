@@ -1,21 +1,19 @@
 // ---------------------------------------------------------------------------
-// Unit tests — task queue logic (no OpenCode server required)
+// Unit tests — task queue logic (no external server required)
 // ---------------------------------------------------------------------------
 
 import { describe, test, expect, mock } from "bun:test"
 import { TaskQueue } from "../src/services/task-queue"
-import { OpenCodeClient } from "../src/services/opencode-client"
+import { AgentExecutor } from "../src/services/agent-executor"
 
-// Minimal mock client
-const mockClient = {
-  createSession: mock(() => Promise.resolve({ id: "sess-1" })),
-  promptAsync: mock(() => Promise.resolve()),
-  abortSession: mock(() => Promise.resolve(true)),
-} as unknown as OpenCodeClient
+// Minimal mock executor
+const mockExecutor = {
+  run: mock(() => Promise.resolve({ text: "done", rounds: 1, tokens: { input: 10, output: 10 }, toolLog: [] })),
+} as unknown as AgentExecutor
 
 describe("TaskQueue", () => {
   test("enqueue creates a queued task", () => {
-    const queue = new TaskQueue({ client: mockClient, concurrency: 0 })
+    const queue = new TaskQueue({ executor: mockExecutor, concurrency: 0 })
     const run = queue.enqueue({
       userID: "u1",
       prompt: "hello",
@@ -27,21 +25,21 @@ describe("TaskQueue", () => {
   })
 
   test("list returns all runs", () => {
-    const queue = new TaskQueue({ client: mockClient, concurrency: 0 })
+    const queue = new TaskQueue({ executor: mockExecutor, concurrency: 0 })
     queue.enqueue({ userID: "u1", prompt: "a", directory: "/tmp" })
     queue.enqueue({ userID: "u2", prompt: "b", directory: "/tmp" })
     expect(queue.list().length).toBe(2)
   })
 
   test("list filters by userID", () => {
-    const queue = new TaskQueue({ client: mockClient, concurrency: 0 })
+    const queue = new TaskQueue({ executor: mockExecutor, concurrency: 0 })
     queue.enqueue({ userID: "u1", prompt: "a", directory: "/tmp" })
     queue.enqueue({ userID: "u2", prompt: "b", directory: "/tmp" })
     expect(queue.list({ userID: "u1" }).length).toBe(1)
   })
 
   test("abort queued task sets status to aborted", async () => {
-    const queue = new TaskQueue({ client: mockClient, concurrency: 0 })
+    const queue = new TaskQueue({ executor: mockExecutor, concurrency: 0 })
     const run = queue.enqueue({ userID: "u1", prompt: "x", directory: "/tmp" })
     const ok = await queue.abort(run.id)
     expect(ok).toBe(true)
@@ -49,7 +47,7 @@ describe("TaskQueue", () => {
   })
 
   test("onUpdate fires on enqueue", async () => {
-    const queue = new TaskQueue({ client: mockClient, concurrency: 0 })
+    const queue = new TaskQueue({ executor: mockExecutor, concurrency: 0 })
     const events: string[] = []
     queue.onUpdate((run) => events.push(run.status))
     queue.enqueue({ userID: "u1", prompt: "x", directory: "/tmp" })

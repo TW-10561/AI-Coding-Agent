@@ -1,18 +1,14 @@
 // ---------------------------------------------------------------------------
 // Workspace Manager — manages multiple project workspaces & directories.
 // ---------------------------------------------------------------------------
-// Each workspace is an isolated project context that OpenCode can work in.
-// The manager handles:
-//  - Registering, switching, and listing workspaces
-//  - Per-workspace configuration and session isolation
-//  - Directory validation and bookkeeping
-//  - Workspace metadata (name, description, tags, last accessed)
+// Supports PostgreSQL (preferred) with SQLite fallback.
 // ---------------------------------------------------------------------------
 
 import { Database } from "bun:sqlite"
 import { ulid } from "ulid"
 import * as fs from "fs"
 import * as path from "path"
+import { sql as pgSql, pgEnabled } from "../config/db"
 
 export interface Workspace {
   id: string
@@ -37,8 +33,10 @@ export interface WorkspaceCreateOptions {
 export class WorkspaceManager {
   private db: Database
   private _activeID: string | null = null
+  private usePG: boolean
 
   constructor(opts?: { dbPath?: string }) {
+    this.usePG = pgEnabled
     this.db = new Database(opts?.dbPath ?? "platform-workspaces.db")
     this.db.run("PRAGMA journal_mode = WAL")
     this.db.run("PRAGMA synchronous = NORMAL")
@@ -99,6 +97,15 @@ export class WorkspaceManager {
       VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
     `, [ws.id, ws.name, ws.directory, ws.description ?? null,
        JSON.stringify(ws.tags), ws.createdAt, ws.lastAccessedAt, JSON.stringify(ws.metadata)])
+
+    // Mirror to PostgreSQL
+    if (this.usePG) {
+      pgSql`
+        INSERT INTO workspaces (id, name, directory, tags, created_at)
+        VALUES (${ws.id}::uuid, ${ws.name}, ${ws.directory}, ${pgSql.array(ws.tags)}, ${new Date(ws.createdAt).toISOString()})
+        ON CONFLICT (id) DO NOTHING
+      `.catch(e => console.warn(`[workspace-pg] write error: ${e.message}`))
+    }
 
     return ws
   }
@@ -163,6 +170,15 @@ export class WorkspaceManager {
     if (patch.tags !== undefined) this.db.run("UPDATE workspaces SET tags = ? WHERE id = ?", [JSON.stringify(patch.tags), id])
     if (patch.metadata !== undefined) this.db.run("UPDATE workspaces SET metadata = ? WHERE id = ?", [JSON.stringify(patch.metadata), id])
 
+    // Mirror to PostgreSQL
+    if (this.usePG) {
+      const updated = this.get(id)!
+      pgSql`
+        UPDATE workspaces SET name = ${updated.name}, tags = ${pgSql.array(updated.tags)}
+        WHERE id = ${id}::uuid
+      `.catch(e => console.warn(`[workspace-pg] update error: ${e.message}`))
+    }
+
     return this.get(id)!
   }
 
@@ -172,6 +188,11 @@ export class WorkspaceManager {
     if (!ws) return false
     this.db.run("DELETE FROM workspaces WHERE id = ?", [id])
     if (this._activeID === id) this._activeID = null
+
+    if (this.usePG) {
+      pgSql`DELETE FROM workspaces WHERE id = ${id}::uuid`.catch(e => console.warn(`[workspace-pg] delete error: ${e.message}`))
+    }
+
     return true
   }
 

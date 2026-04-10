@@ -8,6 +8,27 @@
 # The VS Code extension connects to it at http://localhost:3100.
 
 services:
+  # ── PostgreSQL (dev) ────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: thirdwave-postgres-dev
+    environment:
+      POSTGRES_DB: thirdwave
+      POSTGRES_USER: ${POSTGRES_USER:-thirdwave}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-thirdwave_dev}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata-dev:/var/lib/postgresql/data
+      - ./platform/src/config/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./platform/src/config/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-thirdwave}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
   platform:
     build:
       context: .
@@ -15,15 +36,11 @@ services:
     container_name: thirdwave-dev
     ports:
       - "${PORT:-3100}:3100"
-      - "${OPENCODE_PORT:-4096}:4096"
     environment:
       PORT: "3100"
       HOST: "0.0.0.0"
       NODE_ENV: development
       LOG_LEVEL: "${LOG_LEVEL:-debug}"
-      OPENCODE_URL: "http://127.0.0.1:4096"
-      OPENCODE_BIN: opencode
-      OPENCODE_DIR: /workspace
       AGENT_WORKSPACE_DIR: /workspace/.agent-workspace
       # Gateway — update these to match your inference setup
       VLLM_GATEWAY_URL: "${VLLM_GATEWAY_URL:-http://172.30.140.63:9080/v1}"
@@ -35,6 +52,9 @@ services:
       GROQ_API_KEY: "${GROQ_API_KEY:-}"
       DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      # PostgreSQL — direct connection (no PgBouncer in dev)
+      POSTGRES_URL: "postgresql://${POSTGRES_USER:-thirdwave}:${POSTGRES_PASSWORD:-thirdwave_dev}@postgres:5432/thirdwave"
+      JWT_SECRET: "${JWT_SECRET:-dev-jwt-secret-change-in-production}"
     volumes:
       # Mount project source for live reload
       - ./platform/src:/app/platform/src:ro
@@ -45,8 +65,10 @@ services:
       - ./platform/skills:/app/platform/skills:rw
       # Workspace for agent file operations
       - workspace-data:/workspace
-      # Persist OpenCode state across restarts
-      - opencode-state:/root/.local/share/opencode
+
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3100/health/ready"]
@@ -56,4 +78,4 @@ services:
 
 volumes:
   workspace-data:
-  opencode-state:
+  pgdata-dev:
