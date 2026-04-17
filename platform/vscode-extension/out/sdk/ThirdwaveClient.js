@@ -232,6 +232,42 @@ class ThirdwaveClient {
     async resolveHitl(requestId, decision) {
         return this.request("POST", `/api/hitl/resolve/${encodeURIComponent(requestId)}`, { decision });
     }
+    // ── Auth ────────────────────────────────────────────────────────
+    async login(email, password) {
+        return this.request("POST", "/api/auth/login", { email, password });
+    }
+    async register(email, password, fullName) {
+        return this.request("POST", "/api/auth/register", { email, password, fullName });
+    }
+    async me() {
+        return this.request("GET", "/api/auth/me");
+    }
+    async updateProfile(fullName) {
+        return this.request("PATCH", "/api/auth/profile", { fullName });
+    }
+    async listApiKeys() {
+        return this.request("GET", "/api/auth/api-keys");
+    }
+    async getActiveKey() {
+        return this.request("GET", "/api/auth/api-keys/active");
+    }
+    async saveApiKey(apiKey, displayName, gatewayUrl) {
+        return this.request("POST", "/api/auth/api-keys", { apiKey, displayName, gatewayUrl });
+    }
+    async verifyApiKey(apiKey, gatewayUrl) {
+        return this.request("POST", "/api/auth/api-keys/verify", { apiKey, gatewayUrl });
+    }
+    async revokeApiKey(id) {
+        return this.request("DELETE", `/api/auth/api-keys/${encodeURIComponent(id)}`);
+    }
+    /** Update the Authorization header (e.g. after login) */
+    setToken(token) {
+        this.headers["authorization"] = `Bearer ${token}`;
+    }
+    /** Remove auth token (logout) */
+    clearToken() {
+        delete this.headers["authorization"];
+    }
 }
 exports.ThirdwaveClient = ThirdwaveClient;
 //# sourceMappingURL=ThirdwaveClient.js.map

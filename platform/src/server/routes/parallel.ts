@@ -28,7 +28,8 @@ export function parallelRoutes(executor: ParallelExecutionManager) {
     // Execute a parallel plan
     .post("/", async (c) => {
       const body = PlanBody.parse(await c.req.json())
-      const userID = "default" // TODO: replace with real auth user
+      const user = (c.var as any).user || {}
+      const userID = user.sub || "default"
 
       const exec = await executor.execute({
         name: body.name,
@@ -51,7 +52,9 @@ export function parallelRoutes(executor: ParallelExecutionManager) {
     // List all parallel executions
     .get("/", async (c) => {
       const status = c.req.query("status") as any
-      return c.json(executor.list({ status: status ?? undefined }))
+      const user = (c.var as any).user || {}
+      const userID = user.sub || undefined
+      return c.json(executor.list({ status: status ?? undefined, userID }))
     })
 
     // List ad-hoc parallel tool executions from the agent loop

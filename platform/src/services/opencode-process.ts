@@ -200,9 +200,9 @@ export class OpenCodeProcess {
  */
 function buildVllmConfig(): Record<string, unknown> {
   const modelKey = env.VLLM_MODEL_NAME.replace(/\s+/g, "-")
-  // Prefer gateway URL over direct vLLM URL
-  const baseURL = env.VLLM_GATEWAY_URL ?? env.VLLM_BASE_URL ?? "http://localhost:8000/v1"
-  const apiKey = env.VLLM_GATEWAY_KEY ?? env.VLLM_API_KEY ?? ""
+  // All local model traffic MUST go through the gateway — no direct vLLM fallback
+  const baseURL = env.VLLM_GATEWAY_URL ?? "http://localhost:8000/v1"
+  const apiKey = env.VLLM_GATEWAY_KEY ?? ""
   return {
     "$schema": "https://opencode.ai/config.json",
     provider: {

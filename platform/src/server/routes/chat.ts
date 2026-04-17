@@ -15,6 +15,7 @@ import { executeTool, getToolDefinitions } from "../../services/tool-executor"
 import type { WorkspaceManager } from "../../services/workspace-manager"
 import type { ChatLogStore } from "../../services/chat-log"
 import type { ParallelExecutionManager } from "../../services/parallel-executor"
+import { apiKeyService } from "../../services/api-key-service"
 
 const ChatBody = z.object({
   message: z.string().min(1),
@@ -553,7 +554,14 @@ export function chatRoutes(workspacesMgr?: WorkspaceManager, chatLog?: ChatLogSt
         console.warn("[chat] Policy engine error:", policyErr)
       }
 
-      const resolved = await resolveModel(body.modelID, body.providerID)
+      const currentUser = (c.get("user") as any) || {}
+      let resolved
+      try {
+        resolved = await resolveModel(body.modelID, body.providerID, currentUser.sub)
+      } catch (resolveErr: any) {
+        const status = resolveErr.status || 500
+        return c.json({ error: resolveErr.message || "Failed to resolve model", model: body.modelID }, status)
+      }
       let { endpoint, modelApiId, modelName, providerName, apiKey, cloudProviderId } = resolved
       // Preserve the original model the user selected — even after 429 fallback
       const originalModelName = modelName
@@ -575,13 +583,13 @@ export function chatRoutes(workspacesMgr?: WorkspaceManager, chatLog?: ChatLogSt
 
         if (body.workspaceRoot) {
           try {
-            const existing = workspacesMgr.findByDirectory(body.workspaceRoot)
+            const existing = await workspacesMgr.findByDirectory(body.workspaceRoot)
             if (!existing) {
               const name = body.workspaceRoot.split("/").filter(Boolean).pop() ?? "workspace"
-              workspacesMgr.create({ name, directory: body.workspaceRoot, tags: ["vscode"] })
+              await workspacesMgr.create({ name, directory: body.workspaceRoot, tags: ["vscode"] })
             } else {
               // Update last-accessed timestamp by switching (non-destructive)
-              workspacesMgr.update(existing.id, {})
+              await workspacesMgr.update(existing.id, {})
             }
           } catch {
             // Directory may not exist on the server — silently skip
@@ -590,7 +598,11 @@ export function chatRoutes(workspacesMgr?: WorkspaceManager, chatLog?: ChatLogSt
       }
 
       // Build initial messages
-      const useTools = body.tools !== false
+      // Auto-detect conversational messages: even if the client sends tools=true,
+      // simple greetings/questions should NOT include tool instructions. This
+      // prevents models from trying to run tools when the user just says "hi".
+      const clientWantsTools = body.tools !== false
+      const useTools = clientWantsTools && taskNeedsTools(body.message)
       const messages: Array<Record<string, any>> = []
 
       // Build system prompt: identity + base instructions + tool use format
@@ -677,6 +689,7 @@ export function chatRoutes(workspacesMgr?: WorkspaceManager, chatLog?: ChatLogSt
             const timeoutSecs = Math.round(inferenceTimeout / 1000)
             const elapsed = Date.now() - start
             console.log(`[chat] Round ${round}: Timeout after ${timeoutSecs}s (total elapsed: ${Math.round(elapsed / 1000)}s)`)
+            logErrorToChat(chatLog, body.sessionId, body.message, `Model inference timed out after ${timeoutSecs}s`, modelName, Date.now() - start)
             return c.json({
               error: "Model inference timed out",
               detail: `The model took longer than ${timeoutSecs}s to respond. Try a simpler prompt or disable tool-calling.`,
@@ -700,7 +713,7 @@ export function chatRoutes(workspacesMgr?: WorkspaceManager, chatLog?: ChatLogSt
             try { const j = JSON.parse(errText); if (j.detail) detail = j.detail } catch {}
 
             // Attempt fallback: try all online gateway models until one succeeds
-            const fallbacks = await findFallbackModels(modelApiId)
+            const fallbacks = await findFallbackModels(modelApiId, new Set(), apiKey)
             let fallbackSucceeded = false
             for (const fb of fallbacks) {
               console.log(`[chat] 429 on ${modelApiId} — trying fallback ${fb.modelApiId}`)
@@ -737,6 +750,7 @@ export function chatRoutes(workspacesMgr?: WorkspaceManager, chatLog?: ChatLogSt
               }
             }
             if (!fallbackSucceeded) {
+              logErrorToChat(chatLog, body.sessionId, body.message, `Rate limited by ${providerName}`, modelName, Date.now() - start)
               return c.json({ error: "Rate limited by model provider", detail, retryAfterSeconds: retryAfter ? Number(retryAfter) : 30, triedFallbacks: fallbacks.map(f => f.modelApiId) }, 429)
             }
           }
@@ -745,6 +759,7 @@ export function chatRoutes(workspacesMgr?: WorkspaceManager, chatLog?: ChatLogSt
             const errText = await res.text().catch(() => "")
             let detail = errText.slice(0, 300)
             try { const j = JSON.parse(errText); if (j.detail) detail = j.detail } catch {}
+            logErrorToChat(chatLog, body.sessionId, body.message, `Model access denied: ${detail}`, modelName, Date.now() - start)
             return c.json({ error: `Model access denied: ${detail}`, detail, model: modelName, provider: providerName }, 403)
           }
           // Gateway/provider temporarily unavailable — retry once after 2s
@@ -759,6 +774,7 @@ export function chatRoutes(workspacesMgr?: WorkspaceManager, chatLog?: ChatLogSt
               const retryErrText = await retryRes.text().catch(() => "")
               let retryDetail = retryErrText.slice(0, 500)
               try { const j = JSON.parse(retryErrText); if (j.detail) retryDetail = j.detail } catch {}
+              logErrorToChat(chatLog, body.sessionId, body.message, `${providerName} unavailable (${retryRes.status}) after retry`, modelName, Date.now() - start)
               return c.json({ error: `${providerName} unavailable (${retryRes.status}) after retry`, detail: retryDetail }, 503)
             } catch {}
           }
@@ -766,6 +782,7 @@ export function chatRoutes(workspacesMgr?: WorkspaceManager, chatLog?: ChatLogSt
             const errText = await res.text().catch(() => "")
             let detail = errText.slice(0, 500)
             try { const j = JSON.parse(errText); if (j.detail) detail = j.detail } catch {}
+            logErrorToChat(chatLog, body.sessionId, body.message, `${providerName} error (${res.status}): ${detail}`, modelName, Date.now() - start)
             return c.json({ error: `${providerName} error (${res.status})`, detail }, 502)
           }
         }
@@ -933,7 +950,14 @@ export function chatRoutes(workspacesMgr?: WorkspaceManager, chatLog?: ChatLogSt
         }
       } catch {}
 
-      const resolved = await resolveModel(body.modelID, body.providerID)
+      const currentUser = (c.get("user") as any) || {}
+      let resolved
+      try {
+        resolved = await resolveModel(body.modelID, body.providerID, currentUser.sub)
+      } catch (resolveErr: any) {
+        const status = resolveErr.status || 500
+        return c.json({ error: resolveErr.message || "Failed to resolve model", model: body.modelID }, status)
+      }
       const { endpoint, modelApiId, apiKey, cloudProviderId } = resolved
 
       const messages: Array<{ role: string; content: string }> = []
@@ -999,7 +1023,14 @@ export function chatRoutes(workspacesMgr?: WorkspaceManager, chatLog?: ChatLogSt
         }
       } catch {}
 
-      const resolved = await resolveModel(body.modelID, body.providerID)
+      const currentUser = (c.get("user") as any) || {}
+      let resolved
+      try {
+        resolved = await resolveModel(body.modelID, body.providerID, currentUser.sub)
+      } catch (resolveErr: any) {
+        const status = resolveErr.status || 500
+        return c.json({ error: resolveErr.message || "Failed to resolve model", model: body.modelID }, status)
+      }
       const { endpoint, modelApiId, modelName, providerName, apiKey, cloudProviderId } = resolved
 
       const messages: Array<{ role: string; content: string }> = []
@@ -1112,18 +1143,19 @@ export function chatRoutes(workspacesMgr?: WorkspaceManager, chatLog?: ChatLogSt
     /**
      * GET /api/chat/sessions — list VS Code extension chat sessions from platform log
      */
-    .get("/sessions", (c) => {
+    .get("/sessions", async (c) => {
       if (!chatLog) return c.json([])
       const limit = c.req.query("limit") ? Number(c.req.query("limit")) : 50
-      return c.json(chatLog.listSessions(limit))
+      const currentUser = (c.get("user") as any) || {}
+      return c.json(await chatLog.listSessions(limit, currentUser.sub))
     })
 
     /**
      * GET /api/chat/sessions/:id — get all messages in a session
      */
-    .get("/sessions/:id", (c) => {
+    .get("/sessions/:id", async (c) => {
       if (!chatLog) return c.json({ error: "not_found" }, 404)
-      const entries = chatLog.getEntries(c.req.param("id"))
+      const entries = await chatLog.getEntries(c.req.param("id"))
       if (entries.length === 0) return c.json({ error: "not_found" }, 404)
       return c.json(entries)
     })
@@ -1143,6 +1175,7 @@ function logAndReturn(
 ) {
   if (chatLog && sessionId) {
     const text = stripToolBlocks(data.choices?.[0]?.message?.content ?? "")
+    const currentUser = (c.get("user") as any) || {}
     try {
       chatLog.store({
         sessionId,
@@ -1151,10 +1184,36 @@ function logAndReturn(
         model: modelName,
         toolCallCount: toolLog.length,
         latencyMs,
+        userId: currentUser.sub,
       })
     } catch {}
   }
   return formatFinalResponse(c, data, latencyMs, modelName, providerName, extraInput, extraOutput, toolLog)
+}
+
+/** Log an error response to chat history so it appears in session list. */
+function logErrorToChat(
+  chatLog: ChatLogStore | undefined,
+  sessionId: string | undefined,
+  userMessage: string,
+  errorDetail: string,
+  model: string,
+  latencyMs: number,
+  userId?: string,
+) {
+  if (chatLog && sessionId && userMessage) {
+    try {
+      chatLog.store({
+        sessionId,
+        userMessage,
+        assistantReply: `⚠️ Error: ${errorDetail}`,
+        model,
+        toolCallCount: 0,
+        latencyMs,
+        userId,
+      })
+    } catch {}
+  }
 }
 
 function formatFinalResponse(
@@ -1205,13 +1264,15 @@ const IMAGE_MODEL_RE = /dall-e|stable-diffusion|midjourney|imagen/i
 async function findFallbackModels(
   currentModelId: string,
   skipIds: Set<string> = new Set(),
+  preferredApiKey?: string,
 ): Promise<Array<{
   endpoint: string; modelApiId: string; modelName: string; providerName: string
   apiKey: string; contextLimit?: number; outputLimit?: number
 }>> {
   const reg = await buildRegistry()
   const gwEndpoint = env.VLLM_GATEWAY_URL ?? ""
-  const gwKey = env.VLLM_GATEWAY_KEY ?? ""
+  // Use only the user's verified key — no system key fallback
+  const gwKey = preferredApiKey || ""
 
   type Candidate = {
     endpoint: string; apiKey: string; modelApiId: string; modelName: string
@@ -1246,6 +1307,7 @@ async function findFallbackModels(
 async function resolveModel(
   modelID?: string,
   providerID?: string,
+  userId?: string,
 ): Promise<{
   endpoint: string
   modelApiId: string
@@ -1261,13 +1323,29 @@ async function resolveModel(
 
   // All local traffic routes through the gateway
   const gwEndpoint = env.VLLM_GATEWAY_URL ?? ""
-  const gwKey      = env.VLLM_GATEWAY_KEY ?? ""
+
+  // Per-user vLLM key REQUIRED — each user must have an admin-verified key.
+  // No system key fallback; users without a verified key cannot use local models.
+  let userGwKey = ""
+  if (userId) {
+    try {
+      userGwKey = await apiKeyService.getActiveVllmKey(userId) || ""
+    } catch {
+      userGwKey = ""
+    }
+  }
 
   // Helper: resolve endpoint/apiKey for a local provider — always gateway
   function localEndpoint(_p: typeof reg.local[0]) {
+    if (!userGwKey) {
+      throw Object.assign(
+        new Error("Your API key has not been verified by an admin yet, or no key is configured. Please add your infra API key and wait for admin approval."),
+        { status: 403 }
+      )
+    }
     return {
       endpoint: gwEndpoint || _p.endpoint,
-      apiKey: gwKey || "",
+      apiKey: userGwKey,
     }
   }
 

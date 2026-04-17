@@ -28,3 +28,16 @@ opencode-dev
 logs/
 *.bun-build
 tsconfig.tsbuildinfo
+
+# SQLite data files (migrated to PostgreSQL)
+*.db
+*.db-shm
+*.db-wal
+.platform/
+
+# Build artifacts
+main
+*.vsix
+pgadmin-servers.json
+generate_docs.py
+generate_remaining_docs.py

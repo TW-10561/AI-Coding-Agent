@@ -5,6 +5,7 @@
 import { Hono } from "hono"
 import { OpenCodeClient } from "../../services/opencode-client"
 import type { HealthStatus } from "../../types"
+import { dbHealth } from "../../config/db"
 
 const startedAt = Date.now()
 
@@ -25,5 +26,9 @@ export function healthRoutes(client: OpenCodeClient) {
       const oc = await client.health()
       // Ready means platform is up; OpenCode is optional
       return c.json({ ready: true, opencode: oc.ok })
+    })
+    .get("/db", async (c) => {
+      const health = await dbHealth()
+      return c.json(health, health.status === "ok" ? 200 : 503)
     })
 }

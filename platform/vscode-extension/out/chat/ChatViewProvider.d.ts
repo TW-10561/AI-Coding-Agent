@@ -34,6 +34,8 @@ export declare class ChatViewProvider implements vscode.WebviewViewProvider {
     notifyModelChanged(model: string): void;
     notifyAgentChanged(agent: string): void;
     createSession(): Promise<void>;
+    /** Ensure the client has the JWT set from saved state */
+    private _ensureToken;
     resolveWebviewView(webviewView: vscode.WebviewView, _ctx: vscode.WebviewViewResolveContext, _token: vscode.CancellationToken): void;
     private _modelsRetryCount;
     private _skillsRetryCount;

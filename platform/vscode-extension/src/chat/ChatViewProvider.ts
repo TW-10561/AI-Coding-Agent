@@ -113,6 +113,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // This prevents empty "New chat" entries from cluttering session history.
   }
 
+  /** Ensure the client has the JWT set from saved state */
+  private _ensureToken(): boolean {
+    const savedToken = this._context.globalState.get<string>("thirdwave.jwt");
+    if (savedToken) {
+      this._client.setToken(savedToken);
+      return true;
+    }
+    return false;
+  }
+
   resolveWebviewView(
     webviewView: vscode.WebviewView,
     _ctx: vscode.WebviewViewResolveContext,
@@ -123,6 +133,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       enableScripts: true,
       localResourceRoots: [this._extensionUri],
     };
+    // Restore JWT token on the client before webview loads
+    this._ensureToken();
+
     webviewView.webview.html = this._html(webviewView.webview);
 
     // Re-load data whenever the sidebar becomes visible (covers cases where
@@ -136,6 +149,135 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     webviewView.webview.onDidReceiveMessage(async (msg) => {
       switch (msg.type) {
+        // ── Auth messages ──────────────────────────────────────────
+        case "login": {
+          const { email, password } = msg;
+          if (!email || !password) { this._post({ type: "authError", error: "Email and password required" }); break; }
+          try {
+            const result = await this._client.login(email, password);
+            this._client.setToken(result.token);
+            this._context.globalState.update("thirdwave.jwt", result.token);
+            this._context.globalState.update("thirdwave.user", result.user);
+            const keys = await this._client.listApiKeys().catch(() => ({ keys: [] as any[] }));
+            const activeKeys = (keys.keys || []).filter((k: any) => k.status === "active");
+            const hasApiKey = activeKeys.length > 0;
+            const adminVerified = activeKeys.some((k: any) => k.adminVerified);
+            this._post({ type: "authSuccess", user: result.user, hasApiKey, adminVerified, apiKeys: keys.keys || [] });
+            // Reload all data now that we're authenticated
+            this._loadModels(); this._loadSkills(); this._loadHitl();
+          } catch (e: any) {
+            this._post({ type: "authError", error: e.message || "Login failed" });
+          }
+          break;
+        }
+        case "register": {
+          const { email, password, fullName } = msg;
+          if (!email || !password) { this._post({ type: "authError", error: "Email and password required" }); break; }
+          try {
+            const result = await this._client.register(email, password, fullName);
+            this._post({ type: "registerSuccess", message: result.message || "Registration submitted for approval" });
+          } catch (e: any) {
+            this._post({ type: "authError", error: e.message || "Registration failed" });
+          }
+          break;
+        }
+        case "logout":
+          this._client.clearToken();
+          this._context.globalState.update("thirdwave.jwt", undefined);
+          this._context.globalState.update("thirdwave.user", undefined);
+          this._post({ type: "loggedOut" });
+          break;
+        case "updateProfile": {
+          const { fullName } = msg;
+          try {
+            const result = await this._client.updateProfile(fullName.trim());
+            this._context.globalState.update("thirdwave.user", result.user);
+            this._post({ type: "profileUpdated", user: result.user });
+          } catch (e: any) {
+            this._post({ type: "profileError", error: e.message || "Failed to update profile" });
+          }
+          break;
+        }
+        case "verifyApiKey": {
+          this._ensureToken();
+          const { apiKey, gatewayUrl } = msg;
+          try {
+            const result = await this._client.verifyApiKey(apiKey, gatewayUrl);
+            this._post({ type: "apiKeyVerified", result });
+          } catch (e: any) {
+            this._post({ type: "apiKeyVerifyError", error: e.message || "Failed to verify API key" });
+          }
+          break;
+        }
+        case "saveApiKey": {
+          this._ensureToken();
+          const { apiKey, displayName, gatewayUrl } = msg;
+          try {
+            const result = await this._client.saveApiKey(apiKey, displayName, gatewayUrl);
+            const keys = await this._client.listApiKeys().catch(() => ({ keys: [] as any[] }));
+            this._post({ type: "apiKeySaved", result, keys: keys.keys || [] });
+          } catch (e: any) {
+            this._post({ type: "apiKeySaveError", error: e.message || "Failed to save API key" });
+          }
+          break;
+        }
+        case "revokeApiKey": {
+          this._ensureToken();
+          const { keyId } = msg;
+          try {
+            await this._client.revokeApiKey(keyId);
+            const keys = await this._client.listApiKeys().catch(() => ({ keys: [] as any[] }));
+            this._post({ type: "apiKeyRevoked", keys: keys.keys || [] });
+          } catch (e: any) {
+            this._post({ type: "apiKeySaveError", error: e.message || "Failed to revoke API key" });
+          }
+          break;
+        }
+        case "listApiKeys": {
+          this._ensureToken();
+          try {
+            const keys = await this._client.listApiKeys();
+            this._post({ type: "apiKeysData", keys: keys.keys || [] });
+          } catch (e: any) {
+            // Ignore when not authenticated; auth flow will load keys after login.
+          }
+          break;
+        }
+        case "getActiveKey": {
+          this._ensureToken();
+          try {
+            const result = await this._client.getActiveKey();
+            this._post({ type: "activeKeyData", key: result.key });
+          } catch (e: any) {
+            this._post({ type: "activeKeyData", key: null });
+          }
+          break;
+        }
+        case "checkAuth": {
+          const savedToken = this._context.globalState.get<string>("thirdwave.jwt");
+          const savedUser = this._context.globalState.get<any>("thirdwave.user");
+          if (savedToken) {
+            this._client.setToken(savedToken);
+            try {
+              const me = await this._client.me();
+              this._context.globalState.update("thirdwave.user", me.user);
+              const keys = await this._client.listApiKeys().catch(() => ({ keys: [] as any[] }));
+              const activeKeys = (keys.keys || []).filter((k: any) => k.status === "active");
+              const hasApiKey = activeKeys.length > 0;
+              const adminVerified = activeKeys.some((k: any) => k.adminVerified);
+              this._post({ type: "authSuccess", user: me.user, hasApiKey, adminVerified, apiKeys: keys.keys || [] });
+            } catch {
+              // Token expired — clear it
+              this._client.clearToken();
+              this._context.globalState.update("thirdwave.jwt", undefined);
+              this._context.globalState.update("thirdwave.user", undefined);
+              this._post({ type: "authRequired" });
+            }
+          } else {
+            this._post({ type: "authRequired" });
+          }
+          break;
+        }
         case "sendMessage": 
           if (typeof msg.text === "string") await this._onUserMessage(msg.text); 
           break;
@@ -147,6 +289,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // Immediately allow new messages — don't wait for the finally block
           this._isStreaming = false;
           break;
+        case "compactConversation": {
+          // Compact the conversation history: keep last 6 messages, summarize older
+          if (this._history.length <= 6) {
+            this._post({ type: "compactResult", message: "Conversation is already compact." });
+            break;
+          }
+          const keepLast = 6;
+          const older = this._history.slice(0, -keepLast);
+          const recent = this._history.slice(-keepLast);
+          let summary = "[Earlier conversation compacted]\n";
+          for (const m of older) {
+            const preview = m.content.replace(/\s+/g, " ").substring(0, 120);
+            summary += `• ${m.role}: ${preview}${m.content.length > 120 ? "…" : ""}\n`;
+          }
+          // Replace history with compacted version
+          const compactedMsg: ChatMessage = { role: "assistant", content: summary, timestamp: Date.now() };
+          this._history = [compactedMsg, ...recent];
+          if (this._currentSessionId) {
+            this._saveSessionHistory(this._currentSessionId, this._history);
+          }
+          this._post({ type: "compactResult", message: `Compacted ${older.length} messages into summary. ${recent.length} recent messages kept.`, removedCount: older.length });
+          break;
+        }
         case "newSession": await this.createSession(); break;
         case "ready":
           this._post({ type: "init", model: this._currentModel, agent: this._currentAgent, sessionId: this._currentSessionId, language: this._currentLanguage });
@@ -345,16 +510,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       console.log(`[thirdwave] _loadModels: got ${reg.local?.length ?? 0} local, ${reg.cloud?.length ?? 0} cloud providers`);
       this._post({ type: "modelsData", registry: reg });
       this._modelsRetryCount = 0; // success — reset
+      // Auto-select first online model if none is set
+      if (!this._currentModel) {
+        for (const p of reg.local ?? []) {
+          if (p.status === "online" && p.models?.length) {
+            this._currentModel = p.models[0].id;
+            this._post({ type: "modelChanged", model: this._currentModel });
+            break;
+          }
+        }
+      }
     } catch (err) {
       console.error("[thirdwave] _loadModels FAILED:", err);
       this._post({ type: "modelsData", registry: { local: [], cloud: [], activeModel: "none" } });
       // Keep retrying with back-off (5s, 10s, 15s … max 30s) until server is up
-      if (!forceRefresh) {
-        this._modelsRetryCount++;
-        const delay = Math.min(this._modelsRetryCount * 5000, 30000);
-        console.log(`[thirdwave] _loadModels: retry #${this._modelsRetryCount} in ${delay}ms`);
-        setTimeout(() => this._loadModels(), delay);
-      }
+      this._modelsRetryCount++;
+      const delay = Math.min(this._modelsRetryCount * 5000, 30000);
+      console.log(`[thirdwave] _loadModels: retry #${this._modelsRetryCount} in ${delay}ms`);
+      setTimeout(() => this._loadModels(), delay);
     }
   }
   private async _loadSkills() {
@@ -574,14 +747,51 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Clear file attachments after building context (one-shot)
       this._workspace.clearAttachments();
 
-      // Send context compaction info to webview so user can see what was sent
+      // ── Context compaction info ─────────────────────────────────
+      // Approximate token counts (4 chars ≈ 1 token) and category breakdown
+      const estimateTokens = (chars: number) => Math.ceil(chars / 4);
+      const systemLen = systemPrompt ? systemPrompt.length : 0;
+      const historyLen = histSlice.reduce((n, h) => n + h.content.length, 0);
+      const userMsgLen = text.length;
+      const totalChars = systemLen + historyLen + userMsgLen;
+      // Real token counts come from promptParts content
+      const systemInstructionChars = (promptParts[0] || "").length + (agentInstruction || "").length;
+      // Tool definitions are ~3K chars when enabled (injected server-side)
+      const toolDefChars = tools ? 3200 : 0;
+      const wsContextChars = wsContext ? wsContext.length : 0;
+      const skillChars = promptParts.filter(p => p.startsWith("## Skill:") || p.startsWith("## Active Skills")).reduce((n, s) => n + s.length, 0);
+      // Get model's context limit from overrides or default (already in tokens)
+      const modelCtxLimit = this._modelConfigOverrides.contextWindow || 128000;
+      const contextTokens = estimateTokens(totalChars);
+      const contextPct = Math.min(100, Math.round((contextTokens / modelCtxLimit) * 100));
+
       const contextSummary: string[] = [];
       if (wsContext) contextSummary.push("Workspace context: active file, open files, diagnostics");
       const gitInfo = await this._workspace.getGitStatus().catch(() => null);
       if (gitInfo) contextSummary.push(`Git: ${gitInfo.branch} (${gitInfo.changes.length} changes)`);
       if (selectedIds.length > 0) contextSummary.push(`Skills: ${selectedIds.length} active`);
-      const ctxLen = systemPrompt ? systemPrompt.length : 0;
-      this._post({ type: "contextInfo", summary: contextSummary, charCount: ctxLen, activeSkills: selectedIds });
+      this._post({
+        type: "contextInfo",
+        summary: contextSummary,
+        charCount: totalChars,
+        activeSkills: selectedIds,
+        // Rich context window data
+        contextWindow: {
+          usedTokens: contextTokens,
+          maxTokens: modelCtxLimit,
+          percentage: contextPct,
+          breakdown: {
+            system: { chars: systemInstructionChars, tokens: estimateTokens(systemInstructionChars), label: "System Instructions" },
+            tools: { chars: toolDefChars, tokens: estimateTokens(toolDefChars), label: "Tool Definitions" },
+            workspace: { chars: wsContextChars, tokens: estimateTokens(wsContextChars), label: "Workspace Context" },
+            skills: { chars: skillChars, tokens: estimateTokens(skillChars), label: "Active Skills" },
+            history: { chars: historyLen, tokens: estimateTokens(historyLen), label: "Messages" },
+            userMessage: { chars: userMsgLen, tokens: estimateTokens(userMsgLen), label: "Current Message" },
+          },
+          historyMessageCount: histSlice.length,
+          totalHistoryCount: this._history.length,
+        },
+      });
 
       // Start streaming — show tokens as they arrive
       this._post({ type: "streamStart" });
@@ -773,12 +983,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /** Parse raw API error messages into user-friendly text */
   private _formatErrorMessage(raw: string): string {
+    if (!raw || raw === "Error" || raw === "error") {
+      return "An unexpected error occurred. Please try again.";
+    }
     // Try to extract JSON body from error format: "METHOD /path: STATUS — {json}"
     const jsonMatch = raw.match(/:\s*(\d{3})\s*[—–-]\s*(\{[\s\S]+\})\s*$/);
     if (jsonMatch) {
       const status = parseInt(jsonMatch[1], 10);
       try {
         const body = JSON.parse(jsonMatch[2]);
+        // 403 — API key not verified
+        if (status === 403 && body.error && /not been verified|no key is configured|api key/i.test(body.error)) {
+          return `🔑 API Key Not Verified — ${body.error}`;
+        }
         // 403 — Model access denied (gateway ACL)
         if (status === 403 && body.error && /model access denied/i.test(body.error)) {
           const modelName = body.model || "the selected model";
@@ -832,6 +1049,40 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 <body>
 <div class="layout">
 
+  <!-- LOGIN SCREEN (shown when not authenticated) -->
+  <div class="auth-screen" id="authScreen" style="display:none">
+    <div class="auth-card">
+      <div class="auth-logo-wrap">
+        <img src="${logoUri}" alt="" class="auth-logo" />
+      </div>
+      <h2 class="auth-title">Thirdwave AI</h2>
+      <p class="auth-sub" id="authSubtitle">Sign in to your account</p>
+
+      <!-- Login form (default visible) -->
+      <div id="loginForm">
+        <div id="authError" class="auth-error"></div>
+        <div id="authOk" class="auth-ok"></div>
+        <input class="auth-inp" id="authEmail" type="email" placeholder="Email" autocomplete="email" />
+        <input class="auth-inp" id="authPass" type="password" placeholder="Password" autocomplete="current-password" />
+        <button class="auth-btn primary" id="loginBtn">Sign In</button>
+        <div class="auth-divider"><span>or</span></div>
+        <button class="auth-btn ghost" id="showRegBtn">Create Account</button>
+      </div>
+
+      <!-- Register form (hidden by default) -->
+      <div id="registerForm" style="display:none">
+        <div id="authError2" class="auth-error"></div>
+        <div id="authOk2" class="auth-ok"></div>
+        <input class="auth-inp" id="regName" type="text" placeholder="Full name (optional)" />
+        <input class="auth-inp" id="regEmail" type="email" placeholder="Email" autocomplete="email" />
+        <input class="auth-inp" id="regPass" type="password" placeholder="Password (min 6 chars)" autocomplete="new-password" />
+        <button class="auth-btn primary" id="regBtn">Create Account</button>
+        <div class="auth-divider"><span>or</span></div>
+        <button class="auth-btn ghost" id="showLoginBtn">Back to Sign In</button>
+      </div>
+    </div>
+  </div>
+
   <!-- TOP HEADER BAR -->
   <div class="topbar">
     <span class="topbar-title" id="topbarTitle">CHAT</span>
@@ -839,6 +1090,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       <button class="tb-icon" id="newBtn" title="New Chat"><svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg></button>
       <button class="tb-icon" id="histBtn" data-tab="sessions" title="History"><svg viewBox="0 0 24 24"><path d="M13 3a9 9 0 00-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.954 8.954 0 0013 21a9 9 0 000-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg></button>
       <button class="tb-icon" id="settingsBtn" title="Settings"><svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 00-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.57 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1115.6 12 3.611 3.611 0 0112 15.6z"/></svg></button>
+      <button class="tb-icon acct-btn" id="acctBtn" title="Account" style="display:none"><span class="acct-initials" id="acctInitials">?</span></button>
     </div>
   </div>
 
@@ -867,6 +1119,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           <button class="it-btn" id="agBtn" title="Agent mode"><svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg><span class="it-lbl" id="agLbl">build</span></button>
           <button class="it-btn" id="mdBtn" title="Active model"><svg viewBox="0 0 24 24"><path d="M20 18c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2H0v2h24v-2h-4zM4 6h16v10H4V6z"/></svg><span class="it-lbl" id="mdLbl">loading...</span></button>
           <span class="it-sep"></span>
+          <button class="it-btn" id="compactBtn" title="Compact conversation"><svg viewBox="0 0 24 24" width="14" height="14"><path d="M6 19h12v2H6v-2zm0-2h12v-2H6v2zm0-4h12v-2H6v2zm0-4h12V7H6v2zm0-6v2h12V3H6z"/></svg><span class="it-lbl">Compact</span></button>
           <button class="it-btn" id="diagBtn" title="Show diagnostics"><svg viewBox="0 0 24 24" width="14" height="14"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg><span class="it-lbl" id="diagLbl">0</span></button>
           <div class="active-skills-bar" id="activeSkillsBar" style="display:none"></div>
         </div>
@@ -879,35 +1132,46 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       <div class="scr" id="seC"><div class="nd">Loading sessions...</div></div>
     </div>
 
+    <!-- API KEY GATE — Codex-style (blocks chat until key saved & verified) -->
+    <div class="apikey-gate" id="apiKeyGate" style="display:none">
+      <div class="apikey-gate-hero">
+        <h1 class="apikey-gate-title">Thirdwave AI</h1>
+      </div>
+      <div class="apikey-gate-card">
+        <div id="gateError" class="auth-error"></div>
+        <div id="gateOk" class="auth-ok"></div>
+        <div class="gate-label">Enter your Infra vLLM API key</div>
+        <div class="gate-input-wrap">
+          <input class="gate-input" id="gateApiKey" type="password" placeholder="vllm-..." autocomplete="off" />
+          <button class="apikey-toggle" id="gateKeyToggle" type="button" title="Show/hide key"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg></button>
+        </div>
+        <div class="gate-note">Your API key is provided by the infrastructure team. It will be encrypted, stored, and verified by admin before access is granted.</div>
+        <div class="gate-actions">
+          <span class="gate-link" id="gateGetKey">Contact Infra Team</span>
+          <span class="gate-spacer"></span>
+          <button class="gate-cancel" id="gateLogout">Sign out</button>
+          <button class="gate-ok" id="gateSaveBtn">OK</button>
+        </div>
+        <button class="gate-retry" id="gateCheckStatus" style="display:none;margin-top:8px;width:100%;padding:8px;background:var(--vscode-button-secondaryBackground,#333);color:var(--vscode-button-secondaryForeground,#ccc);border:1px solid var(--vscode-button-border,#555);border-radius:6px;cursor:pointer;font-size:0.85rem">Check Verification Status</button>
+        <div class="gate-status" id="gateStatus"></div>
+      </div>
+    </div>
+
     <!-- RIGHT SIDEBAR (toggled by settings button) -->
     <div class="rsidebar" id="rsidebar">
       <div class="rs-icons">
-        <button class="rs-icon active" data-rs="settings" title="Models"><svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 00-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.57 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1115.6 12 3.611 3.611 0 0112 15.6z"/></svg></button>
-        <button class="rs-icon" data-rs="agents" title="Agents"><svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg></button>
-        <button class="rs-icon" data-rs="skills" title="Skills"><svg viewBox="0 0 24 24"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg></button>
+        <button class="rs-icon active" data-rs="settings" title="Models"><svg viewBox="0 0 24 24"><path d="M20 4H4c-1.11 0-2 .89-2 2v12c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V6c0-1.11-.89-2-2-2zm0 14H4V8h16v10zM6 12l2-2-2-2 1.41-1.41L11 10.17l-3.59 3.59L6 12zm5 2h5v2h-5v-2z"/></svg></button>
+        <button class="rs-icon" data-rs="agents" title="Agents"><svg viewBox="0 0 24 24"><path d="M21 11.18V10c0-1.1-.9-2-2-2h-1V6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v5.18C1.42 11.6 1 12.25 1 13v4c0 1.1.9 2 2 2h1c0 1.1.9 2 2 2s2-.9 2-2h8c0 1.1.9 2 2 2s2-.9 2-2h1c1.1 0 2-.9 2-2v-4c0-.75-.42-1.4-1-1.82zM6 19c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1zm11 0c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1zm1-5H4v-2h14v2zm0-4H4V6h14v4z"/></svg></button>
+        <button class="rs-icon" data-rs="skills" title="Skills"><svg viewBox="0 0 24 24"><path d="M20.5 11H19V7c0-1.1-.9-2-2-2h-4V3.5C13 2.12 11.88 1 10.5 1S8 2.12 8 3.5V5H4c-1.1 0-1.99.9-1.99 2v3.8H3.5c1.49 0 2.7 1.21 2.7 2.7s-1.21 2.7-2.7 2.7H2V20c0 1.1.9 2 2 2h3.8v-1.5c0-1.49 1.21-2.7 2.7-2.7 1.49 0 2.7 1.21 2.7 2.7V22H17c1.1 0 2-.9 2-2v-4h1.5c1.38 0 2.5-1.12 2.5-2.5S21.88 11 20.5 11z"/></svg></button>
+        <button class="rs-icon" data-rs="appearance" title="Appearance"><svg viewBox="0 0 24 24"><path d="M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9c.83 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1.01-.23-.26-.38-.61-.38-.99 0-.83.67-1.5 1.5-1.5H16c2.76 0 5-2.24 5-5 0-4.42-4.03-8-9-8zm-5.5 9c-.83 0-1.5-.67-1.5-1.5S5.67 9 6.5 9 8 9.67 8 10.5 7.33 12 6.5 12zm3-4C8.67 8 8 7.33 8 6.5S8.67 5 9.5 5s1.5.67 1.5 1.5S10.33 8 9.5 8zm5 0c-.83 0-1.5-.67-1.5-1.5S13.67 5 14.5 5s1.5.67 1.5 1.5S15.33 8 14.5 8zm3 4c-.83 0-1.5-.67-1.5-1.5S16.67 9 17.5 9s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/></svg></button>
         <button class="rs-icon" data-rs="hitl" title="HITL"><svg viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/></svg><span class="rs-badge" style="display:none">0</span></button>
+        <button class="rs-icon" data-rs="account" title="Account"><svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg></button>
       </div>
       <div class="rs-content">
 
       <!-- MODELS / SETTINGS -->
       <div class="rs-pnl active" id="rp-settings">
         <div class="scr" id="setScr">
-          <div class="sec">
-            <div class="st" data-i18n="theme">Theme</div>
-            <div class="theme-picker" id="themePicker">
-              <button class="theme-btn sel" data-theme="">VS Code</button>
-              <button class="theme-btn" data-theme="vscode-light">VS Code Light</button>
-              <button class="theme-btn" data-theme="electric">Electric B&W</button>
-              <button class="theme-btn" data-theme="electric-light">Electric Light</button>
-            </div>
-          </div>
-          <div class="sec">
-            <div class="st" data-i18n="language">Language</div>
-            <div class="lang-picker" id="langPicker">
-              <button class="lang-btn sel" data-lang="en">English</button>
-              <button class="lang-btn" data-lang="ja">日本語</button>
-            </div>
-          </div>
           <div class="sec">
             <div class="st" style="display:flex;align-items:center;justify-content:space-between;" data-i18n="gatewayModels">Gateway Models (Local)<button id="refreshModelsBtn" title="Refresh models & token limits" style="background:none;border:1px solid var(--vscode-button-border,#555);color:var(--vscode-foreground);cursor:pointer;padding:2px 8px;border-radius:4px;font-size:11px;display:inline-flex;align-items:center;gap:4px;">&#x21bb; Refresh</button></div>
             <div id="lcm"><div class="nd">Loading...</div></div>
@@ -992,6 +1256,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         <div class="sks" id="skC"><div class="nd">Loading skills...</div></div>
       </div>
 
+      <!-- APPEARANCE -->
+      <div class="rs-pnl" id="rp-appearance">
+        <div class="scr">
+          <div class="sec">
+            <div class="st" data-i18n="theme">Theme</div>
+            <div class="theme-picker" id="themePicker">
+              <button class="theme-btn sel" data-theme="">VS Code</button>
+              <button class="theme-btn" data-theme="vscode-light">VS Code Light</button>
+              <button class="theme-btn" data-theme="electric">Electric B&W</button>
+              <button class="theme-btn" data-theme="electric-light">Electric Light</button>
+              <button class="theme-btn" data-theme="monokai">Monokai</button>
+              <button class="theme-btn" data-theme="dracula">Dracula</button>
+              <button class="theme-btn" data-theme="nord">Nord</button>
+              <button class="theme-btn" data-theme="solarized">Solarized Dark</button>
+              <button class="theme-btn" data-theme="github-dark">GitHub Dark</button>
+            </div>
+          </div>
+          <div class="sec">
+            <div class="st" data-i18n="language">Language</div>
+            <div class="lang-picker" id="langPicker">
+              <button class="lang-btn sel" data-lang="en">English</button>
+              <button class="lang-btn" data-lang="ja">日本語</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- HITL SECURITY -->
       <div class="rs-pnl" id="rp-hitl">
         <div class="scr">
@@ -1006,6 +1297,54 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           <div class="sec">
             <div class="st" data-i18n="recentDecisions">Recent Decisions</div>
             <div id="hitlRecent"><div class="nd">No recent decisions</div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ACCOUNT (sidebar panel) -->
+      <div class="rs-pnl" id="rp-account">
+        <div class="scr">
+          <div class="sec">
+            <div class="acct-user-row" style="margin-bottom:0">
+              <div class="acct-avatar-lg" id="acctAvatarLg">?</div>
+              <div class="acct-user-info">
+                <div class="acct-email" id="acctDropEmail"></div>
+                <div class="acct-role" id="acctDropRole"></div>
+              </div>
+            </div>
+          </div>
+          <div class="sec">
+            <div class="st">Display Name</div>
+            <input class="auth-inp" id="profileName" type="text" placeholder="Your name" style="margin-bottom:6px" />
+            <button class="auth-btn primary" id="saveProfileBtn" style="font-size:12px;padding:6px 0">Save Name</button>
+            <div id="profileMsg" class="acct-feedback" style="display:none"></div>
+          </div>
+          <div class="sec">
+            <div class="st">Infra vLLM API Key</div>
+            <div class="apikey-input-wrap" style="margin-bottom:6px">
+              <input class="auth-inp" id="userApiKey" type="password" placeholder="vllm-..." style="margin-bottom:0;padding-right:36px" />
+              <button class="apikey-toggle" id="acctKeyToggle" type="button" title="Show/hide key"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg></button>
+            </div>
+            <div style="display:flex;gap:6px;margin-bottom:6px">
+              <button class="auth-btn secondary" id="verifyApiKeyBtn" style="font-size:12px;padding:6px 0">Verify</button>
+              <button class="auth-btn primary" id="saveApiKeyBtn" style="font-size:12px;padding:6px 0">Save Key</button>
+            </div>
+            <div id="apiKeyMsg" class="acct-feedback" style="display:none"></div>
+            <div id="apiKeyList" class="acct-key-list"></div>
+            <div id="activeKeyDisplay" style="display:none">
+              <div class="acct-sec-lbl" style="margin-top:10px">Active Key</div>
+              <div class="active-key-wrap">
+                <input class="active-key-field masked" id="activeKeyField" type="text" readonly />
+                <button class="apikey-toggle" id="activeKeyToggle" type="button" title="Show/hide key"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg></button>
+              </div>
+              <div id="activeKeyMeta" style="font-size:11px;color:var(--mt);margin-top:4px"></div>
+            </div>
+          </div>
+          <div class="sec" style="margin-top:8px">
+            <button class="auth-btn secondary" id="logoutBtn" style="font-size:12px;padding:7px 0;display:flex;align-items:center;justify-content:center;gap:6px">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z"/></svg>
+              Sign Out
+            </button>
           </div>
         </div>
       </div>

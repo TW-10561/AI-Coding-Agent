@@ -368,4 +368,60 @@ export class ThirdwaveClient {
   async resolveHitl(requestId: string, decision: "approved" | "denied"): Promise<unknown> {
     return this.request("POST", `/api/hitl/resolve/${encodeURIComponent(requestId)}`, { decision });
   }
+
+  // ── Auth ────────────────────────────────────────────────────────
+
+  async login(email: string, password: string): Promise<{ token: string; user: any }> {
+    return this.request("POST", "/api/auth/login", { email, password });
+  }
+
+  async register(email: string, password: string, fullName?: string): Promise<any> {
+    return this.request("POST", "/api/auth/register", { email, password, fullName });
+  }
+
+  async me(): Promise<{ user: any; token: any }> {
+    return this.request("GET", "/api/auth/me");
+  }
+
+  async updateProfile(fullName: string): Promise<{ user: any }> {
+    return this.request("PATCH", "/api/auth/profile", { fullName });
+  }
+
+  async listApiKeys(): Promise<{ keys: Array<any> }> {
+    return this.request("GET", "/api/auth/api-keys");
+  }
+
+  async getActiveKey(): Promise<{ key: string }> {
+    return this.request("GET", "/api/auth/api-keys/active");
+  }
+
+  async saveApiKey(apiKey: string, displayName?: string, gatewayUrl?: string): Promise<{
+    key: any;
+    gatewayVerification?: { valid: boolean; models?: string[]; error?: string };
+  }> {
+    return this.request("POST", "/api/auth/api-keys", { apiKey, displayName, gatewayUrl });
+  }
+
+  async verifyApiKey(apiKey: string, gatewayUrl?: string): Promise<{
+    valid: boolean;
+    models?: string[];
+    latencyMs?: number;
+    error?: string;
+  }> {
+    return this.request("POST", "/api/auth/api-keys/verify", { apiKey, gatewayUrl });
+  }
+
+  async revokeApiKey(id: string): Promise<{ ok: boolean }> {
+    return this.request("DELETE", `/api/auth/api-keys/${encodeURIComponent(id)}`);
+  }
+
+  /** Update the Authorization header (e.g. after login) */
+  setToken(token: string) {
+    this.headers["authorization"] = `Bearer ${token}`;
+  }
+
+  /** Remove auth token (logout) */
+  clearToken() {
+    delete this.headers["authorization"];
+  }
 }

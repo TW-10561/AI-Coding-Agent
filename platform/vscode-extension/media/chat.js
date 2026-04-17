@@ -238,6 +238,7 @@
   var attachBar = document.getElementById('attachBar');
   var diagBtn = document.getElementById('diagBtn');
   var diagLbl = document.getElementById('diagLbl');
+  var compactBtn = document.getElementById('compactBtn');
   var attachedFiles = []; // { name, path, language, size }
   var lastUserText = ''; // for retry button
   var wsFiles = [];       // workspace files from extension for @ mentions
@@ -383,6 +384,17 @@
   // ── Diagnostics button ─────────────────────────────────────────
   if (diagBtn) diagBtn.addEventListener('click', function () {
     vs.postMessage({ type: 'getDiagnostics' });
+  });
+
+  // ── Compact button (bottom toolbar) ───────────────────────────
+  if (compactBtn) compactBtn.addEventListener('click', function () {
+    vs.postMessage({ type: 'compactConversation' });
+    compactBtn.querySelector('.it-lbl').textContent = 'Compacting...';
+    compactBtn.disabled = true;
+    setTimeout(function () {
+      compactBtn.querySelector('.it-lbl').textContent = 'Compact';
+      compactBtn.disabled = false;
+    }, 5000);
   });
 
   inp.addEventListener('keydown', function (e) {
@@ -610,7 +622,7 @@
   });
 
   // ── Theme utilities ─────────────────────────────────────────────
-  var allThemeClasses = ['theme-vscode-light', 'theme-electric', 'theme-electric-light'];
+  var allThemeClasses = ['theme-vscode-light', 'theme-electric', 'theme-electric-light', 'theme-monokai', 'theme-dracula', 'theme-nord', 'theme-solarized', 'theme-github-dark'];
 
   function removeThemeClasses() {
     allThemeClasses.forEach(function (c) { document.body.classList.remove(c); });
@@ -1683,11 +1695,130 @@
   window.addEventListener('message', function (e) {
     var m = e.data;
     switch (m.type) {
+      // ── Auth messages ──────────────────────────────────────────
+      case 'authSuccess':
+        if (loginBtn) { loginBtn.disabled = false; loginBtn.textContent = 'Sign In'; }
+        clearAuthMessages();
+        updateProfileUI(m.user);
+        renderApiKeys(m.apiKeys || []);
+        // Gate: if no API key, key not admin-verified, or user not active → show gate
+        if (!m.hasApiKey || !m.adminVerified || (m.user && m.user.status !== 'active')) {
+          if (authScreen) authScreen.style.display = 'none';
+          if (apiKeyGate) apiKeyGate.style.display = 'flex';
+          if (acctBtn) acctBtn.style.display = 'none';
+          // Show appropriate pending message
+          if (m.hasApiKey && !m.adminVerified) {
+            showGateStatus('Your API key is pending admin verification. You will be able to access the platform once an admin approves your key.', 'pending');
+          } else if (m.hasApiKey && m.user && m.user.status !== 'active') {
+            showGateStatus('Your account is pending admin verification. Please wait for approval.', 'pending');
+          }
+        } else {
+          if (authScreen) authScreen.style.display = 'none';
+          if (apiKeyGate) apiKeyGate.style.display = 'none';
+          if (acctBtn) acctBtn.style.display = '';
+          // Fetch the full active key for display
+          vs.postMessage({ type: 'getActiveKey' });
+        }
+        vs.postMessage({ type: 'listApiKeys' });
+        break;
+      case 'authRequired':
+        if (authScreen) authScreen.style.display = 'flex';
+        if (apiKeyGate) apiKeyGate.style.display = 'none';
+        if (acctBtn) acctBtn.style.display = 'none';
+        showLoginState();
+        clearAuthMessages();
+        break;
+      case 'authError':
+        showAuthError(m.error || 'Authentication failed');
+        if (loginBtn) { loginBtn.disabled = false; loginBtn.textContent = 'Sign In'; }
+        if (regBtn) { regBtn.disabled = false; regBtn.textContent = 'Register'; }
+        break;
+      case 'registerSuccess':
+        if (regBtn) { regBtn.disabled = false; regBtn.textContent = 'Register'; }
+        // After registration, redirect to the Codex-style API key gate page
+        if (authScreen) authScreen.style.display = 'none';
+        if (apiKeyGate) apiKeyGate.style.display = 'flex';
+        if (acctBtn) acctBtn.style.display = 'none';
+        showGateStatus('Account created! Enter your vLLM API key to continue.', 'ok');
+        break;
+      case 'loggedOut':
+        if (authScreen) authScreen.style.display = 'flex';
+        if (apiKeyGate) apiKeyGate.style.display = 'none';
+        if (acctBtn) acctBtn.style.display = 'none';
+        showLoginState();
+        clearAuthMessages();
+        updateProfileUI(null);
+        renderApiKeys([]);
+        break;
+      case 'apiKeysData':
+        renderApiKeys(m.keys || []);
+        break;
+      case 'activeKeyData':
+        updateActiveKeyDisplay(m.key);
+        break;
+      case 'apiKeyVerified':
+        if (verifyApiKeyBtn) { verifyApiKeyBtn.disabled = false; verifyApiKeyBtn.textContent = 'Verify'; }
+        if (m.result && m.result.valid) {
+          var models = (m.result.models || []).slice(0, 3).join(', ');
+          var okMsg = 'Key verified successfully' + (models ? ' (models: ' + models + ')' : '');
+          showApiKeyMsg(okMsg, 'ok');
+          showGateStatus(okMsg, 'ok');
+        } else {
+          var errMsg = (m.result && m.result.error) || 'Key verification failed';
+          showApiKeyMsg(errMsg, 'err');
+          showGateStatus(errMsg, 'err');
+        }
+        break;
+      case 'apiKeyVerifyError':
+        if (verifyApiKeyBtn) { verifyApiKeyBtn.disabled = false; verifyApiKeyBtn.textContent = 'Verify'; }
+        var verifyErrMsg = m.error || 'Key verification failed';
+        showApiKeyMsg(verifyErrMsg, 'err');
+        showGateStatus(verifyErrMsg, 'err');
+        break;
+      case 'apiKeySaved':
+        if (saveApiKeyBtn) { saveApiKeyBtn.disabled = false; saveApiKeyBtn.textContent = 'Save Key'; }
+        if (userApiKeyEl) userApiKeyEl.value = '';
+        showApiKeyMsg('API key saved and activated.', 'ok');
+        renderApiKeys(m.keys || []);
+        // Fetch the full active key for display
+        vs.postMessage({ type: 'getActiveKey' });
+        // Keep gate visible — key needs admin verification before platform access
+        if (gateSaveBtn) { gateSaveBtn.disabled = false; gateSaveBtn.textContent = 'OK'; }
+        if (gateApiKeyEl) gateApiKeyEl.value = '';
+        showGateStatus('API key saved! Pending admin verification. You will be able to access the platform once an admin approves your key.', 'pending');
+        break;
+      case 'apiKeyRevoked':
+        showApiKeyMsg('API key revoked. Save a new key to continue.', 'ok');
+        renderApiKeys(m.keys || []);
+        break;
+      case 'apiKeySaveError':
+        if (saveApiKeyBtn) { saveApiKeyBtn.disabled = false; saveApiKeyBtn.textContent = 'Save Key'; }
+        if (gateSaveBtn) { gateSaveBtn.disabled = false; gateSaveBtn.textContent = 'OK'; }
+        var saveErrMsg = m.error || 'Failed to save key';
+        showApiKeyMsg(saveErrMsg, 'err');
+        showGateStatus(saveErrMsg, 'err');
+        break;
+      case 'profileUpdated':
+        updateProfileUI(m.user);
+        showProfileMsg('Name updated successfully!', 'ok');
+        break;
+      case 'profileError':
+        showProfileMsg(m.error || 'Failed to update name', 'err');
+        break;
       case 'init':
         cMod = m.model || '';
         cAg = m.agent || 'build';
         updateModelLabel();
         if (agLbl) agLbl.textContent = cAg;
+        // Always start with auth screen visible, acctBtn hidden until auth confirmed
+        if (authScreen) authScreen.style.display = 'flex';
+        if (apiKeyGate) apiKeyGate.style.display = 'none';
+        if (acctBtn) acctBtn.style.display = 'none';
+        showLoginState();
+        clearAuthMessages();
+        // Check auth on init — will hide authScreen if token is valid
+        vs.postMessage({ type: 'checkAuth' });
+        vs.postMessage({ type: 'listApiKeys' });
         // Restore language from extension state
         if (m.language && m.language !== currentLang) {
           currentLang = m.language;
@@ -2031,30 +2162,32 @@
         if (coTBtn) { coTBtn.disabled = false; coTBtn.textContent = t('testConnection'); }
         break;
       case 'contextInfo':
-        renderContextCompaction(m.summary || [], m.charCount || 0, m.activeSkills || []);
+        renderContextCompaction(m.summary || [], m.charCount || 0, m.activeSkills || [], m.contextWindow || null);
+        break;
+      case 'compactResult':
+        if (m.message) {
+          showNotification(m.message, 'info');
+        }
         break;
     }
   });
 
   // ── Context compaction display ─────────────────────────────────
-  function renderContextCompaction(summary, charCount, activeSkillIds) {
-    // Show a compact info bar above the streaming message
-    if (!summary.length && (!activeSkillIds || !activeSkillIds.length)) return;
+  function renderContextCompaction(summary, charCount, activeSkillIds, contextWindow) {
     var existing = document.querySelector('.ctx-compact');
     if (existing) existing.remove();
 
     var bar = document.createElement('div');
     bar.className = 'ctx-compact';
+
+    // ─ Header: agent tag + skill tags + tokens badge
     var hdr = document.createElement('div');
     hdr.className = 'ctx-compact-hdr';
-    // Build skill tags HTML
     var skillTags = '';
-    // Add agent mode tag
     skillTags += '<span class="ctx-agent-tag">' + esc(cAg) + '</span>';
     if (activeSkillIds && activeSkillIds.length) {
       for (var si = 0; si < activeSkillIds.length; si++) {
         var sName = activeSkillIds[si];
-        // Resolve display name from allSk
         for (var sj = 0; sj < allSk.length; sj++) {
           var skItem = allSk[sj].skill || allSk[sj];
           if (skItem.id === activeSkillIds[si]) { sName = skItem.displayName || skItem.name || activeSkillIds[si]; break; }
@@ -2062,22 +2195,63 @@
         skillTags += '<span class="ctx-skill-tag">/' + esc(sName) + '</span>';
       }
     }
+
+    // Token count display
+    var tokenInfo = '';
+    if (contextWindow) {
+      var usedK = (contextWindow.usedTokens / 1000).toFixed(1);
+      var maxK = Math.round(contextWindow.maxTokens / 1000);
+      var pct = contextWindow.percentage || 0;
+      var pctColor = pct > 80 ? 'var(--err)' : pct > 60 ? '#f59e0b' : 'var(--accent)';
+      tokenInfo = '<span class="ctx-compact-tokens" style="color:' + pctColor + '">' + usedK + 'K / ' + maxK + 'K tokens</span>' +
+        '<span class="ctx-compact-pct" style="background:' + pctColor + '22;color:' + pctColor + '">' + pct + '%</span>';
+    } else {
+      tokenInfo = '<span class="ctx-compact-size">' + Math.round(charCount / 1000) + 'K chars</span>';
+    }
+
     hdr.innerHTML = '<span class="ctx-compact-icon">&#9881;</span>' +
-      '<span>Context sent</span>' +
-      skillTags +
-      '<span class="ctx-compact-size">' + Math.round(charCount / 1000) + 'K chars</span>' +
+      '<span>Context Window</span>' +
+      skillTags + tokenInfo +
       '<button class="ctx-compact-toggle">&#9660;</button>';
     bar.appendChild(hdr);
 
+    // ─ Body: category breakdown + progress bar + compact button
     var body = document.createElement('div');
     body.className = 'ctx-compact-body collapsed';
-    var items = '';
-    for (var i = 0; i < summary.length; i++) {
-      items += '<div class="ctx-compact-item">&#8226; ' + esc(summary[i]) + '</div>';
+    var bodyHtml = '';
+
+    // Progress bar
+    if (contextWindow) {
+      var pct2 = contextWindow.percentage || 0;
+      var barColor = pct2 > 80 ? 'var(--err)' : pct2 > 60 ? '#f59e0b' : 'var(--accent)';
+      bodyHtml += '<div class="ctx-progress-bar"><div class="ctx-progress-fill" style="width:' + pct2 + '%;background:' + barColor + '"></div></div>';
+
+      // Category breakdown
+      var bd = contextWindow.breakdown || {};
+      var categories = ['system', 'tools', 'workspace', 'skills', 'history', 'userMessage'];
+      for (var ci = 0; ci < categories.length; ci++) {
+        var cat = bd[categories[ci]];
+        if (cat && cat.tokens > 0) {
+          var catPct = contextWindow.usedTokens > 0 ? ((cat.tokens / contextWindow.usedTokens) * 100).toFixed(1) : '0';
+          bodyHtml += '<div class="ctx-breakdown-row"><span class="ctx-breakdown-label">' + esc(cat.label) + '</span><span class="ctx-breakdown-val">' + catPct + '%</span></div>';
+        }
+      }
+
+      // Reserved for response
+      bodyHtml += '<div class="ctx-breakdown-row ctx-reserved"><span class="ctx-breakdown-label">&#9998; Reserved for response</span></div>';
     }
-    body.innerHTML = items;
+
+    // Summary items
+    for (var i = 0; i < summary.length; i++) {
+      bodyHtml += '<div class="ctx-compact-item">&#8226; ' + esc(summary[i]) + '</div>';
+    }
+
+    // Compact button
+    bodyHtml += '<button class="ctx-compact-btn" id="ctxCompactBtn">Compact Conversation</button>';
+    body.innerHTML = bodyHtml;
     bar.appendChild(body);
 
+    // Event: toggle body
     hdr.addEventListener('click', function () {
       body.classList.toggle('collapsed');
       var btn = hdr.querySelector('.ctx-compact-toggle');
@@ -2085,7 +2259,26 @@
     });
 
     msgsEl.appendChild(bar);
+
+    // Event: compact conversation button
+    var compactBtn = document.getElementById('ctxCompactBtn');
+    if (compactBtn) compactBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      vs.postMessage({ type: 'compactConversation' });
+      compactBtn.textContent = 'Compacting...';
+      compactBtn.disabled = true;
+    });
+
     autoScroll();
+  }
+
+  function showNotification(msg, type) {
+    var note = document.createElement('div');
+    note.className = 'ctx-notification ' + (type || 'info');
+    note.textContent = msg;
+    msgsEl.appendChild(note);
+    autoScroll();
+    setTimeout(function () { if (note.parentNode) note.remove(); }, 5000);
   }
 
   // ── HITL panel rendering ─────────────────────────────────────
@@ -2238,6 +2431,330 @@
       }
     });
   }
+
+  // ── Auth / Login ─────────────────────────────────────────────────
+  var authScreen = document.getElementById('authScreen');
+  var loginForm = document.getElementById('loginForm');
+  var registerForm = document.getElementById('registerForm');
+  var authError = document.getElementById('authError');
+  var authOk = document.getElementById('authOk');
+  var authError2 = document.getElementById('authError2');
+  var authOk2 = document.getElementById('authOk2');
+  var logoutBtn = document.getElementById('logoutBtn');
+  var acctBtn = document.getElementById('acctBtn');
+  var acctInitials = document.getElementById('acctInitials');
+  var acctAvatarLg = document.getElementById('acctAvatarLg');
+  var acctDropEmail = document.getElementById('acctDropEmail');
+  var acctDropRole = document.getElementById('acctDropRole');
+  var apiKeyGate = document.getElementById('apiKeyGate');
+
+  // Account button toggles account tab — click again to go back to chat
+  if (acctBtn) acctBtn.addEventListener('click', function (e) {
+    e.stopPropagation();
+    var rsidebar = document.getElementById('rsidebar');
+    var acctPnl = document.getElementById('rp-account');
+    // If account panel is already open, close sidebar to return to chat
+    if (rsidebar && rsidebar.classList.contains('open') && acctPnl && acctPnl.classList.contains('active')) {
+      rsidebar.classList.remove('open');
+      document.querySelectorAll('.rs-icon').forEach(function (b) { b.classList.remove('active'); });
+      document.querySelectorAll('.rs-pnl').forEach(function (p) { p.classList.remove('active'); });
+      return;
+    }
+    // Otherwise open sidebar and activate account tab
+    if (rsidebar) rsidebar.classList.add('open');
+    document.querySelectorAll('.rs-icon').forEach(function (b) { b.classList.remove('active'); });
+    var acctTabBtn = document.querySelector('.rs-icon[data-rs="account"]');
+    if (acctTabBtn) acctTabBtn.classList.add('active');
+    document.querySelectorAll('.rs-pnl').forEach(function (p) { p.classList.remove('active'); });
+    if (acctPnl) acctPnl.classList.add('active');
+  });
+
+  function showAuthError(msg) {
+    // Show in whichever form is currently visible
+    var inLogin = loginForm && loginForm.style.display !== 'none';
+    var el = inLogin ? authError : authError2;
+    var elOk = inLogin ? authOk : authOk2;
+    if (el) { el.textContent = msg; }
+    if (elOk) { elOk.textContent = ''; }
+  }
+  function showAuthOk(msg) {
+    var inLogin = loginForm && loginForm.style.display !== 'none';
+    var el = inLogin ? authOk : authOk2;
+    var elErr = inLogin ? authError : authError2;
+    if (el) { el.textContent = msg; }
+    if (elErr) { elErr.textContent = ''; }
+  }
+  function clearAuthMessages() {
+    [authError, authOk, authError2, authOk2].forEach(function(el) { if (el) el.textContent = ''; });
+  }
+  function showLoginState() {
+    if (registerForm) registerForm.style.display = 'none';
+    if (loginForm) loginForm.style.display = 'block';
+  }
+
+  // Show login form / hide register form
+  var showRegBtn = document.getElementById('showRegBtn');
+  var showLoginBtn = document.getElementById('showLoginBtn');
+  if (showRegBtn) showRegBtn.addEventListener('click', function () {
+    clearAuthMessages();
+    if (loginForm) loginForm.style.display = 'none';
+    if (registerForm) registerForm.style.display = 'block';
+  });
+  if (showLoginBtn) showLoginBtn.addEventListener('click', function () {
+    clearAuthMessages();
+    if (registerForm) registerForm.style.display = 'none';
+    if (loginForm) loginForm.style.display = 'block';
+  });
+
+  // Login button
+  var loginBtn = document.getElementById('loginBtn');
+  if (loginBtn) loginBtn.addEventListener('click', function () {
+    var email = (document.getElementById('authEmail') || {}).value || '';
+    var pass = (document.getElementById('authPass') || {}).value || '';
+    if (!email || !pass) { showAuthError('Please enter email and password'); return; }
+    loginBtn.disabled = true;
+    loginBtn.textContent = 'Signing in...';
+    clearAuthMessages();
+    vs.postMessage({ type: 'login', email: email.trim(), password: pass });
+  });
+
+  // Register button
+  var regBtn = document.getElementById('regBtn');
+  if (regBtn) regBtn.addEventListener('click', function () {
+    var name = (document.getElementById('regName') || {}).value || '';
+    var email = (document.getElementById('regEmail') || {}).value || '';
+    var pass = (document.getElementById('regPass') || {}).value || '';
+    if (!email || !pass) { showAuthError('Please enter email and password'); return; }
+    if (pass.length < 6) { showAuthError('Password must be at least 6 characters'); return; }
+    regBtn.disabled = true;
+    regBtn.textContent = 'Registering...';
+    clearAuthMessages();
+    vs.postMessage({ type: 'register', email: email.trim(), password: pass, fullName: name.trim() || undefined });
+  });
+
+  // Logout button (inside account sidebar panel)
+  if (logoutBtn) logoutBtn.addEventListener('click', function () {
+    vs.postMessage({ type: 'logout' });
+  });
+
+  // Enter key on login fields
+  var authPassEl = document.getElementById('authPass');
+  if (authPassEl) authPassEl.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && loginBtn) loginBtn.click();
+  });
+  var regPassEl = document.getElementById('regPass');
+  if (regPassEl) regPassEl.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && regBtn) regBtn.click();
+  });
+
+  // ── Profile section ─────────────────────────────────────────────
+  var saveProfileBtn = document.getElementById('saveProfileBtn');
+  var profileNameEl = document.getElementById('profileName');
+  var profileInfoEl = document.getElementById('profileInfo');
+  var profileMsgEl = document.getElementById('profileMsg');
+  var userApiKeyEl = document.getElementById('userApiKey');
+  var verifyApiKeyBtn = document.getElementById('verifyApiKeyBtn');
+  var saveApiKeyBtn = document.getElementById('saveApiKeyBtn');
+  var apiKeyMsgEl = document.getElementById('apiKeyMsg');
+  var apiKeyListEl = document.getElementById('apiKeyList');
+  var activeKeyDisplayEl = document.getElementById('activeKeyDisplay');
+  var activeKeyFieldEl = document.getElementById('activeKeyField');
+  var activeKeyMetaEl = document.getElementById('activeKeyMeta');
+  var activeKeyToggleBtn = document.getElementById('activeKeyToggle');
+
+  // Gate page elements (Codex-style)
+  var gateApiKeyEl = document.getElementById('gateApiKey');
+  var gateSaveBtn = document.getElementById('gateSaveBtn');
+  var gateStatusEl = document.getElementById('gateStatus');
+  var gateLogoutBtn = document.getElementById('gateLogout');
+  var gateErrorEl = document.getElementById('gateError');
+  var gateOkEl = document.getElementById('gateOk');
+  var gateCheckStatusBtn = document.getElementById('gateCheckStatus');
+
+  function updateProfileUI(user) {
+    if (user) {
+      if (profileNameEl) profileNameEl.value = user.fullName || '';
+      var initial = (user.fullName || user.email || '?').charAt(0).toUpperCase();
+      if (acctInitials) acctInitials.textContent = initial;
+      if (acctAvatarLg) acctAvatarLg.textContent = initial;
+      if (acctDropEmail) acctDropEmail.textContent = user.email || '';
+      if (acctDropRole) acctDropRole.textContent = (user.roleName || user.role || 'user');
+    } else {
+      if (profileNameEl) profileNameEl.value = '';
+      if (acctInitials) acctInitials.textContent = '?';
+      if (acctAvatarLg) acctAvatarLg.textContent = '?';
+      if (acctDropEmail) acctDropEmail.textContent = '';
+      if (acctDropRole) acctDropRole.textContent = '';
+    }
+    if (profileMsgEl) profileMsgEl.style.display = 'none';
+  }
+
+  function showProfileMsg(msg, type) {
+    profileMsgEl.textContent = msg;
+    profileMsgEl.style.display = 'block';
+    profileMsgEl.style.color = type === 'ok' ? 'var(--vscode-testing-iconPassed, #4caf50)' : 'var(--vscode-testing-iconFailed, #f44336)';
+    setTimeout(function() { if (profileMsgEl) profileMsgEl.style.display = 'none'; }, 4000);
+  }
+
+  function showApiKeyMsg(msg, type) {
+    if (!apiKeyMsgEl) return;
+    apiKeyMsgEl.textContent = msg;
+    apiKeyMsgEl.style.display = 'block';
+    apiKeyMsgEl.style.color = type === 'ok' ? 'var(--vscode-testing-iconPassed, #4caf50)' : 'var(--vscode-testing-iconFailed, #f44336)';
+    setTimeout(function () { if (apiKeyMsgEl) apiKeyMsgEl.style.display = 'none'; }, 5000);
+  }
+
+  // Active key display — shows the full key in a masked field with show/hide
+  function updateActiveKeyDisplay(fullKey) {
+    if (!activeKeyDisplayEl || !activeKeyFieldEl) return;
+    if (!fullKey) {
+      activeKeyDisplayEl.style.display = 'none';
+      return;
+    }
+    activeKeyDisplayEl.style.display = 'block';
+    activeKeyFieldEl.value = fullKey;
+    activeKeyFieldEl.classList.add('masked');
+    if (activeKeyToggleBtn) activeKeyToggleBtn.classList.remove('active');
+  }
+
+  // Toggle active key visibility
+  if (activeKeyToggleBtn && activeKeyFieldEl) {
+    activeKeyToggleBtn.addEventListener('click', function () {
+      var isMasked = activeKeyFieldEl.classList.contains('masked');
+      activeKeyFieldEl.classList.toggle('masked', !isMasked);
+      activeKeyToggleBtn.classList.toggle('active', isMasked);
+      activeKeyToggleBtn.title = isMasked ? 'Hide key' : 'Show key';
+    });
+  }
+
+  function renderApiKeys(keys) {
+    if (!apiKeyListEl) return;
+    if (!keys || !keys.length) {
+      apiKeyListEl.innerHTML = 'No API key saved yet.';
+      if (activeKeyDisplayEl) activeKeyDisplayEl.style.display = 'none';
+      return;
+    }
+    var active = keys.filter(function (k) { return k.status === 'active'; });
+    var latest = active.length ? active[0] : keys[0];
+    var html = '';
+    if (latest.createdAt) {
+      html += '<div style="margin-bottom:6px;font-size:11px;color:var(--mt)">Saved: ' + new Date(latest.createdAt).toLocaleString() + '</div>';
+    }
+    if (latest.id && latest.status === 'active') {
+      html += '<button class="auth-btn secondary" id="revokeApiKeyBtn" style="font-size:12px;padding:6px 0">Reverify / Rotate Key</button>';
+    }
+    apiKeyListEl.innerHTML = html;
+    var revokeBtn = document.getElementById('revokeApiKeyBtn');
+    if (revokeBtn) {
+      revokeBtn.addEventListener('click', function () {
+        if (!confirm('Revoke current key and set a new one?')) return;
+        vs.postMessage({ type: 'revokeApiKey', keyId: latest.id });
+      });
+    }
+    // Fetch the full key for the active key display
+    if (active.length) {
+      vs.postMessage({ type: 'getActiveKey' });
+    }
+  }
+
+  if (saveProfileBtn) saveProfileBtn.addEventListener('click', function () {
+    var name = profileNameEl ? profileNameEl.value.trim() : '';
+    saveProfileBtn.disabled = true;
+    saveProfileBtn.textContent = 'Saving...';
+    vs.postMessage({ type: 'updateProfile', fullName: name });
+    setTimeout(function() { saveProfileBtn.disabled = false; saveProfileBtn.textContent = 'Save Name'; }, 2000);
+  });
+
+  if (profileNameEl) profileNameEl.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && saveProfileBtn) saveProfileBtn.click();
+  });
+
+  if (verifyApiKeyBtn) verifyApiKeyBtn.addEventListener('click', function () {
+    var apiKey = userApiKeyEl ? userApiKeyEl.value.trim() : '';
+    if (!apiKey) { showApiKeyMsg('Enter your vLLM API key first', 'err'); return; }
+    verifyApiKeyBtn.disabled = true;
+    verifyApiKeyBtn.textContent = 'Verifying...';
+    vs.postMessage({ type: 'verifyApiKey', apiKey: apiKey });
+  });
+
+  if (saveApiKeyBtn) saveApiKeyBtn.addEventListener('click', function () {
+    var apiKey = userApiKeyEl ? userApiKeyEl.value.trim() : '';
+    if (!apiKey) { showApiKeyMsg('Enter your vLLM API key first', 'err'); return; }
+    saveApiKeyBtn.disabled = true;
+    saveApiKeyBtn.textContent = 'Saving...';
+    vs.postMessage({ type: 'saveApiKey', apiKey: apiKey, displayName: 'Infra vLLM Key' });
+  });
+
+  // ── Gate page (Codex-style) handlers ──────────────────────────
+
+  function showGateStatus(msg, type) {
+    if (gateStatusEl) {
+      gateStatusEl.textContent = msg;
+      gateStatusEl.className = 'gate-status ' + (type || '');
+    }
+    // Also use gateError/gateOk for prominent messages
+    if (type === 'err' && gateErrorEl) { gateErrorEl.textContent = msg; if (gateOkEl) gateOkEl.textContent = ''; }
+    else if (type === 'ok' && gateOkEl) { gateOkEl.textContent = msg; if (gateErrorEl) gateErrorEl.textContent = ''; }
+    else { if (gateErrorEl) gateErrorEl.textContent = ''; if (gateOkEl) gateOkEl.textContent = ''; }
+    // Show check-status button when key is pending verification
+    if (gateCheckStatusBtn) {
+      gateCheckStatusBtn.style.display = (type === 'pending') ? 'block' : 'none';
+      gateCheckStatusBtn.disabled = false;
+      gateCheckStatusBtn.textContent = 'Check Verification Status';
+    }
+  }
+
+  // Enable/disable OK button based on input
+  if (gateApiKeyEl && gateSaveBtn) {
+    gateApiKeyEl.addEventListener('input', function () {
+      var hasVal = gateApiKeyEl.value.trim().length > 0;
+      gateSaveBtn.classList.toggle('ready', hasVal);
+    });
+  }
+
+  // Gate OK button saves the key
+  if (gateSaveBtn) gateSaveBtn.addEventListener('click', function () {
+    var apiKey = gateApiKeyEl ? gateApiKeyEl.value.trim() : '';
+    if (!apiKey) { showGateStatus('Enter your vLLM API key first', 'err'); return; }
+    gateSaveBtn.disabled = true;
+    gateSaveBtn.textContent = 'Saving...';
+    vs.postMessage({ type: 'saveApiKey', apiKey: apiKey, displayName: 'Infra vLLM Key' });
+  });
+
+  // Gate sign-out button
+  if (gateLogoutBtn) gateLogoutBtn.addEventListener('click', function () {
+    vs.postMessage({ type: 'logout' });
+  });
+
+  // Gate check-status button — re-checks auth without signing out
+  if (gateCheckStatusBtn) gateCheckStatusBtn.addEventListener('click', function () {
+    gateCheckStatusBtn.disabled = true;
+    gateCheckStatusBtn.textContent = 'Checking...';
+    showGateStatus('Checking verification status...', 'pending');
+    vs.postMessage({ type: 'checkAuth' });
+    // Re-enable after a timeout in case no response
+    setTimeout(function () {
+      if (gateCheckStatusBtn) { gateCheckStatusBtn.disabled = false; gateCheckStatusBtn.textContent = 'Check Verification Status'; }
+    }, 5000);
+  });
+
+  // Enter key on gate page input
+  if (gateApiKeyEl) gateApiKeyEl.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && gateSaveBtn) gateSaveBtn.click();
+  });
+
+  // API key show/hide toggles (account panel)
+  function setupKeyToggle(toggleBtn, inputEl) {
+    if (!toggleBtn || !inputEl) return;
+    toggleBtn.addEventListener('click', function () {
+      var isPassword = inputEl.type === 'password';
+      inputEl.type = isPassword ? 'text' : 'password';
+      toggleBtn.classList.toggle('active', isPassword);
+      toggleBtn.title = isPassword ? 'Hide key' : 'Show key';
+    });
+  }
+  setupKeyToggle(document.getElementById('acctKeyToggle'), userApiKeyEl);
+  setupKeyToggle(document.getElementById('gateKeyToggle'), gateApiKeyEl);
 
   // Signal ready to extension
   vs.postMessage({ type: 'ready' });

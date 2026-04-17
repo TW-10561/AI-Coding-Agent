@@ -23,19 +23,21 @@ export function workspaceRoutes(workspaces: WorkspaceManager) {
     // List workspaces
     .get("/", async (c) => {
       const tag = c.req.query("tag")
-      return c.json(workspaces.list(tag ? { tag } : undefined))
+      const user = (c.var as any).user || {}
+      const ownerId = user.sub
+      return c.json(await workspaces.list({ tag: tag || undefined, ownerId }))
     })
 
     // Get active workspace
     .get("/active", async (c) => {
-      const active = workspaces.active()
+      const active = await workspaces.active()
       if (!active) return c.json({ error: "no_active_workspace" }, 404)
       return c.json(active)
     })
 
     // Get workspace by ID
     .get("/:id", async (c) => {
-      const ws = workspaces.get(c.req.param("id"))
+      const ws = await workspaces.get(c.req.param("id"))
       if (!ws) return c.json({ error: "not_found" }, 404)
       return c.json(ws)
     })
@@ -43,7 +45,10 @@ export function workspaceRoutes(workspaces: WorkspaceManager) {
     // Create workspace
     .post("/", async (c) => {
       const body = CreateBody.parse(await c.req.json())
-      const ws = workspaces.create(body)
+      const user = (c.var as any).user || {}
+      // Capture current user as owner if authenticated
+      const ownerId = user.sub
+      const ws = await workspaces.create({ ...body, ownerId })
       return c.json(ws, 201)
     })
 
@@ -51,7 +56,7 @@ export function workspaceRoutes(workspaces: WorkspaceManager) {
     .patch("/:id", async (c) => {
       const body = UpdateBody.parse(await c.req.json())
       try {
-        const ws = workspaces.update(c.req.param("id"), body)
+        const ws = await workspaces.update(c.req.param("id"), body)
         return c.json(ws)
       } catch (e: any) {
         if (e?.message?.includes("not found")) return c.json({ error: "not_found" }, 404)
@@ -62,7 +67,7 @@ export function workspaceRoutes(workspaces: WorkspaceManager) {
     // Switch to workspace
     .post("/:id/switch", async (c) => {
       try {
-        const ws = workspaces.switchTo(c.req.param("id"))
+        const ws = await workspaces.switchTo(c.req.param("id"))
         return c.json(ws)
       } catch (e: any) {
         if (e?.message?.includes("not found")) return c.json({ error: "not_found" }, 404)
@@ -73,16 +78,16 @@ export function workspaceRoutes(workspaces: WorkspaceManager) {
 
     // Delete workspace
     .delete("/:id", async (c) => {
-      const ok = workspaces.delete(c.req.param("id"))
+      const ok = await workspaces.delete(c.req.param("id"))
       if (!ok) return c.json({ error: "not_found" }, 404)
       return c.json({ deleted: true })
     })
 
     // Workspace stats
     .get("/:id/stats", async (c) => {
-      const ws = workspaces.get(c.req.param("id"))
+      const ws = await workspaces.get(c.req.param("id"))
       if (!ws) return c.json({ error: "not_found" }, 404)
-      const stats = workspaces.stats()
+      const stats = await workspaces.stats()
       return c.json(stats)
     })
 }

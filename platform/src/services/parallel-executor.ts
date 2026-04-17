@@ -16,6 +16,7 @@ import { ulid } from "ulid"
 import { OpenCodeClient } from "./opencode-client"
 import type { TaskStateTracker } from "./task-state-tracker"
 import type { AuditLogger } from "./audit-logger"
+import { sql as pgSql, pgEnabled } from "../config/db"
 
 export type ParallelStatus = "pending" | "running" | "completed" | "failed" | "cancelled" | "timeout"
 
@@ -83,6 +84,10 @@ export class ParallelExecutionManager {
     this.client = opts.client
     this.tracker = opts.tracker
     this.audit = opts.audit
+    // Load persisted executions on startup (delay to allow PG connection to establish)
+    setTimeout(() => {
+      this.loadFromDB().catch(err => console.error("[parallel] Failed to load from DB:", err))
+    }, 5000)
   }
 
   /** Execute a parallel plan */
@@ -404,6 +409,84 @@ export class ParallelExecutionManager {
 
   private emit(exec: ParallelExecution) {
     for (const cb of this.listeners) cb(exec)
+    // Persist to DB on every state change
+    this.persistToDB(exec).catch(err => console.error("[parallel] Persist error:", err))
+  }
+
+  // ── Database persistence ─────────────────────────────────────
+  private dbInitialized: Promise<void> | null = null
+
+  private initDB(): Promise<void> {
+    if (!pgEnabled) return Promise.resolve()
+    if (!this.dbInitialized) {
+      this.dbInitialized = this._doInitDB()
+    }
+    return this.dbInitialized
+  }
+
+  private async _doInitDB(): Promise<void> {
+    await pgSql`
+      CREATE TABLE IF NOT EXISTS parallel_executions (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        workspace_id TEXT,
+        status TEXT NOT NULL,
+        concurrency INTEGER NOT NULL DEFAULT 3,
+        aggregated_result TEXT,
+        fan_in_prompt TEXT,
+        timeout_ms INTEGER NOT NULL DEFAULT 300000,
+        created_at BIGINT NOT NULL,
+        started_at BIGINT,
+        completed_at BIGINT,
+        tasks JSONB NOT NULL DEFAULT '[]'
+      )`
+    console.log("[parallel] DB tables initialized")
+  }
+
+  private async persistToDB(exec: ParallelExecution): Promise<void> {
+    if (!pgEnabled) return
+    await this.initDB()
+    const tasksJson = JSON.stringify(exec.tasks)
+    await pgSql`
+      INSERT INTO parallel_executions (id, name, user_id, workspace_id, status, concurrency, aggregated_result, fan_in_prompt, timeout_ms, created_at, started_at, completed_at, tasks)
+      VALUES (${exec.id}, ${exec.name}, ${exec.userID}, ${exec.workspaceID ?? null}, ${exec.status}, ${exec.concurrency}, ${exec.aggregatedResult ?? null}, ${exec.fanInPrompt ?? null}, ${exec.timeoutMs}, ${exec.createdAt}, ${exec.startedAt ?? null}, ${exec.completedAt ?? null}, ${tasksJson})
+      ON CONFLICT (id) DO UPDATE SET
+        status = EXCLUDED.status,
+        aggregated_result = EXCLUDED.aggregated_result,
+        started_at = EXCLUDED.started_at,
+        completed_at = EXCLUDED.completed_at,
+        tasks = EXCLUDED.tasks
+    `
+  }
+
+  private async loadFromDB(): Promise<void> {
+    if (!pgEnabled) return
+    await this.initDB()
+    try {
+      const rows = await pgSql`SELECT * FROM parallel_executions ORDER BY created_at DESC LIMIT 200`
+      for (const r of rows) {
+        const exec: ParallelExecution = {
+          id: r.id,
+          name: r.name,
+          userID: r.user_id,
+          workspaceID: r.workspace_id ?? undefined,
+          status: r.status as ParallelStatus,
+          tasks: typeof r.tasks === 'string' ? JSON.parse(r.tasks) : r.tasks,
+          concurrency: r.concurrency,
+          aggregatedResult: r.aggregated_result ?? undefined,
+          createdAt: Number(r.created_at),
+          startedAt: r.started_at ? Number(r.started_at) : undefined,
+          completedAt: r.completed_at ? Number(r.completed_at) : undefined,
+          timeoutMs: r.timeout_ms,
+          fanInPrompt: r.fan_in_prompt ?? undefined,
+        }
+        this.executions.set(exec.id, exec)
+      }
+      if (rows.length > 0) console.log(`[parallel] Loaded ${rows.length} executions from DB`)
+    } catch (err) {
+      console.error("[parallel] loadFromDB query error:", err)
+    }
   }
 
   // ── Lightweight tool-execution tracking ──────────────────────
@@ -435,12 +518,36 @@ export class ParallelExecutionManager {
     this.toolExecutions.push(exec)
     // Keep last 200 entries
     if (this.toolExecutions.length > 200) this.toolExecutions.splice(0, this.toolExecutions.length - 200)
+    // Persist to DB
+    this.persistToolExecution(exec).catch(err => console.error("[parallel] Tool exec persist error:", err))
     return id
   }
 
   /** List tool executions (for dashboard) */
   listToolExecutions(limit = 50): ToolExecution[] {
     return this.toolExecutions.slice(-limit).reverse()
+  }
+
+  private async persistToolExecution(exec: ToolExecution): Promise<void> {
+    if (!pgEnabled) return
+    try {
+      await pgSql`
+        CREATE TABLE IF NOT EXISTS parallel_tool_executions (
+          id TEXT PRIMARY KEY,
+          session_id TEXT,
+          round INTEGER NOT NULL,
+          prompt TEXT,
+          tools JSONB NOT NULL DEFAULT '[]',
+          status TEXT NOT NULL,
+          created_at BIGINT NOT NULL,
+          completed_at BIGINT NOT NULL
+        )`
+      await pgSql`
+        INSERT INTO parallel_tool_executions (id, session_id, round, prompt, tools, status, created_at, completed_at)
+        VALUES (${exec.id}, ${exec.sessionId ?? null}, ${exec.round}, ${exec.prompt ?? null}, ${JSON.stringify(exec.tools)}, ${exec.status}, ${exec.createdAt}, ${exec.completedAt})
+        ON CONFLICT (id) DO NOTHING
+      `
+    } catch {}
   }
 }
 

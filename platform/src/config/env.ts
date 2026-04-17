@@ -74,15 +74,16 @@ const Schema = z.object({
   VLLM_GATEWAY_KEY: z.string().optional(),
 
   // ── Primary local vLLM ─────────────────────────────────────────────
-  // Optional — set to enable direct vLLM access (bypassing gateway).
-  // When gateway is configured, these are used as fallback only.
+  // DEPRECATED — direct vLLM access is disabled.  All local model
+  // traffic MUST route through the APISIX gateway (VLLM_GATEWAY_URL).
+  // These vars are retained only for model metadata defaults.
   VLLM_BASE_URL: z.string().url().optional(),
   VLLM_API_KEY: z.string().optional(),
   VLLM_MODEL_ID: z.string().default("plezan/MiniMax-M2.1-REAP-50-W4A16"),
   VLLM_MODEL_NAME: z.string().default("MiniMax M2.1 REAP 50 W4A16"),
   VLLM_CONTEXT_LIMIT: z.coerce.number().default(30000),
   VLLM_OUTPUT_LIMIT: z.coerce.number().default(4096),
-  // Extra vLLM endpoints — comma-separated, e.g. "http://h2:8001/v1,http://h3:8002/v1"
+  // DEPRECATED — extra direct endpoints no longer used; all traffic via gateway.
   VLLM_EXTRA_ENDPOINTS: z.string().optional(),
 
   // ── Cloud provider API keys (all optional) ─────────────────────────
@@ -101,6 +102,10 @@ const Schema = z.object({
   // ── Platform auth ──────────────────────────────────────────────────
   PLATFORM_API_KEY: z.string().optional(),
   PLATFORM_JWT_SECRET: z.string().optional(),
+
+  // ── PostgreSQL ─────────────────────────────────────────────────────
+  POSTGRES_URL: z.string().optional(),
+  PGBOUNCER_URL: z.string().optional(),
 
   // ── Logging ────────────────────────────────────────────────────────
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),

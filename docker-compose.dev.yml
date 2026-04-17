@@ -22,9 +22,11 @@ services:
       NODE_ENV: development
       LOG_LEVEL: "${LOG_LEVEL:-debug}"
       OPENCODE_URL: "http://127.0.0.1:4096"
-      OPENCODE_BIN: opencode
+      OPENCODE_BIN: /home/tw10549/.opencode/bin/opencode
       OPENCODE_DIR: /workspace
       AGENT_WORKSPACE_DIR: /workspace/.agent-workspace
+      # PostgreSQL — connects to the postgres service
+      POSTGRES_URL: "postgres://${POSTGRES_USER:-thirdwave}:${POSTGRES_PASSWORD:-thirdwave}@postgres:5432/${POSTGRES_DB:-thirdwave}"
       # Gateway — update these to match your inference setup
       VLLM_GATEWAY_URL: "${VLLM_GATEWAY_URL:-http://172.30.140.63:9080/v1}"
       VLLM_GATEWAY_KEY: "${VLLM_GATEWAY_KEY:-}"
@@ -43,10 +45,17 @@ services:
       - ./platform/util:/app/platform/util:ro
       - ./platform/tui:/app/platform/tui:ro
       - ./platform/skills:/app/platform/skills:rw
-      # Workspace for agent file operations
+      # Mount host /home so extension-sent workspace paths resolve inside container.
+      # Each user's VS Code sends their host path (e.g. /home/alice/project);
+      # this mount ensures the container can access it directly.
+      - /home:/home:rw
+      # Workspace for agent file operations (shared fallback)
       - workspace-data:/workspace
       # Persist OpenCode state across restarts
       - opencode-state:/root/.local/share/opencode
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3100/health/ready"]
@@ -54,6 +63,43 @@ services:
       timeout: 5s
       start_period: 60s
 
+  postgres:
+    image: postgres:16-alpine
+    container_name: thirdwave-postgres
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-thirdwave}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-thirdwave}"
+      POSTGRES_DB: "${POSTGRES_DB:-thirdwave}"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-thirdwave}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: thirdwave-pgadmin
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: "${PGADMIN_EMAIL:-admin@local.com}"
+      PGADMIN_DEFAULT_PASSWORD: "${PGADMIN_PASSWORD:-admin}"
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+      - ./pgadmin-servers.json:/pgadmin4/servers.json:ro
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
 volumes:
   workspace-data:
   opencode-state:
+  postgres-data:
+  pgadmin-data:

@@ -207,4 +207,43 @@ export declare class ThirdwaveClient {
     hitlStats(): Promise<Record<string, number>>;
     hitlResolved(): Promise<unknown[]>;
     resolveHitl(requestId: string, decision: "approved" | "denied"): Promise<unknown>;
+    login(email: string, password: string): Promise<{
+        token: string;
+        user: any;
+    }>;
+    register(email: string, password: string, fullName?: string): Promise<any>;
+    me(): Promise<{
+        user: any;
+        token: any;
+    }>;
+    updateProfile(fullName: string): Promise<{
+        user: any;
+    }>;
+    listApiKeys(): Promise<{
+        keys: Array<any>;
+    }>;
+    getActiveKey(): Promise<{
+        key: string;
+    }>;
+    saveApiKey(apiKey: string, displayName?: string, gatewayUrl?: string): Promise<{
+        key: any;
+        gatewayVerification?: {
+            valid: boolean;
+            models?: string[];
+            error?: string;
+        };
+    }>;
+    verifyApiKey(apiKey: string, gatewayUrl?: string): Promise<{
+        valid: boolean;
+        models?: string[];
+        latencyMs?: number;
+        error?: string;
+    }>;
+    revokeApiKey(id: string): Promise<{
+        ok: boolean;
+    }>;
+    /** Update the Authorization header (e.g. after login) */
+    setToken(token: string): void;
+    /** Remove auth token (logout) */
+    clearToken(): void;
 }

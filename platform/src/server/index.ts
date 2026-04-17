@@ -46,6 +46,9 @@ import { HITLService } from "../services/hitl-service"
 import { ChatLogStore } from "../services/chat-log"
 import { buildRegistry, startRegistryPolling } from "../services/provider-registry"
 import { hitlRoutes } from "./routes/hitl"
+import { authRoutes } from "./routes/auth"
+import { adminRoutes } from "./routes/admin"
+import { userService } from "../services/user-service"
 
 // ── Instantiate services ──────────────────────────────────────────────
 
@@ -64,7 +67,7 @@ const dataDir = env.OPENCODE_DIR + "/.platform"
 
 // Ensure data directory exists
 import { mkdirSync, readFileSync } from "fs"
-import { resolve } from "path"
+import { resolve, join } from "path"
 try { mkdirSync(dataDir, { recursive: true }) } catch {}
 
 const audit = new AuditLogger({ dbPath: dataDir + "/audit.db" })
@@ -89,7 +92,7 @@ const parallelExecutor = new ParallelExecutionManager({
 
 // Skill knowledge base
 const skills = new SkillManager({
-  skillsDir: env.OPENCODE_DIR + "/platform/skills",
+  skillsDir: env.SKILLS_DIR || join(__dirname, "..", "..", "skills"),
 })
 skills.load()
 console.log(`[skills] Loaded ${skills.count()} skills`)
@@ -116,6 +119,9 @@ scalableQueue.start()
 // Start gateway polling — probes every 30 s and logs status changes
 startRegistryPolling(30_000)
 
+// Bootstrap admin user (creates admin@thirdwave.local if no users exist)
+userService.ensureAdminExists().catch(e => console.warn(`[auth] Admin bootstrap skipped: ${e.message}`))
+
 // ── Build app ─────────────────────────────────────────────────────────
 
 const app = new Hono()
@@ -124,6 +130,19 @@ const app = new Hono()
 app.use("*", loggerMiddleware)
 app.use("*", cors({ origin: "*" }))
 app.use("/api/*", rateLimitMiddleware)
+// Auth routes are public (login/register) — mount before authMiddleware
+app.route("/api/auth", authRoutes())
+// Backward compatibility for older extension builds still calling /auth/*.
+// NOTE: app.route("/auth", ...) doesn't work in Hono 4.x — use explicit handlers.
+const legacyAuth = authRoutes()
+app.post("/auth/register", (c) => legacyAuth.fetch(new Request(new URL("/register", c.req.url), c.req.raw)))
+app.post("/auth/login", (c) => legacyAuth.fetch(new Request(new URL("/login", c.req.url), c.req.raw)))
+app.get("/auth/me", (c) => legacyAuth.fetch(new Request(new URL("/me", c.req.url), c.req.raw)))
+app.patch("/auth/profile", (c) => legacyAuth.fetch(new Request(new URL("/profile", c.req.url), c.req.raw)))
+app.post("/auth/api-keys", (c) => legacyAuth.fetch(new Request(new URL("/api-keys", c.req.url), c.req.raw)))
+app.get("/auth/api-keys", (c) => legacyAuth.fetch(new Request(new URL("/api-keys", c.req.url), c.req.raw)))
+app.post("/auth/api-keys/verify", (c) => legacyAuth.fetch(new Request(new URL("/api-keys/verify", c.req.url), c.req.raw)))
+app.delete("/auth/api-keys/:id", (c) => legacyAuth.fetch(new Request(new URL(`/api-keys/${c.req.param("id")}`, c.req.url), c.req.raw)))
 app.use("/api/*", authMiddleware)
 
 // Audit middleware — wraps all API calls
@@ -192,24 +211,21 @@ app.get("/", async (c) => {
 
     /* ── Design Tokens (Dark) ─────────────────────────────────────── */
     :root {
-      /* Surface scale — layered depth */
-      --bg:  #07070e; --s1: #0c0c16; --s2: #10101c; --s3: #151524; --s4: #1b1b2c;
-      /* Borders */
-      --bd:  #1c1c2e; --bd2: #232338; --bd3: #2b2b42;
-      /* Text */
+      --bg: #07070e; --s1: #0c0c16; --s2: #10101c; --s3: #151524; --s4: #1b1b2c;
+      --bd: #1c1c2e; --bd2: #232338; --bd3: #2b2b42;
       --fg: #dddde8; --mt: #6464a0; --dim: #38385a;
-      /* Accent */
       --accent: #6366f1; --accent-h: #818cf8; --accent-soft: rgba(99,102,241,.1); --accent-glow: rgba(99,102,241,.25);
-      /* Semantic colours */
-      --ok:   #22c55e; --ok-bg:   rgba(34,197,94,.08);  --ok-bd:   rgba(34,197,94,.25);
-      --err:  #ef4444; --err-bg:  rgba(239,68,68,.08);  --err-bd:  rgba(239,68,68,.25);
+      --ok: #22c55e; --ok-bg: rgba(34,197,94,.08); --ok-bd: rgba(34,197,94,.25);
+      --err: #ef4444; --err-bg: rgba(239,68,68,.08); --err-bd: rgba(239,68,68,.25);
       --warn: #f59e0b; --warn-bg: rgba(245,158,11,.08); --warn-bd: rgba(245,158,11,.25);
       --info: #3b82f6; --info-bg: rgba(59,130,246,.08); --info-bd: rgba(59,130,246,.25);
-      /* Components */
       --pre-bg: #060610; --code-fg: #a78bfa; --code-border: #232338;
       --card-shadow: 0 1px 3px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.025);
       --card-hover-shadow: 0 4px 16px rgba(0,0,0,.5), 0 0 0 1px rgba(99,102,241,.15);
       --btn-sec-bg: #141424; --btn-sec-fg: #a78bfa; --btn-sec-border: #252538;
+      --sidebar-w: 220px;
+      --glass-bg: rgba(12,12,22,.65);
+      --glass-border: rgba(255,255,255,.06);
     }
 
     /* ── Design Tokens (Light) ────────────────────────────────────── */
@@ -218,14 +234,16 @@ app.get("/", async (c) => {
       --bd: #dcdcee; --bd2: #cccce0; --bd3: #bcbcd8;
       --fg: #18182e; --mt: #8888b8; --dim: #bbbbdc;
       --accent: #5254e0; --accent-h: #4345c8; --accent-soft: rgba(82,84,224,.08); --accent-glow: rgba(82,84,224,.18);
-      --ok:   #16a34a; --ok-bg:   rgba(22,163,74,.07);  --ok-bd:   rgba(22,163,74,.22);
-      --err:  #dc2626; --err-bg:  rgba(220,38,38,.07);  --err-bd:  rgba(220,38,38,.22);
-      --warn: #d97706; --warn-bg: rgba(217,119,6,.07);  --warn-bd: rgba(217,119,6,.22);
-      --info: #2563eb; --info-bg: rgba(37,99,235,.07);  --info-bd: rgba(37,99,235,.22);
+      --ok: #16a34a; --ok-bg: rgba(22,163,74,.07); --ok-bd: rgba(22,163,74,.22);
+      --err: #dc2626; --err-bg: rgba(220,38,38,.07); --err-bd: rgba(220,38,38,.22);
+      --warn: #d97706; --warn-bg: rgba(217,119,6,.07); --warn-bd: rgba(217,119,6,.22);
+      --info: #2563eb; --info-bg: rgba(37,99,235,.07); --info-bd: rgba(37,99,235,.22);
       --pre-bg: #ebebfa; --code-fg: #5b21b6; --code-border: #cccce0;
       --card-shadow: 0 1px 4px rgba(0,0,0,.07), 0 0 0 1px rgba(0,0,0,.04);
       --card-hover-shadow: 0 4px 14px rgba(0,0,0,.1), 0 0 0 1px rgba(82,84,224,.15);
       --btn-sec-bg: #eeeefd; --btn-sec-fg: #5254e0; --btn-sec-border: #d0d0f0;
+      --glass-bg: rgba(255,255,255,.7);
+      --glass-border: rgba(0,0,0,.06);
     }
 
     /* ── Body ─────────────────────────────────────────────────────── */
@@ -237,74 +255,155 @@ app.get("/", async (c) => {
     }
 
     /* ── Custom scrollbar ─────────────────────────────────────────── */
-    ::-webkit-scrollbar { width: 4px; height: 4px; }
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: var(--bd3); border-radius: 99px; }
     ::-webkit-scrollbar-thumb:hover { background: var(--mt); }
 
-    /* ── Layout ───────────────────────────────────────────────────── */
-    .container { max-width: 1120px; margin: 0 auto; padding: 32px 24px 60px; }
+    /* ── Layout — Sidebar + Main ─────────────────────────────────── */
+    .app-layout { display: flex; min-height: 100vh; }
 
-    /* ── Header ───────────────────────────────────────────────────── */
-    h1 {
-      font-size: 1.75rem; font-weight: 800; letter-spacing: -0.04em;
+    /* ── Sidebar ──────────────────────────────────────────────────── */
+    .sidebar {
+      width: var(--sidebar-w); position: fixed; top: 0; left: 0; bottom: 0;
+      background: var(--s1); border-right: 1px solid var(--bd);
+      display: flex; flex-direction: column; z-index: 100;
+      overflow-y: auto; overflow-x: hidden;
+      transition: transform 0.25s cubic-bezier(.4,0,.2,1);
+    }
+    .sidebar-brand {
+      padding: 20px 18px 8px; border-bottom: 1px solid var(--bd);
+    }
+    .sidebar-brand h1 {
+      font-size: 1.1rem; font-weight: 800; letter-spacing: -0.03em;
       background: linear-gradient(130deg, #818cf8 0%, #a855f7 50%, #ec4899 100%);
       -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+      line-height: 1.3;
     }
-    .subtitle { color: var(--mt); font-size: 0.84rem; margin: 3px 0 28px; }
-    .header-controls { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+    .sidebar-brand .version { font-size: 0.68rem; color: var(--dim); margin-top: 2px; }
+    .sidebar-nav { flex: 1; padding: 12px 8px; display: flex; flex-direction: column; gap: 2px; }
+    .sidebar-section { font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--dim); font-weight: 700; padding: 14px 10px 5px; }
+    .nav-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 9px 12px; border-radius: 8px; cursor: pointer;
+      color: var(--mt); font-size: 0.82rem; font-weight: 500;
+      transition: all 0.15s ease; user-select: none; text-decoration: none;
+      border: 1px solid transparent;
+    }
+    .nav-item:hover { background: var(--s3); color: var(--fg); }
+    .nav-item.active {
+      background: var(--accent-soft); color: var(--accent-h);
+      border-color: rgba(99,102,241,.15); font-weight: 600;
+    }
+    .nav-item .nav-icon { font-size: 1rem; width: 20px; text-align: center; flex-shrink: 0; }
+    .nav-item .nav-badge {
+      margin-left: auto; background: var(--accent); color: #fff;
+      font-size: 0.62rem; font-weight: 700; padding: 1px 6px; border-radius: 99px; min-width: 18px; text-align: center;
+    }
+    .sidebar-footer {
+      padding: 12px 14px; border-top: 1px solid var(--bd);
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .sidebar-user {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 0.78rem; color: var(--mt); overflow: hidden;
+    }
+    .sidebar-user .avatar {
+      width: 28px; height: 28px; border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), #a855f7);
+      display: flex; align-items: center; justify-content: center;
+      color: #fff; font-size: 0.7rem; font-weight: 700; flex-shrink: 0;
+    }
+    .sidebar-controls { display: flex; gap: 4px; }
+    .sidebar-controls .btn { padding: 5px 10px; font-size: 0.78rem; }
+
+    /* ── Main Content ─────────────────────────────────────────────── */
+    .main-content { margin-left: var(--sidebar-w); flex: 1; min-height: 100vh; }
+    .content-header {
+      position: sticky; top: 0; z-index: 50;
+      background: var(--glass-bg); backdrop-filter: blur(16px) saturate(1.6);
+      -webkit-backdrop-filter: blur(16px) saturate(1.6);
+      border-bottom: 1px solid var(--glass-border);
+      padding: 14px 28px; display: flex; align-items: center; justify-content: space-between;
+    }
+    .content-header h2 {
+      font-size: 1.15rem; font-weight: 700; letter-spacing: -0.02em;
+    }
+    .content-body { padding: 24px 28px 60px; max-width: 1200px; }
+
+    /* ── Hero Section ─────────────────────────────────────────────── */
+    .hero {
+      background: linear-gradient(135deg, rgba(99,102,241,.08), rgba(168,85,247,.06), rgba(236,72,153,.04));
+      border: 1px solid rgba(99,102,241,.12);
+      border-radius: 16px; padding: 28px 32px; margin-bottom: 24px;
+      position: relative; overflow: hidden;
+    }
+    .hero::before {
+      content: ''; position: absolute; top: -50%; right: -20%; width: 300px; height: 300px;
+      background: radial-gradient(circle, rgba(99,102,241,.12) 0%, transparent 70%);
+      border-radius: 50%; pointer-events: none;
+    }
+    .hero-title {
+      font-size: 1.5rem; font-weight: 800; letter-spacing: -0.03em;
+      background: linear-gradient(130deg, #818cf8, #a855f7, #ec4899);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+      margin-bottom: 6px;
+    }
+    .hero-subtitle { color: var(--mt); font-size: 0.88rem; margin-bottom: 20px; }
+    .hero-stats {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 12px; position: relative; z-index: 1;
+    }
+    .hero-stat {
+      background: var(--glass-bg); backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid var(--glass-border); border-radius: 12px;
+      padding: 16px 18px;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    .hero-stat:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,.2); }
+    .hero-stat .stat-icon { font-size: 1.3rem; margin-bottom: 6px; }
+    .hero-stat .stat-num { font-size: 1.4rem; font-weight: 800; letter-spacing: -0.03em; }
+    .hero-stat .stat-label { font-size: 0.68rem; color: var(--mt); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; margin-top: 2px; }
 
     /* ── Status Grid ──────────────────────────────────────────────── */
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 20px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px; }
 
-    /* ── Card ─────────────────────────────────────────────────────── */
+    /* ── Card (glass style) ───────────────────────────────────────── */
     .card {
       background: var(--s1); border: 1px solid var(--bd);
-      border-radius: 12px; padding: 18px 20px;
+      border-radius: 14px; padding: 20px 22px;
       box-shadow: var(--card-shadow);
-      transition: box-shadow 0.2s ease, border-color 0.2s ease;
+      transition: box-shadow 0.25s ease, border-color 0.25s ease, transform 0.25s ease;
     }
     .card:hover { border-color: var(--bd3); box-shadow: var(--card-hover-shadow); }
     .card h3 {
       font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.1em;
-      color: var(--mt); margin-bottom: 10px; font-weight: 600;
+      color: var(--mt); margin-bottom: 12px; font-weight: 600;
+      display: flex; align-items: center; justify-content: space-between;
     }
 
     /* ── Status Dot ───────────────────────────────────────────────── */
     .status { display: flex; align-items: center; gap: 10px; font-size: 0.95rem; font-weight: 600; }
     .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; position: relative; }
-    .dot.ok  { background: var(--ok);  box-shadow: 0 0 0 3px var(--ok-bg);  animation: dot-pulse 2.5s ease-in-out infinite; }
+    .dot.ok { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-bg); animation: dot-pulse 2.5s ease-in-out infinite; }
     .dot.err { background: var(--err); box-shadow: 0 0 0 3px var(--err-bg); }
     @keyframes dot-pulse {
       0%,100% { box-shadow: 0 0 0 3px var(--ok-bg); }
-      50%      { box-shadow: 0 0 0 6px rgba(34,197,94,.12); }
+      50% { box-shadow: 0 0 0 6px rgba(34,197,94,.12); }
     }
 
-    /* ── Navigation Tabs ──────────────────────────────────────────── */
-    .tabs {
-      display: flex; gap: 2px; flex-wrap: wrap;
-      background: var(--s2); border: 1px solid var(--bd);
-      border-radius: 12px; padding: 4px; margin-bottom: 16px;
-    }
-    .tab {
-      background: transparent; border: none; border-radius: 8px;
-      padding: 7px 15px; cursor: pointer;
-      color: var(--mt); font-size: 0.82rem; font-weight: 500;
-      transition: background 0.15s, color 0.15s;
-      white-space: nowrap; user-select: none;
-    }
-    .tab:hover { background: var(--s3); color: var(--fg); }
-    .tab.active {
-      background: var(--s1); color: var(--accent);
-      box-shadow: 0 1px 4px rgba(0,0,0,.2), 0 0 0 1px var(--bd);
-      font-weight: 600;
-    }
-    :root[data-theme="light"] .tab.active { box-shadow: 0 1px 3px rgba(0,0,0,.08), 0 0 0 1px var(--bd); }
+    /* ── Navigation Tabs (hidden, replaced by sidebar) ───────────── */
+    .tabs { display: none; }
+    .tab { display: none; }
 
     /* ── Panel ────────────────────────────────────────────────────── */
     .panel { display: none; }
-    .panel.active { display: block; animation: fadeIn 0.16s ease-out; }
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+    .panel.active { display: block; animation: panelIn 0.3s cubic-bezier(.4,0,.2,1); }
+    @keyframes panelIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
 
     /* ── Tables ───────────────────────────────────────────────────── */
     table { width: 100%; border-collapse: collapse; }
@@ -314,25 +413,26 @@ app.get("/", async (c) => {
       font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.09em;
       color: var(--mt); font-weight: 700; white-space: nowrap;
     }
-    td { padding: 9px 14px; font-size: 0.84rem; border-bottom: 1px solid var(--bd); vertical-align: middle; }
+    td { padding: 10px 14px; font-size: 0.84rem; border-bottom: 1px solid var(--bd); vertical-align: middle; }
     tbody tr:last-child td { border-bottom: none; }
+    tbody tr { transition: background 0.12s ease; }
     tbody tr:hover td { background: var(--accent-soft); }
     td a { color: #818cf8; text-decoration: none; transition: color 0.12s; }
     td a:hover { color: var(--accent-h); text-decoration: underline; }
 
     /* ── HTTP Method Badges ───────────────────────────────────────── */
     .badge { display: inline-block; padding: 2px 8px; border-radius: 5px; font-size: 0.7rem; font-weight: 700; font-family: ui-monospace, 'JetBrains Mono', monospace; letter-spacing: 0.02em; border: 1px solid transparent; }
-    .badge-get    { background: var(--ok-bg);   color: var(--ok);   border-color: var(--ok-bd); }
-    .badge-post   { background: var(--info-bg); color: var(--info); border-color: var(--info-bd); }
-    .badge-delete { background: var(--err-bg);  color: var(--err);  border-color: var(--err-bd); }
-    .badge-put    { background: var(--warn-bg); color: var(--warn); border-color: var(--warn-bd); }
-    .badge-patch  { background: var(--warn-bg); color: var(--warn); border-color: var(--warn-bd); }
+    .badge-get { background: var(--ok-bg); color: var(--ok); border-color: var(--ok-bd); }
+    .badge-post { background: var(--info-bg); color: var(--info); border-color: var(--info-bd); }
+    .badge-delete { background: var(--err-bg); color: var(--err); border-color: var(--err-bd); }
+    .badge-put { background: var(--warn-bg); color: var(--warn); border-color: var(--warn-bd); }
+    .badge-patch { background: var(--warn-bg); color: var(--warn); border-color: var(--warn-bd); }
 
     /* ── Status Badges ────────────────────────────────────────────── */
     .st-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 99px; font-size: 0.72rem; font-weight: 600; }
-    .st-ok      { background: var(--ok-bg);   color: var(--ok);   border: 1px solid var(--ok-bd); }
-    .st-err     { background: var(--err-bg);  color: var(--err);  border: 1px solid var(--err-bd); }
-    .st-warn    { background: var(--warn-bg); color: var(--warn); border: 1px solid var(--warn-bd); }
+    .st-ok { background: var(--ok-bg); color: var(--ok); border: 1px solid var(--ok-bd); }
+    .st-err { background: var(--err-bg); color: var(--err); border: 1px solid var(--err-bd); }
+    .st-warn { background: var(--warn-bg); color: var(--warn); border: 1px solid var(--warn-bd); }
     .st-running { background: var(--info-bg); color: var(--info); border: 1px solid var(--info-bd); }
     .st-badge::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
 
@@ -377,13 +477,41 @@ app.get("/", async (c) => {
     /* ── Text helpers ─────────────────────────────────────────────── */
     .ok-text { color: var(--ok); } .err-text { color: var(--err); } .warn-text { color: var(--warn); }
 
+    /* ── Skeleton Loader ─────────────────────────────────────────── */
+    .skeleton {
+      background: linear-gradient(90deg, var(--s2) 25%, var(--s3) 50%, var(--s2) 75%);
+      background-size: 200% 100%; animation: skeleton-shine 1.5s ease-in-out infinite;
+      border-radius: 6px; min-height: 16px;
+    }
+    .skeleton-row { height: 40px; margin-bottom: 8px; border-radius: 8px; }
+    .skeleton-card { height: 80px; border-radius: 12px; }
+    .skeleton-text { height: 14px; margin-bottom: 6px; width: 70%; }
+    .skeleton-text.short { width: 40%; }
+    @keyframes skeleton-shine {
+      0% { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+
+    /* ── Refresh Indicator ────────────────────────────────────────── */
+    .refresh-pulse {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 0.72rem; color: var(--mt);
+    }
+    .refresh-pulse .pulse-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--accent); animation: refresh-blink 2s ease-in-out infinite;
+    }
+    @keyframes refresh-blink {
+      0%,100% { opacity: .3; } 50% { opacity: 1; }
+    }
+
     /* ── Workspace Cards ──────────────────────────────────────────── */
     .ws-card {
       background: var(--s2); border: 1px solid var(--bd);
-      border-radius: 10px; padding: 14px 16px; margin-bottom: 10px;
-      transition: border-color 0.15s, box-shadow 0.15s;
+      border-radius: 12px; padding: 16px 18px; margin-bottom: 10px;
+      transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
     }
-    .ws-card:hover { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-soft), 0 4px 14px rgba(0,0,0,.2); }
+    .ws-card:hover { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-soft), 0 4px 14px rgba(0,0,0,.2); transform: translateY(-1px); }
     .ws-name { font-weight: 600; font-size: 0.95rem; }
     .ws-dir { font-size: 0.78rem; color: var(--mt); margin-top: 3px; font-family: ui-monospace, 'JetBrains Mono', monospace; }
     .ws-tag {
@@ -398,14 +526,13 @@ app.get("/", async (c) => {
     }
     .ws-meta { font-size: 0.75rem; color: var(--dim); margin-top: 5px; }
 
-    /* ── Prompt preview block (Parallel tab) ──────────────────────── */
+    /* ── Prompt preview block ─────────────────────────────────────── */
     .prompt-preview {
       font-size: 0.78rem; color: var(--fg); opacity: 0.85;
       padding: 8px 12px; background: var(--s3);
       border: 1px solid var(--bd2); border-left: 3px solid var(--accent);
       border-radius: 0 6px 6px 0; margin-bottom: 8px;
-      font-style: italic; white-space: pre-wrap; word-break: break-word;
-      line-height: 1.5;
+      font-style: italic; white-space: pre-wrap; word-break: break-word; line-height: 1.5;
     }
     .prompt-label { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--mt); font-style: normal; margin-bottom: 3px; font-weight: 600; }
 
@@ -421,53 +548,155 @@ app.get("/", async (c) => {
       display: flex; align-items: center; justify-content: center; gap: 16px;
     }
     .footer::before { content: '◆'; color: var(--accent); opacity: 0.5; }
+
+    /* ── Mobile sidebar ──────────────────────────────────────────── */
+    .sidebar-toggle { display: none; position: fixed; top: 12px; left: 12px; z-index: 200; background: var(--s1); border: 1px solid var(--bd); border-radius: 8px; padding: 8px 10px; cursor: pointer; color: var(--fg); font-size: 1.1rem; }
+    @media (max-width: 768px) {
+      .sidebar { transform: translateX(-100%); }
+      .sidebar.open { transform: translateX(0); }
+      .sidebar-toggle { display: block; }
+      .main-content { margin-left: 0; }
+      .content-body { padding: 18px 16px 60px; }
+      .content-header { padding: 14px 16px; padding-left: 52px; }
+      .hero-stats { grid-template-columns: 1fr 1fr; }
+    }
   </style>
 </head>
 <body>
-  <div class="container">
-    <div class="header-controls">
-      <h1 data-i18n="title">Thirdwave AI Coding Platform</h1>
-      <button class="btn secondary" id="theme-toggle" onclick="toggleTheme()" style="padding:5px 12px;font-size:0.85rem;margin-left:auto">☀️</button>
-      <button class="btn secondary" id="lang-toggle" onclick="toggleLang()" style="padding:5px 12px;font-size:0.85rem">日本語</button>
-    </div>
-    <p class="subtitle" data-i18n="subtitle">Self-hosted AI coding engine powered by local vLLM &mdash; no cloud APIs</p>
+  <button class="sidebar-toggle" id="sidebar-toggle" onclick="document.getElementById('sidebar').classList.toggle('open')">☰</button>
 
-    <div class="grid">
-      <div class="card">
-        <h3>Platform</h3>
-        <div class="status"><span class="dot ok"></span> Running on :${env.PORT}</div>
+  <div class="app-layout">
+    <!-- ── Sidebar Navigation ──────────────────────────────────────── -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-brand">
+        <h1>Thirdwave</h1>
+        <div class="version">AI Coding Platform v0.1.0</div>
       </div>
-      <div class="card">
-        <h3>OpenCode Engine</h3>
-        <div class="status"><span class="dot ${health.ok ? 'ok' : 'err'}"></span> ${health.ok ? 'Connected' : 'Starting up…'}</div>
-      </div>
-      <div class="card">
-        <h3>LLM Provider</h3>
-        <div class="status"><span class="dot ${registry.local.length > 0 ? 'ok' : 'err'}"></span> ${registry.local.length} local vLLM + ${registry.cloud.filter((p: any) => p.configured).length} cloud</div>
-      </div>
-    </div>
 
-    <!-- Tabbed Dashboard -->
-    <div class="tabs">
-      <div class="tab active" data-tab="audit" data-i18n-tab="audit">Audit Logs</div>
-      <div class="tab" data-tab="workspaces" data-i18n-tab="workspaces">Workspaces</div>
-      <div class="tab" data-tab="queue" data-i18n-tab="queue">Queue</div>
-      <div class="tab" data-tab="orchestrations" data-i18n-tab="orchestrations">Orchestrations</div>
-      <div class="tab" data-tab="parallel" data-i18n-tab="parallel">Parallel</div>
-      <div class="tab" data-tab="sessions" data-i18n-tab="sessions">Sessions</div>
-      <div class="tab" data-tab="models" data-i18n-tab="models">Models</div>
-      <div class="tab" data-tab="api" data-i18n-tab="api">API Reference</div>
-    </div>
+      <nav class="sidebar-nav">
+        <div class="sidebar-section" data-i18n-section="overview">Overview</div>
+        <div class="nav-item active" data-tab="dashboard" onclick="switchTab('dashboard')">
+          <span class="nav-icon">📊</span> <span data-i18n-tab="dashboard">Dashboard</span>
+        </div>
 
-    <!-- AUDIT PANEL -->
-    <div class="panel active" id="panel-audit">
+        <div class="sidebar-section" data-i18n-section="monitor">Monitoring</div>
+        <div class="nav-item" data-tab="audit" onclick="switchTab('audit')">
+          <span class="nav-icon">📋</span> <span data-i18n-tab="audit">Audit Logs</span>
+        </div>
+        <div class="nav-item" data-tab="queue" onclick="switchTab('queue')">
+          <span class="nav-icon">⚡</span> <span data-i18n-tab="queue">Queue</span>
+        </div>
+        <div class="nav-item" data-tab="orchestrations" onclick="switchTab('orchestrations')">
+          <span class="nav-icon">🔀</span> <span data-i18n-tab="orchestrations">Orchestrations</span>
+        </div>
+        <div class="nav-item" data-tab="parallel" onclick="switchTab('parallel')">
+          <span class="nav-icon">⏩</span> <span data-i18n-tab="parallel">Parallel</span>
+        </div>
+
+        <div class="sidebar-section" data-i18n-section="workspace">Workspace</div>
+        <div class="nav-item" data-tab="workspaces" onclick="switchTab('workspaces')">
+          <span class="nav-icon">📁</span> <span data-i18n-tab="workspaces">Workspaces</span>
+        </div>
+        <div class="nav-item" data-tab="sessions" onclick="switchTab('sessions')">
+          <span class="nav-icon">💬</span> <span data-i18n-tab="sessions">Sessions</span>
+        </div>
+
+        <div class="sidebar-section" data-i18n-section="system">System</div>
+        <div class="nav-item" data-tab="models" onclick="switchTab('models')">
+          <span class="nav-icon">🧠</span> <span data-i18n-tab="models">Models</span>
+        </div>
+        <div class="nav-item" data-tab="users" onclick="switchTab('users')">
+          <span class="nav-icon">👥</span> <span data-i18n-tab="users">Users</span>
+        </div>
+        <div class="nav-item" data-tab="api" onclick="switchTab('api')">
+          <span class="nav-icon">🔌</span> <span data-i18n-tab="api">API Reference</span>
+        </div>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="sidebar-user" id="sidebarUser" style="display:none">
+          <div class="avatar" id="sidebarAvatar">A</div>
+          <span id="sidebarUserEmail" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+        </div>
+        <div class="sidebar-controls">
+          <button class="btn secondary" id="dashLoginAdminBtn" onclick="showDashLogin()" style="font-size:0.72rem;padding:5px 10px" data-i18n="loginBtn">🔑 Login</button>
+          <button class="btn secondary" id="dashLogoutBtn" style="display:none;font-size:0.72rem;padding:5px 10px" onclick="dashLogout()" data-i18n="logoutBtn">Logout</button>
+          <button class="btn secondary" id="theme-toggle" onclick="toggleTheme()" style="padding:5px 10px;font-size:0.85rem">☀️</button>
+          <button class="btn secondary" id="lang-toggle" onclick="toggleLang()" style="padding:5px 10px;font-size:0.85rem">日本語</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ── Main Content ────────────────────────────────────────────── -->
+    <main class="main-content">
+      <div class="content-header">
+        <h2 id="content-title">Dashboard</h2>
+        <div class="refresh-pulse" id="auto-refresh-indicator" style="display:none">
+          <span class="pulse-dot"></span> <span data-i18n="autoRefreshing">Auto-refreshing</span>
+        </div>
+      </div>
+      <div class="content-body">
+
+        <!-- DASHBOARD / HERO PANEL -->
+        <div class="panel active" id="panel-dashboard">
+          <div class="hero">
+            <div class="hero-title" data-i18n="title">Thirdwave AI Coding Platform</div>
+            <div class="hero-subtitle" data-i18n="subtitle">Self-hosted AI coding engine powered by local vLLM &mdash; no cloud APIs</div>
+            <div class="hero-stats">
+              <div class="hero-stat">
+                <div class="stat-icon">🟢</div>
+                <div class="stat-num" style="color:var(--ok)">:${env.PORT}</div>
+                <div class="stat-label" data-i18n="statPlatform">Platform</div>
+              </div>
+              <div class="hero-stat">
+                <div class="stat-icon">${health.ok ? '🟢' : '�'}</div>
+                <div class="stat-num" style="color:${health.ok ? 'var(--ok)' : 'var(--warn, #f0ad4e)'}">${health.ok ? 'Connected' : 'Standalone'}</div>
+                <div class="stat-label" data-i18n="statOpenCode">OpenCode Engine</div>
+              </div>
+              <div class="hero-stat">
+                <div class="stat-icon">🤖</div>
+                <div class="stat-num">${registry.local.length}</div>
+                <div class="stat-label" data-i18n="statLocalVllm">Local vLLM Endpoints</div>
+              </div>
+              <div class="hero-stat">
+                <div class="stat-icon">☁️</div>
+                <div class="stat-num">${registry.cloud.filter((p: any) => p.configured).length}</div>
+                <div class="stat-label" data-i18n="statCloudProviders">Cloud Providers</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr))">
+            <div class="card" style="cursor:pointer" onclick="switchTab('audit')">
+              <h3 data-i18n="recentActivity">📋 Recent Activity</h3>
+              <div id="dash-activity">
+                <div class="skeleton skeleton-row"></div>
+                <div class="skeleton skeleton-row"></div>
+                <div class="skeleton skeleton-row"></div>
+              </div>
+            </div>
+            <div class="card" style="cursor:pointer" onclick="switchTab('queue')">
+              <h3 data-i18n="queueStatus">⚡ Queue Status</h3>
+              <div id="dash-queue">
+                <div class="skeleton skeleton-card"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- AUDIT PANEL -->
+        <div class="panel" id="panel-audit">
       <div class="card">
         <h3 data-i18n="auditStatistics">Audit Statistics</h3>
-        <div class="grid" id="audit-stats" style="margin-bottom:0"><div style="color:#666">Loading...</div></div>
+        <div class="grid" id="audit-stats" style="margin-bottom:0">
+          <div class="skeleton skeleton-card"></div>
+          <div class="skeleton skeleton-card"></div>
+          <div class="skeleton skeleton-card"></div>
+        </div>
       </div>
       <div class="card" style="margin-top:14px">
         <h3><span data-i18n="recentAuditEntries">Recent Audit Entries</span> <button class="btn secondary" style="float:right;padding:4px 12px;font-size:0.75rem" onclick="loadAudit()" data-i18n="refresh">Refresh</button></h3>
-        <pre id="audit-entries">Loading...</pre>
+        <pre id="audit-entries" style="min-height:60px"><div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div></pre>
       </div>
     </div>
 
@@ -478,7 +707,7 @@ app.get("/", async (c) => {
           <h3 style="margin:0" data-i18n="workspacesTitle">Workspaces</h3>
           <button class="btn secondary" style="padding:4px 12px;font-size:0.75rem" onclick="loadWorkspaces()" data-i18n="refresh">Refresh</button>
         </div>
-        <div id="workspaces-list"><div style="color:var(--muted)">Loading...</div></div>
+        <div id="workspaces-list"><div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div></div>
       </div>
     </div>
 
@@ -488,7 +717,7 @@ app.get("/", async (c) => {
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
           <h3 style="margin:0" data-i18n="queueMetrics">Queue Metrics</h3>
           <div style="display:flex;align-items:center;gap:8px">
-            <label style="font-size:0.75rem;color:var(--muted);display:flex;align-items:center;gap:4px"><input type="checkbox" id="queue-auto-refresh" checked> Auto-refresh</label>
+            <label style="font-size:0.75rem;color:var(--muted);display:flex;align-items:center;gap:4px"><input type="checkbox" id="queue-auto-refresh" checked> <span data-i18n="autoRefresh">Auto-refresh</span></label>
             <button class="btn secondary" style="padding:4px 12px;font-size:0.75rem" onclick="loadQueue()" data-i18n="refresh">Refresh</button>
           </div>
         </div>
@@ -502,7 +731,7 @@ app.get("/", async (c) => {
     <div class="panel" id="panel-orchestrations">
       <div class="card">
         <h3 data-i18n="orchestrationsTitle">Orchestrations <button class="btn secondary" style="float:right;padding:4px 12px;font-size:0.75rem" onclick="loadOrchestrations()" data-i18n="refresh">Refresh</button></h3>
-        <div id="orchestrations-list"><div style="color:var(--mt);font-size:0.85rem;padding:8px">Loading...</div></div>
+        <div id="orchestrations-list"><div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div></div>
       </div>
     </div>
 
@@ -510,7 +739,7 @@ app.get("/", async (c) => {
     <div class="panel" id="panel-parallel">
       <div class="card">
         <h3 data-i18n="parallelExecutions">Parallel Executions <button class="btn secondary" style="float:right;padding:4px 12px;font-size:0.75rem" onclick="loadParallel()" data-i18n="refresh">Refresh</button></h3>
-        <div id="parallel-list">Loading...</div>
+        <div id="parallel-list"><div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div></div>
       </div>
     </div>
 
@@ -518,7 +747,7 @@ app.get("/", async (c) => {
     <div class="panel" id="panel-sessions">
       <div class="card">
         <h3 data-i18n="sessionsTitle">Sessions <button class="btn secondary" style="float:right;padding:4px 12px;font-size:0.75rem" onclick="loadSessions()" data-i18n="refresh">Refresh</button></h3>
-        <div id="sessions-list"><div style="color:var(--mt);font-size:0.85rem;padding:8px">Loading...</div></div>
+        <div id="sessions-list"><div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div></div>
       </div>
     </div>
 
@@ -563,7 +792,7 @@ app.get("/", async (c) => {
       <div class="card" style="margin-top:14px">
         <h3 data-i18n="cloudProviders">Cloud Providers</h3>
         <div id="cloud-providers">
-          <div style="color:var(--muted);font-size:0.85rem">Loading...</div>
+          <div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div>
         </div>
       </div>
     </div>
@@ -599,20 +828,122 @@ app.get("/", async (c) => {
             <tr><td><span class="badge badge-get">GET</span></td><td><a href="/api/hitl">/api/hitl</a></td><td>HITL pending approvals</td></tr>
             <tr><td><span class="badge badge-post">POST</span></td><td>/api/hitl/:id/approve</td><td>Approve a HITL request</td></tr>
             <tr><td><span class="badge badge-post">POST</span></td><td>/api/hitl/:id/deny</td><td>Deny a HITL request</td></tr>
+            <tr><td colspan="3" style="padding:8px 14px;font-weight:700;color:var(--accent);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.08em;border-bottom:2px solid var(--bd2)">Authentication &amp; Users</td></tr>
+            <tr><td><span class="badge badge-post">POST</span></td><td>/api/auth/login</td><td>Login (returns JWT)</td></tr>
+            <tr><td><span class="badge badge-post">POST</span></td><td>/api/auth/register</td><td>Register (pending approval)</td></tr>
+            <tr><td><span class="badge badge-get">GET</span></td><td>/api/auth/me</td><td>Current user from JWT</td></tr>
+            <tr><td><span class="badge badge-patch">PATCH</span></td><td>/api/auth/profile</td><td>Update current user profile</td></tr>
+            <tr><td><span class="badge badge-get">GET</span></td><td><a href="/api/admin/users">/api/admin/users</a></td><td>List all users (admin)</td></tr>
+            <tr><td><span class="badge badge-get">GET</span></td><td><a href="/api/admin/registrations">/api/admin/registrations</a></td><td>Pending registrations (admin)</td></tr>
+            <tr><td><span class="badge badge-post">POST</span></td><td>/api/admin/registrations/:id/approve</td><td>Approve registration (admin)</td></tr>
+            <tr><td><span class="badge badge-get">GET</span></td><td><a href="/api/admin/stats">/api/admin/stats</a></td><td>Admin dashboard stats</td></tr>
           </tbody>
         </table>
       </div>
     </div>
 
-    <div class="footer">Thirdwave v0.1.0 &mdash; OpenCode Engine &mdash; vLLM Local Inference</div>
+    <!-- USERS PANEL -->
+    <div class="panel" id="panel-users">
+      <div class="card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+          <h3 style="margin:0" data-i18n="userManagement">User Management</h3>
+          <button class="btn secondary" style="padding:4px 12px;font-size:0.75rem" onclick="loadUsers()" data-i18n="refresh">Refresh</button>
+        </div>
+        <div id="user-stats" class="grid" style="margin-bottom:14px">
+          <div class="skeleton skeleton-card"></div>
+          <div class="skeleton skeleton-card"></div>
+          <div class="skeleton skeleton-card"></div>
+          <div class="skeleton skeleton-card"></div>
+          <div class="skeleton skeleton-card"></div>
+        </div>
+        <h3 style="margin:12px 0 8px" data-i18n="pendingRegistrations">Pending Registrations</h3>
+        <div id="pending-registrations"><div class="skeleton skeleton-row"></div></div>
+        <h3 style="margin:18px 0 8px" data-i18n="pendingApiKeys">Pending API Key Approvals</h3>
+        <div id="pending-api-keys"><div class="skeleton skeleton-row"></div></div>
+        <h3 style="margin:18px 0 8px" data-i18n="allUsers">All Users</h3>
+        <div id="users-list"><div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div></div>
+      </div>
+    </div>
+
+    <div class="footer" data-i18n="footer">Thirdwave v0.1.0 &mdash; OpenCode Engine &mdash; vLLM Local Inference</div>
+      </div><!-- /content-body -->
+    </main>
+  </div><!-- /app-layout -->
+
+  <!-- Dashboard Login Modal -->
+  <div id="dashLogin" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.65);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);align-items:center;justify-content:center">
+    <div style="background:var(--s1);border:1px solid var(--bd2);border-radius:16px;padding:32px 28px;width:360px;max-width:90%;box-shadow:0 20px 60px rgba(0,0,0,.4)">
+      <div style="font-size:1.5rem;margin-bottom:4px">🔐</div>
+      <h3 style="margin:0 0 4px;color:var(--fg);font-size:1.1rem" data-i18n="adminLogin">Admin Login</h3>
+      <p style="font-size:0.78rem;color:var(--mt);margin:0 0 18px" data-i18n="loginDesc">Sign in to manage users, registrations, and policies.</p>
+      <div id="dashLoginError" style="display:none;padding:8px 12px;margin-bottom:12px;font-size:0.78rem;color:#ef4444;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.18);border-radius:8px"></div>
+      <input id="dashEmail" type="email" placeholder="Email" style="width:100%;padding:10px 12px;margin-bottom:10px;font-size:0.85rem;background:var(--s2);border:1px solid var(--bd);border-radius:8px;color:var(--fg);outline:none;box-sizing:border-box;transition:border-color .15s" onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--bd)'" />
+      <input id="dashPass" type="password" placeholder="Password" style="width:100%;padding:10px 12px;margin-bottom:14px;font-size:0.85rem;background:var(--s2);border:1px solid var(--bd);border-radius:8px;color:var(--fg);outline:none;box-sizing:border-box;transition:border-color .15s" onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--bd)'" />
+      <button class="btn" id="dashLoginBtn" onclick="dashDoLogin()" style="width:100%;padding:10px;font-size:0.88rem;border-radius:8px" data-i18n="signIn">Sign In</button>
+      <div style="text-align:center;margin-top:12px"><a href="javascript:hideDashLogin()" style="font-size:0.78rem;color:var(--mt);text-decoration:none" data-i18n="cancel">Cancel</a></div>
+    </div>
   </div>
 
   <script>
     const API = '';
+    // Dashboard auth — JWT stored in localStorage for admin API calls
+    let dashToken = localStorage.getItem('dashToken') || '';
+    function authHeaders() {
+      const h = {};
+      if (dashToken) h['Authorization'] = 'Bearer ' + dashToken;
+      return h;
+    }
     async function fetchJSON(path) {
-      const res = await fetch(API + path);
+      const res = await fetch(API + path, { headers: authHeaders() });
+      if (res.status === 401 && path.startsWith('/api/admin')) {
+        // Need login for admin endpoints
+        showDashLogin();
+        throw new Error('Authentication required — please log in');
+      }
       return res.json();
     }
+    function showDashLogin() {
+      document.getElementById('dashLogin').style.display = 'flex';
+      document.getElementById('dashEmail').focus();
+    }
+    function hideDashLogin() {
+      document.getElementById('dashLogin').style.display = 'none';
+      document.getElementById('dashLoginError').style.display = 'none';
+    }
+    async function dashDoLogin() {
+      const email = document.getElementById('dashEmail').value.trim();
+      const pass = document.getElementById('dashPass').value;
+      if (!email || !pass) { document.getElementById('dashLoginError').textContent = 'Email and password required'; document.getElementById('dashLoginError').style.display = 'block'; return; }
+      try {
+        const res = await fetch('/api/auth/login', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({email, password: pass}) });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Login failed');
+        dashToken = data.token;
+        localStorage.setItem('dashToken', dashToken);
+        hideDashLogin();
+        // Show logout button and user info
+        document.getElementById('dashLogoutBtn').style.display = '';
+        document.getElementById('dashLoginAdminBtn').style.display = 'none';
+        document.getElementById('sidebarUser').style.display = 'flex';
+        document.getElementById('sidebarUserEmail').textContent = data.user.email;
+        document.getElementById('sidebarAvatar').textContent = (data.user.email||'A')[0].toUpperCase();
+        // Reload active panel
+        const activeNav = document.querySelector('.nav-item.active');
+        if (activeNav) { const tab = activeNav.dataset.tab; const loaders = { dashboard: loadDashboard, audit: loadAudit, workspaces: loadWorkspaces, queue: loadQueue, orchestrations: loadOrchestrations, parallel: loadParallel, sessions: loadSessions, models: loadModels, users: loadUsers }; const fn = loaders[tab]; if (fn) fn(); }
+      } catch(e) { document.getElementById('dashLoginError').textContent = e.message; document.getElementById('dashLoginError').style.display = 'block'; }
+    }
+    function dashLogout() {
+      dashToken = '';
+      localStorage.removeItem('dashToken');
+      document.getElementById('dashLogoutBtn').style.display = 'none';
+      document.getElementById('dashLoginAdminBtn').style.display = '';
+      document.getElementById('sidebarUser').style.display = 'none';
+    }
+    // Enter key on password field → login
+    document.addEventListener('DOMContentLoaded', function() {
+      var dp = document.getElementById('dashPass');
+      if (dp) dp.addEventListener('keydown', function(e) { if (e.key === 'Enter') dashDoLogin(); });
+    });
     function pretty(obj) { return JSON.stringify(obj, null, 2); }
     function esc(s) { const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
 
@@ -625,7 +956,8 @@ app.get("/", async (c) => {
         workspacesTitle: 'Workspaces',
         tabs: { audit: 'Audit Logs', workspaces: 'Workspaces', queue: 'Queue',
                 orchestrations: 'Orchestrations', parallel: 'Parallel',
-                sessions: 'Sessions', models: 'Models', api: 'API Reference' },
+                sessions: 'Sessions', models: 'Models', users: 'Users', api: 'API Reference', dashboard: 'Dashboard' },
+        sections: { overview: 'Overview', monitor: 'Monitoring', workspace: 'Workspace', system: 'System' },
         noWorkspaces: 'No workspaces yet. Open a project in VS Code and send a message to auto-register.',
         loading: 'Loading...',
         active: 'ACTIVE',
@@ -658,6 +990,25 @@ app.get("/", async (c) => {
         cloudProviders: 'Cloud Providers',
         configured: 'Configured',
         noApiKey: 'No API key',
+        statPlatform: 'Platform',
+        statOpenCode: 'OpenCode Engine',
+        statLocalVllm: 'Local vLLM Endpoints',
+        statCloudProviders: 'Cloud Providers',
+        recentActivity: '\ud83d\udccb Recent Activity',
+        queueStatus: '\u26a1 Queue Status',
+        userManagement: 'User Management',
+        pendingRegistrations: 'Pending Registrations',
+        pendingApiKeys: 'Pending API Key Approvals',
+        allUsers: 'All Users',
+        loginBtn: '\ud83d\udd11 Login',
+        logoutBtn: 'Logout',
+        autoRefreshing: 'Auto-refreshing',
+        autoRefresh: 'Auto-refresh',
+        adminLogin: 'Admin Login',
+        loginDesc: 'Sign in to manage users, registrations, and policies.',
+        signIn: 'Sign In',
+        cancel: 'Cancel',
+        footer: 'Thirdwave v0.1.0 \u2014 OpenCode Engine \u2014 vLLM Local Inference',
       },
       ja: {
         title: 'Thirdwave AI \u30b3\u30fc\u30c7\u30a3\u30f3\u30b0\u30d7\u30e9\u30c3\u30c8\u30d5\u30a9\u30fc\u30e0',
@@ -666,7 +1017,8 @@ app.get("/", async (c) => {
         workspacesTitle: '\u30ef\u30fc\u30af\u30b9\u30da\u30fc\u30b9',
         tabs: { audit: '\u76e3\u67fb\u30ed\u30b0', workspaces: '\u30ef\u30fc\u30af\u30b9\u30da\u30fc\u30b9', queue: '\u30ad\u30e5\u30fc',
                 orchestrations: '\u30aa\u30fc\u30b1\u30b9\u30c8\u30ec\u30fc\u30b7\u30e7\u30f3', parallel: '\u4e26\u5217\u5b9f\u884c',
-                sessions: '\u30bb\u30c3\u30b7\u30e7\u30f3', models: '\u30e2\u30c7\u30eb', api: 'API \u30ea\u30d5\u30a1\u30ec\u30f3\u30b9' },
+                sessions: '\u30bb\u30c3\u30b7\u30e7\u30f3', models: '\u30e2\u30c7\u30eb', users: '\u30e6\u30fc\u30b6\u30fc', api: 'API \u30ea\u30d5\u30a1\u30ec\u30f3\u30b9', dashboard: '\u30c0\u30c3\u30b7\u30e5\u30dc\u30fc\u30c9' },
+        sections: { overview: '\u6982\u8981', monitor: '\u30e2\u30cb\u30bf\u30ea\u30f3\u30b0', workspace: '\u30ef\u30fc\u30af\u30b9\u30da\u30fc\u30b9', system: '\u30b7\u30b9\u30c6\u30e0' },
         noWorkspaces: 'VS Code \u3067\u30d7\u30ed\u30b8\u30a7\u30af\u30c8\u3092\u958b\u304d\u3001\u30e1\u30c3\u30bb\u30fc\u30b8\u3092\u9001\u4fe1\u3059\u308b\u3068\u81ea\u52d5\u767b\u9332\u3055\u308c\u307e\u3059\u3002',
         loading: '\u8aad\u307f\u8fbc\u307f\u4e2d...',
         active: '\u30a2\u30af\u30c6\u30a3\u30d6',
@@ -687,7 +1039,7 @@ app.get("/", async (c) => {
         round: '\u30e9\u30a6\u30f3\u30c9',
         tools: '\u30c4\u30fc\u30eb',
         session: '\u30bb\u30c3\u30b7\u30e7\u30f3',
-        noSessions: 'VS Code \u62e1\u5f35\u6A5F\u80fd\u3067\u30c1\u30e3\u30c3\u30c8\u3059\u308b\u3068\u30bb\u30c3\u30b7\u30e7\u30f3\u304c\u8a18\u9332\u3055\u308c\u307e\u3059\u3002',
+        noSessions: 'VS Code \u62e1\u5f35\u6a5f\u80fd\u3067\u30c1\u30e3\u30c3\u30c8\u3059\u308b\u3068\u30bb\u30c3\u30b7\u30e7\u30f3\u304c\u8a18\u9332\u3055\u308c\u307e\u3059\u3002',
         noOrchestrations: '\u307e\u3060\u30aa\u30fc\u30b1\u30b9\u30c8\u30ec\u30fc\u30b7\u30e7\u30f3\u304c\u3042\u308a\u307e\u305b\u3093\u3002',
         queueRunning: '\u5b9f\u884c\u4e2d',
         queueQueued: '\u5f85\u6a5f\u4e2d',
@@ -699,6 +1051,25 @@ app.get("/", async (c) => {
         cloudProviders: '\u30af\u30e9\u30a6\u30c9\u30d7\u30ed\u30d0\u30a4\u30c0\u30fc',
         configured: '\u8a2d\u5b9a\u6e08\u307f',
         noApiKey: 'API\u30ad\u30fc\u306a\u3057',
+        statPlatform: '\u30d7\u30e9\u30c3\u30c8\u30d5\u30a9\u30fc\u30e0',
+        statOpenCode: 'OpenCode \u30a8\u30f3\u30b8\u30f3',
+        statLocalVllm: '\u30ed\u30fc\u30ab\u30eb vLLM \u30a8\u30f3\u30c9\u30dd\u30a4\u30f3\u30c8',
+        statCloudProviders: '\u30af\u30e9\u30a6\u30c9\u30d7\u30ed\u30d0\u30a4\u30c0\u30fc',
+        recentActivity: '\ud83d\udccb \u6700\u8fd1\u306e\u30a2\u30af\u30c6\u30a3\u30d3\u30c6\u30a3',
+        queueStatus: '\u26a1 \u30ad\u30e5\u30fc\u30b9\u30c6\u30fc\u30bf\u30b9',
+        userManagement: '\u30e6\u30fc\u30b6\u30fc\u7ba1\u7406',
+        pendingRegistrations: '\u627f\u8a8d\u5f85\u3061\u767b\u9332',
+        pendingApiKeys: '\u627f\u8a8d\u5f85\u3061 API \u30ad\u30fc',
+        allUsers: '\u5168\u30e6\u30fc\u30b6\u30fc',
+        loginBtn: '\ud83d\udd11 \u30ed\u30b0\u30a4\u30f3',
+        logoutBtn: '\u30ed\u30b0\u30a2\u30a6\u30c8',
+        autoRefreshing: '\u81ea\u52d5\u66f4\u65b0\u4e2d',
+        autoRefresh: '\u81ea\u52d5\u66f4\u65b0',
+        adminLogin: '\u7ba1\u7406\u8005\u30ed\u30b0\u30a4\u30f3',
+        loginDesc: '\u30e6\u30fc\u30b6\u30fc\u3001\u767b\u9332\u3001\u30dd\u30ea\u30b7\u30fc\u3092\u7ba1\u7406\u3059\u308b\u306b\u306f\u30b5\u30a4\u30f3\u30a4\u30f3\u3057\u3066\u304f\u3060\u3055\u3044\u3002',
+        signIn: '\u30b5\u30a4\u30f3\u30a4\u30f3',
+        cancel: '\u30ad\u30e3\u30f3\u30bb\u30eb',
+        footer: 'Thirdwave v0.1.0 \u2014 OpenCode \u30a8\u30f3\u30b8\u30f3 \u2014 vLLM \u30ed\u30fc\u30ab\u30eb\u63a8\u8ad6',
       }
     };
     let currentLang = localStorage.getItem('lang') || 'en';
@@ -707,7 +1078,6 @@ app.get("/", async (c) => {
       document.querySelectorAll('[data-i18n]').forEach(el => {
         const key = el.dataset.i18n;
         if (t[key] !== undefined) {
-          // Only set text on leaf nodes; for h3 with child buttons, set first text node
           if (el.children.length > 0) {
             const textNode = Array.from(el.childNodes).find(n => n.nodeType === 3);
             if (textNode) textNode.textContent = t[key] + ' ';
@@ -718,14 +1088,24 @@ app.get("/", async (c) => {
       });
       document.querySelectorAll('[data-i18n-tab]').forEach(el => {
         const key = el.dataset.i18nTab;
-        if (t.tabs[key]) el.textContent = t.tabs[key];
+        if (t.tabs && t.tabs[key]) el.textContent = t.tabs[key];
       });
+      document.querySelectorAll('[data-i18n-section]').forEach(el => {
+        const key = el.dataset.i18nSection;
+        if (t.sections && t.sections[key]) el.textContent = t.sections[key];
+      });
+      // Translate content header title
+      const activeNav = document.querySelector('.nav-item.active');
+      if (activeNav && t.tabs) {
+        const tab = activeNav.dataset.tab;
+        const titleEl = document.getElementById('content-title');
+        if (titleEl && t.tabs[tab]) titleEl.textContent = t.tabs[tab];
+      }
       document.getElementById('lang-toggle').textContent = lang === 'en' ? '\u65e5\u672c\u8a9e' : 'EN';
-      // Re-load the active panel so dynamically rendered labels update
-      const activeTab = document.querySelector('.tab.active');
-      if (activeTab) {
-        const loaders = { audit: loadAudit, workspaces: loadWorkspaces, queue: loadQueue, orchestrations: loadOrchestrations, parallel: loadParallel, sessions: loadSessions, models: loadModels };
-        const loader = loaders[activeTab.dataset.tab];
+      // Re-load the active panel
+      if (activeNav) {
+        const loaders = { dashboard: loadDashboard, audit: loadAudit, workspaces: loadWorkspaces, queue: loadQueue, orchestrations: loadOrchestrations, parallel: loadParallel, sessions: loadSessions, models: loadModels, users: loadUsers };
+        const loader = loaders[activeNav.dataset.tab];
         if (loader) loader();
       }
     }
@@ -750,17 +1130,59 @@ app.get("/", async (c) => {
     applyTheme(localStorage.getItem('theme') || 'dark');
     applyLang(currentLang);
 
-    // Tab switching
-    document.querySelectorAll('.tab').forEach(tab => {
-      tab.addEventListener('click', () => {
-        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-        document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-        tab.classList.add('active');
-        document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
-        const loaders = { audit: loadAudit, workspaces: loadWorkspaces, queue: loadQueue, orchestrations: loadOrchestrations, parallel: loadParallel, sessions: loadSessions, models: loadModels };
-        if (loaders[tab.dataset.tab]) loaders[tab.dataset.tab]();
-      });
-    });
+    // ── Tab / Sidebar Navigation ─────────────────────────────────────
+    const TAB_TITLES = { dashboard: 'Dashboard', audit: 'Audit Logs', workspaces: 'Workspaces', queue: 'Queue', orchestrations: 'Orchestrations', parallel: 'Parallel', sessions: 'Sessions', models: 'Models', users: 'Users', api: 'API Reference' };
+    const TAB_LOADERS = { dashboard: loadDashboard, audit: loadAudit, workspaces: loadWorkspaces, queue: loadQueue, orchestrations: loadOrchestrations, parallel: loadParallel, sessions: loadSessions, models: loadModels, users: loadUsers };
+
+    function switchTab(tab) {
+      // Update sidebar active state
+      document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+      const navItem = document.querySelector('.nav-item[data-tab="' + tab + '"]');
+      if (navItem) navItem.classList.add('active');
+      // Update panels
+      document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+      const panel = document.getElementById('panel-' + tab);
+      if (panel) panel.classList.add('active');
+      // Update header title (use translated tab name)
+      const t = TRANSLATIONS[currentLang];
+      document.getElementById('content-title').textContent = (t.tabs && t.tabs[tab]) || TAB_TITLES[tab] || tab;
+      // Show auto-refresh indicator for queue
+      document.getElementById('auto-refresh-indicator').style.display = tab === 'queue' ? 'flex' : 'none';
+      // Load data
+      if (TAB_LOADERS[tab]) TAB_LOADERS[tab]();
+      // Close mobile sidebar
+      document.getElementById('sidebar').classList.remove('open');
+    }
+
+    // ── Dashboard loader ──────────────────────────────────────────────
+    async function loadDashboard() {
+      try {
+        const [stats, tasks] = await Promise.all([
+          fetchJSON('/api/audit/stats').catch(() => ({})),
+          fetchJSON('/api/queue?limit=5').catch(() => []),
+        ]);
+        // Recent activity mini-card
+        const actEl = document.getElementById('dash-activity');
+        actEl.innerHTML = '<div style="display:flex;flex-direction:column;gap:4px">' +
+          '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--bd)"><span style="font-size:0.82rem">Total Requests</span><strong>' + (stats.total||0) + '</strong></div>' +
+          '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--bd)"><span style="font-size:0.82rem">Errors</span><strong class="' + ((stats.errors||0) > 0 ? 'err-text' : 'ok-text') + '">' + (stats.errors||0) + '</strong></div>' +
+          '<div style="display:flex;justify-content:space-between;padding:6px 0"><span style="font-size:0.82rem">Avg Duration</span><strong>' + (stats.avgDuration||0) + 'ms</strong></div>' +
+          '</div>';
+        // Queue mini-card
+        const qEl = document.getElementById('dash-queue');
+        const taskArr = Array.isArray(tasks) ? tasks : (tasks.tasks || []);
+        if (taskArr.length > 0) {
+          qEl.innerHTML = taskArr.slice(0,4).map(function(tk) {
+            const stCls = tk.state === 'completed' ? 'st-ok' : tk.state === 'running' ? 'st-running' : tk.state === 'failed' ? 'st-err' : 'st-warn';
+            return '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--bd);font-size:0.82rem">' +
+              '<span class="st-badge ' + stCls + '" style="font-size:0.65rem">' + esc(tk.state||'?') + '</span>' +
+              '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(tk.title || tk.id || '?') + '</span></div>';
+          }).join('');
+        } else {
+          qEl.innerHTML = '<div style="color:var(--mt);text-align:center;padding:16px">No tasks in queue</div>';
+        }
+      } catch(e) { console.warn('Dashboard load error:', e); }
+    }
 
     async function loadAudit() {
       try {
@@ -796,12 +1218,13 @@ app.get("/", async (c) => {
             const lastSeen = new Date(ws.lastAccessedAt).toLocaleString();
             const tags = (ws.tags||[]).map(tag => '<span class="ws-tag">' + esc(tag) + '</span>').join('');
             const activeBadge = ws.active ? '<span class="ws-active-badge">' + t.active + '</span>' : '';
+            const owner = ws.ownerEmail ? ' &nbsp;&bull;&nbsp; user: ' + esc(ws.ownerEmail) : '';
             return '<div class="ws-card">' +
               '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px">' +
               '<span class="ws-name">' + esc(ws.name) + '</span>' + activeBadge + tags +
               '</div>' +
               '<div class="ws-dir">' + esc(ws.directory) + '</div>' +
-              '<div class="ws-meta">' + lastSeen + ' &nbsp;&bull;&nbsp; id: ' + ws.id.slice(0,8) + '</div>' +
+              '<div class="ws-meta">' + lastSeen + ' &nbsp;&bull;&nbsp; ref: ' + ws.id.slice(0,8) + owner + '</div>' +
               '</div>';
           }).join('');
         }
@@ -1069,8 +1492,161 @@ app.get("/", async (c) => {
       } catch(e) { document.getElementById('local-models').innerHTML = '<div style="color:var(--err)">Error: ' + esc(String(e)) + '</div>'; }
     }
 
-    // Auto-load first tab
-    loadAudit();
+    // ── Users panel ───────────────────────────────────────────────
+    async function loadUsers() {
+      try {
+        const stats = await fetchJSON('/api/admin/stats');
+        const rolesData = await fetchJSON('/api/admin/roles');
+        const availableRoles = (rolesData.roles || []).map(function(r) { return r.name; });
+        document.getElementById('user-stats').innerHTML =
+          '<div class="card" style="padding:12px;text-align:center"><div class="stat-num">' + (stats.total_users||0) + '</div><div class="stat-label">Total Users</div></div>' +
+          '<div class="card" style="padding:12px;text-align:center"><div class="stat-num">' + (stats.active_users||0) + '</div><div class="stat-label">Active</div></div>' +
+          '<div class="card" style="padding:12px;text-align:center"><div class="stat-num warn-text">' + (stats.pending_registrations||0) + '</div><div class="stat-label">Pending Reg</div></div>' +
+          '<div class="card" style="padding:12px;text-align:center"><div class="stat-num">' + (stats.active_api_keys||0) + '</div><div class="stat-label">API Keys</div></div>' +
+          '<div class="card" style="padding:12px;text-align:center"><div class="stat-num' + ((stats.pending_api_keys||0) > 0 ? ' warn-text' : '') + '">' + (stats.pending_api_keys||0) + '</div><div class="stat-label">Keys Pending</div></div>';
+
+        // Pending registrations
+        const regs = await fetchJSON('/api/admin/registrations');
+        if (regs.registrations && regs.registrations.length > 0) {
+          let rhtml = '<table><thead><tr><th>Email</th><th>Name</th><th>Requested</th><th>Actions</th></tr></thead><tbody>';
+          for (const r of regs.registrations) {
+            rhtml += '<tr><td>' + esc(r.email) + '</td><td>' + esc(r.full_name||'-') + '</td><td>' + new Date(r.created_at).toLocaleString() + '</td>';
+            rhtml += '<td><button class="btn" style="padding:3px 10px;font-size:0.72rem" onclick="approveReg(\\'' + r.id + '\\')">Approve</button> ';
+            rhtml += '<button class="btn secondary" style="padding:3px 10px;font-size:0.72rem" onclick="rejectReg(\\'' + r.id + '\\')">Reject</button></td></tr>';
+          }
+          rhtml += '</tbody></table>';
+          document.getElementById('pending-registrations').innerHTML = rhtml;
+        } else {
+          document.getElementById('pending-registrations').innerHTML = '<div style="color:var(--mt);padding:12px;text-align:center">No pending registrations</div>';
+        }
+
+        // All users
+        const usersData = await fetchJSON('/api/admin/users');
+        // Also fetch API key status
+        let apiKeyMap = {};
+        let allApiKeys = [];
+        try {
+          const akData = await fetch('/api/admin/api-keys', { headers: authHeaders() });
+          if (akData.ok) { const d = await akData.json(); allApiKeys = d.keys || []; allApiKeys.forEach(function(k){ if(!apiKeyMap[k.userId]) apiKeyMap[k.userId] = []; apiKeyMap[k.userId].push(k); }); }
+        } catch(e) { /* ignore */ }
+
+        // Pending API keys section
+        const pendingKeys = allApiKeys.filter(function(k){ return k.status === 'active' && !k.adminVerified; });
+        if (pendingKeys.length > 0) {
+          let pkhtml = '<table><thead><tr><th>User</th><th>Key Preview</th><th>Submitted</th><th>Actions</th></tr></thead><tbody>';
+          for (const pk of pendingKeys) {
+            pkhtml += '<tr>';
+            pkhtml += '<td>' + esc(pk.userEmail || pk.userId) + '</td>';
+            pkhtml += '<td><code style="font-size:0.72rem">' + esc(pk.keyPreview || '***') + '</code></td>';
+            pkhtml += '<td style="font-size:0.78rem;color:var(--mt)">' + (pk.createdAt ? new Date(pk.createdAt).toLocaleString() : '-') + '</td>';
+            pkhtml += '<td>';
+            pkhtml += '<button class="btn" style="padding:3px 10px;font-size:0.72rem" onclick="verifyApiKey(\\'' + pk.id + '\\')">Approve</button> ';
+            pkhtml += '<button class="btn secondary" style="padding:3px 10px;font-size:0.72rem" onclick="rejectApiKey(\\'' + pk.id + '\\')">Reject</button>';
+            pkhtml += '</td></tr>';
+          }
+          pkhtml += '</tbody></table>';
+          document.getElementById('pending-api-keys').innerHTML = pkhtml;
+        } else {
+          document.getElementById('pending-api-keys').innerHTML = '<div style="color:var(--mt);padding:12px;text-align:center">No pending API key approvals</div>';
+        }
+        if (usersData.users && usersData.users.length > 0) {
+          let uhtml = '<table><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th>API Key</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>';
+          for (const u of usersData.users) {
+            const roleName = u.roleName || u.role_name || u.role || 'developer';
+            const displayName = u.fullName || u.full_name || u.name || '-';
+            const lastLogin = u.lastLoginAt || u.last_login_at || u.last_login || null;
+            const stCls = u.status === 'active' ? 'st-ok' : (u.status === 'suspended' ? 'st-warn' : 'st-err');
+            const userKeys = apiKeyMap[u.id] || [];
+            const activeKey = userKeys.find(function(k){ return k.status === 'active'; });
+            var keyHtml;
+            if (activeKey && activeKey.adminVerified) {
+              keyHtml = '<span title="Verified: ' + esc(activeKey.keyPreview||'') + '" style="display:inline-flex;align-items:center;gap:4px"><span style="width:7px;height:7px;border-radius:50%;background:var(--ok);display:inline-block"></span><code style="font-size:0.7rem">' + esc(activeKey.keyPreview||'set') + '</code><span class="st-badge st-ok" style="font-size:0.6rem;padding:1px 4px">verified</span></span>';
+            } else if (activeKey && !activeKey.adminVerified) {
+              keyHtml = '<span title="Pending verification: ' + esc(activeKey.keyPreview||'') + '" style="display:inline-flex;align-items:center;gap:4px"><span style="width:7px;height:7px;border-radius:50%;background:orange;display:inline-block"></span><code style="font-size:0.7rem">' + esc(activeKey.keyPreview||'set') + '</code><span class="st-badge st-warn" style="font-size:0.6rem;padding:1px 4px">pending</span></span>';
+            } else {
+              keyHtml = '<span style="display:inline-flex;align-items:center;gap:4px"><span style="width:7px;height:7px;border-radius:50%;background:var(--err);display:inline-block"></span><span style="font-size:0.7rem;color:var(--err)">not set</span></span>';
+            }
+            uhtml += '<tr>';
+            uhtml += '<td>' + esc(u.email) + '</td>';
+            uhtml += '<td>' + esc(displayName) + '</td>';
+            uhtml += '<td><code>' + esc(roleName) + '</code></td>';
+            uhtml += '<td><span class="st-badge ' + stCls + '">' + esc(u.status) + '</span></td>';
+            uhtml += '<td>' + keyHtml + '</td>';
+            uhtml += '<td style="font-size:0.78rem;color:var(--mt)">' + (lastLogin ? new Date(lastLogin).toLocaleString() : 'never') + '</td>';
+            uhtml += '<td>';
+            uhtml += '<select onchange="changeRole(\\'' + u.id + '\\', this.value)" style="padding:2px 6px;font-size:0.72rem;background:var(--s2);border:1px solid var(--bd);border-radius:4px;color:var(--fg)">';
+            for (const role of (availableRoles.length ? availableRoles : ['admin','developer','readonly'])) {
+              uhtml += '<option' + (roleName === role ? ' selected' : '') + '>' + role + '</option>';
+            }
+            uhtml += '</select> ';
+            if (u.status === 'active') {
+              uhtml += '<button class="btn secondary" style="padding:2px 8px;font-size:0.68rem" onclick="changeStatus(\\'' + u.id + '\\', \\'suspended\\')">Suspend</button>';
+            } else {
+              uhtml += '<button class="btn" style="padding:2px 8px;font-size:0.68rem" onclick="changeStatus(\\'' + u.id + '\\', \\'active\\')">Activate</button>';
+            }
+            uhtml += '</td></tr>';
+          }
+          uhtml += '</tbody></table>';
+          document.getElementById('users-list').innerHTML = uhtml;
+        } else {
+          document.getElementById('users-list').innerHTML = '<div style="color:var(--mt);padding:12px;text-align:center">No users yet. Bootstrap admin is auto-created on first start.</div>';
+        }
+      } catch(e) { document.getElementById('users-list').innerHTML = '<div style="color:var(--err)">Error loading users: ' + esc(String(e)) + '</div>'; }
+    }
+
+    async function approveReg(id) {
+      await fetch('/api/admin/registrations/' + id + '/approve', { method: 'POST', headers: Object.assign({'Content-Type':'application/json'}, authHeaders()), body: JSON.stringify({roleName:'developer'}) });
+      loadUsers();
+    }
+    async function rejectReg(id) {
+      const reason = prompt('Rejection reason (optional):');
+      await fetch('/api/admin/registrations/' + id + '/reject', { method: 'POST', headers: Object.assign({'Content-Type':'application/json'}, authHeaders()), body: JSON.stringify({reason}) });
+      loadUsers();
+    }
+    async function verifyApiKey(keyId) {
+      try {
+        const res = await fetch('/api/admin/api-keys/' + keyId + '/verify', { method: 'POST', headers: Object.assign({'Content-Type':'application/json'}, authHeaders()) });
+        const data = await res.json().catch(function(){ return {}; });
+        if (!res.ok) { alert('Failed to verify key: ' + (data.error || 'Unknown error')); return; }
+        loadUsers();
+      } catch(e) { alert('Error verifying key: ' + e); }
+    }
+    async function rejectApiKey(keyId) {
+      if (!confirm('Reject and revoke this API key?')) return;
+      try {
+        const res = await fetch('/api/admin/api-keys/' + keyId + '/reject', { method: 'POST', headers: Object.assign({'Content-Type':'application/json'}, authHeaders()) });
+        const data = await res.json().catch(function(){ return {}; });
+        if (!res.ok) { alert('Failed to reject key: ' + (data.error || 'Unknown error')); return; }
+        loadUsers();
+      } catch(e) { alert('Error rejecting key: ' + e); }
+    }
+    async function changeRole(userId, roleName) {
+      const res = await fetch('/api/admin/users/' + userId + '/role', { method: 'PATCH', headers: Object.assign({'Content-Type':'application/json'}, authHeaders()), body: JSON.stringify({roleName}) });
+      const data = await res.json().catch(function(){ return {}; });
+      if (!res.ok) throw new Error(data.error || 'Failed to update role');
+      loadUsers();
+    }
+    async function changeStatus(userId, status) {
+      const res = await fetch('/api/admin/users/' + userId + '/status', { method: 'PATCH', headers: Object.assign({'Content-Type':'application/json'}, authHeaders()), body: JSON.stringify({status}) });
+      const data = await res.json().catch(function(){ return {}; });
+      if (!res.ok) throw new Error(data.error || 'Failed to update status');
+      loadUsers();
+    }
+
+    // On load — check if we have a saved token and show user info
+    if (dashToken) {
+      fetch('/api/auth/me', { headers: authHeaders() }).then(r => r.json()).then(d => {
+        if (d.user) {
+          document.getElementById('dashLogoutBtn').style.display = '';
+          document.getElementById('dashLoginAdminBtn').style.display = 'none';
+          document.getElementById('sidebarUser').style.display = 'flex';
+          document.getElementById('sidebarUserEmail').textContent = d.user.email;
+          document.getElementById('sidebarAvatar').textContent = (d.user.email||'A')[0].toUpperCase();
+        } else { dashToken = ''; localStorage.removeItem('dashToken'); }
+      }).catch(() => { dashToken = ''; localStorage.removeItem('dashToken'); });
+    }
+    // Auto-load dashboard
+    loadDashboard();
   </script>
 </body>
 </html>`
@@ -1098,6 +1674,7 @@ app.route("/api/chat", chatRoutes(workspaces, chatLog, parallelExecutor))
 app.route("/api/skills", skillRoutes(skills))
 app.route("/api/policies", policyRoutes(policyEngine))
 app.route("/api/hitl", hitlRoutes(hitl))
+app.route("/api/admin", adminRoutes())
 
 // ── CLI client download routes (no auth) ─────────────────────────────
 // These serve the user-facing CLI tool. Users run:

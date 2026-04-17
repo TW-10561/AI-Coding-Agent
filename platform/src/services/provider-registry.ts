@@ -37,7 +37,7 @@ export interface LocalProvider {
   status: "online" | "offline" | "unknown"
   latencyMs?: number
   models: LocalModel[]
-  isPrimary: boolean  // the env.VLLM_BASE_URL one is "primary" (default for new sessions)
+  isPrimary: boolean  // the gateway provider is "primary" (default for new sessions)
 }
 
 export interface CloudModel {
