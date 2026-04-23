@@ -16,6 +16,8 @@ export interface ChatSession {
   lastMessageAt: number
   createdAt: number
   userId?: string
+  userEmail?: string
+  userDisplayName?: string
 }
 
 export interface ChatEntry {
@@ -65,10 +67,42 @@ class PgChatLogStore {
       VALUES (${ulid()}, ${opts.sessionId}, 'assistant', ${opts.assistantReply}, ${opts.model}, ${opts.toolCallCount ?? 0}, ${opts.latencyMs ?? null}, ${now})`
   }
 
+  async registerSession(opts: {
+    sessionId: string
+    title: string
+    model: string
+    messageCount: number
+    userId?: string
+  }): Promise<void> {
+    const now = new Date()
+    const existing = await pgSql`SELECT id FROM chat_sessions WHERE id = ${opts.sessionId}`
+    if (existing.length === 0) {
+      await pgSql`
+        INSERT INTO chat_sessions (id, title, model, message_count, last_message_at, created_at, user_id)
+        VALUES (${opts.sessionId}, ${opts.title}, ${opts.model}, ${opts.messageCount}, ${now}, ${now}, ${opts.userId ?? null})`
+    } else {
+      await pgSql`
+        UPDATE chat_sessions
+        SET title = ${opts.title}, model = ${opts.model},
+            message_count = GREATEST(message_count, ${opts.messageCount}),
+            last_message_at = ${now}
+        WHERE id = ${opts.sessionId}`
+    }
+  }
+
   async listSessions(limit = 50, userId?: string): Promise<ChatSession[]> {
     const rows = userId
-      ? await pgSql`SELECT * FROM chat_sessions WHERE user_id = ${userId} ORDER BY last_message_at DESC LIMIT ${limit}`
-      : await pgSql`SELECT * FROM chat_sessions ORDER BY last_message_at DESC LIMIT ${limit}`
+      ? await pgSql`
+          SELECT cs.*, u.email AS user_email, u.full_name AS user_display_name
+          FROM chat_sessions cs
+          LEFT JOIN users u ON cs.user_id = u.id
+          WHERE cs.user_id = ${userId}
+          ORDER BY cs.last_message_at DESC LIMIT ${limit}`
+      : await pgSql`
+          SELECT cs.*, u.email AS user_email, u.full_name AS user_display_name
+          FROM chat_sessions cs
+          LEFT JOIN users u ON cs.user_id = u.id
+          ORDER BY cs.last_message_at DESC LIMIT ${limit}`
     return rows.map((r: any) => ({
       id: r.id,
       title: r.title,
@@ -77,6 +111,8 @@ class PgChatLogStore {
       lastMessageAt: new Date(r.last_message_at).getTime(),
       createdAt: new Date(r.created_at).getTime(),
       userId: r.user_id ?? undefined,
+      userEmail: r.user_email ?? undefined,
+      userDisplayName: r.user_display_name ?? undefined,
     }))
   }
 
@@ -174,6 +210,29 @@ class SqliteChatLogStore {
     )
   }
 
+  registerSession(opts: {
+    sessionId: string
+    title: string
+    model: string
+    messageCount: number
+    userId?: string
+  }): void {
+    const now = Date.now()
+    const existing = this.db.query("SELECT id FROM chat_sessions WHERE id = ?").get(opts.sessionId) as any
+    if (!existing) {
+      this.db.run(
+        `INSERT INTO chat_sessions (id, title, model, message_count, last_message_at, created_at, user_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [opts.sessionId, opts.title, opts.model, opts.messageCount, now, now, opts.userId ?? null]
+      )
+    } else {
+      this.db.run(
+        `UPDATE chat_sessions SET title = ?, model = ?, message_count = MAX(message_count, ?), last_message_at = ? WHERE id = ?`,
+        [opts.title, opts.model, opts.messageCount, now, opts.sessionId]
+      )
+    }
+  }
+
   listSessions(limit = 50, userId?: string): ChatSession[] {
     const query = userId
       ? this.db.query("SELECT * FROM chat_sessions WHERE user_id = ? ORDER BY last_message_at DESC LIMIT ?").all(userId, limit)
@@ -235,6 +294,19 @@ export class ChatLogStore {
     // PG store is async but callers use fire-and-forget; catch errors silently
     if (result instanceof Promise) {
       result.catch((err: any) => console.error("[chat-log] PG store error:", err))
+    }
+  }
+
+  registerSession(opts: {
+    sessionId: string
+    title: string
+    model: string
+    messageCount: number
+    userId?: string
+  }): void {
+    const result = this.impl.registerSession(opts)
+    if (result instanceof Promise) {
+      result.catch((err: any) => console.error("[chat-log] PG registerSession error:", err))
     }
   }
 

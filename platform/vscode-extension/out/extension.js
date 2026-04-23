@@ -43,9 +43,12 @@ const ChatViewProvider_1 = require("./chat/ChatViewProvider");
 const ChatParticipant_1 = require("./chat/ChatParticipant");
 const ThirdwaveClient_1 = require("./sdk/ThirdwaveClient");
 const WorkspaceManager_1 = require("./workspace/WorkspaceManager");
+const InlineCompletionProvider_1 = require("./providers/InlineCompletionProvider");
+const DiffPanel_1 = require("./providers/DiffPanel");
 let client;
 let chatProvider;
 let workspaceManager;
+let inlineProvider;
 let modelStatusBar;
 let agentStatusBar;
 function activate(context) {
@@ -61,6 +64,10 @@ function activate(context) {
     context.subscriptions.push(vscode.window.registerWebviewViewProvider("thirdwave.chat", chatProvider, {
         webviewOptions: { retainContextWhenHidden: true },
     }));
+    // ── Inline Completion Provider ─────────────────────────────────
+    inlineProvider = new InlineCompletionProvider_1.InlineCompletionProvider(client);
+    context.subscriptions.push(vscode.languages.registerInlineCompletionItemProvider({ pattern: "**" }, // All file types
+    inlineProvider));
     // ── Chat Participant (@thirdwave in VS Code Chat) ──────────────
     (0, ChatParticipant_1.registerChatParticipant)(context, () => client);
     // ── Status Bar: Model ──────────────────────────────────────────
@@ -149,6 +156,22 @@ function activate(context) {
         }
     }), vscode.commands.registerCommand("thirdwave.refreshSkills", () => {
         // Handled inside the webview now
+    }), vscode.commands.registerCommand("thirdwave.toggleInlineCompletion", async () => {
+        const cfg = vscode.workspace.getConfiguration("thirdwave");
+        const current = cfg.get("enableInlineCompletion", true);
+        await cfg.update("enableInlineCompletion", !current, vscode.ConfigurationTarget.Global);
+        vscode.window.showInformationMessage(`Thirdwave Inline Completion ${!current ? "enabled" : "disabled"}`);
+    }), 
+    // Show a diff panel with Accept / Reject / Edit for a proposed change
+    vscode.commands.registerCommand("thirdwave.showDiff", (original, proposed, filePath, onAccept) => {
+        DiffPanel_1.DiffPanel.show(context, {
+            original,
+            proposed,
+            filePath: filePath ?? "untitled",
+            onAccept: onAccept ?? ((p) => {
+                vscode.workspace.openTextDocument({ content: p }).then((doc) => vscode.window.showTextDocument(doc, { preview: false }));
+            }),
+        });
     }));
     // ── Watch config changes ───────────────────────────────────────
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
@@ -159,6 +182,7 @@ function activate(context) {
                 apiKey: cfg.get("apiKey", "") || undefined,
             });
             chatProvider.updateClient(client);
+            inlineProvider.updateClient(client);
         }
     }));
     // Health check on activate

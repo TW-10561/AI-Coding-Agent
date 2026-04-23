@@ -6,6 +6,7 @@ import { Hono } from "hono"
 import { userService, verifyJWT } from "../../services/user-service"
 import { apiKeyService } from "../../services/api-key-service"
 import { sql, pgEnabled } from "../../config/db"
+import { defaultRBACEngineV2 } from "../../services/policy-engine"
 
 /** Middleware: extract JWT user and require admin role */
 async function requireAdmin(c: any, next: any) {
@@ -14,7 +15,7 @@ async function requireAdmin(c: any, next: any) {
 
   try {
     const payload = await verifyJWT(bearer)
-    if (payload.role !== "admin") {
+    if (!payload || payload.role !== "admin") {
       return c.json({ error: "Admin access required" }, 403)
     }
     c.set("user", payload)
@@ -71,6 +72,17 @@ export function adminRoutes() {
     }
   })
 
+  // DELETE /api/admin/users/:id — permanently delete a user (admin only, cannot self-delete)
+  router.delete("/users/:id", async (c) => {
+    const adminUser = c.get("user") as any
+    try {
+      await userService.deleteUser(c.req.param("id"), adminUser.sub)
+      return c.json({ ok: true })
+    } catch (err: any) {
+      return c.json({ error: err.message }, err.status || 400)
+    }
+  })
+
   // ── Registration Approvals ───────────────────────────────────────
 
   // GET /api/admin/registrations — list pending registrations
@@ -119,11 +131,13 @@ export function adminRoutes() {
   router.get("/policies", async (c) => {
     if (!pgEnabled) return c.json({ policies: [] })
     const policies = await sql`
-      SELECT p.*, r.name as role_name, t.name as tool_name
+      SELECT p.id, p.tool_name, p.decision, p.updated_at,
+             r.name as role_name,
+             tm.description as tool_description, tm.risky, tm.category
       FROM tool_access_policies p
       JOIN roles r ON r.id = p.role_id
-      JOIN tool_metadata t ON t.id = p.tool_id
-      ORDER BY r.name, t.name
+      LEFT JOIN tool_metadata tm ON tm.name = p.tool_name
+      ORDER BY r.name, p.tool_name
     `
     return c.json({ policies })
   })
@@ -131,19 +145,78 @@ export function adminRoutes() {
   // PATCH /api/admin/policies/:id — update a single policy
   router.patch("/policies/:id", async (c) => {
     if (!pgEnabled) return c.json({ error: "PostgreSQL required" }, 503)
-    const { decision, requiresApproval } = await c.req.json()
-    const updates: any = {}
-    if (decision) updates.decision = decision
-    if (requiresApproval !== undefined) updates.requires_approval = requiresApproval
+    const { decision } = await c.req.json()
+    if (!["allow", "ask", "deny"].includes(decision)) {
+      return c.json({ error: "decision must be allow, ask, or deny" }, 400)
+    }
+    const adminUser = c.get("user") as any
 
     const [row] = await sql`
       UPDATE tool_access_policies
-      SET ${sql(updates)}
+      SET decision = ${decision}, updated_by = ${adminUser.sub}, updated_at = NOW()
       WHERE id = ${c.req.param("id")}
-      RETURNING *
+      RETURNING *, (SELECT name FROM roles WHERE id = role_id) as role_name
     `
     if (!row) return c.json({ error: "Policy not found" }, 404)
+    // Invalidate RBACEngineV2 cache for this tool+role combination
+    defaultRBACEngineV2.invalidate(row.tool_name, row.role_name)
     return c.json({ policy: row })
+  })
+
+  // POST /api/admin/policies/seed — seed default tool_metadata and policies
+  router.post("/policies/seed", async (c) => {
+    if (!pgEnabled) return c.json({ error: "PostgreSQL required" }, 503)
+    const TOOLS = [
+      { name: "read_file",         description: "Read file contents",         risky: false, category: "filesystem" },
+      { name: "write_file",        description: "Write/create files",         risky: false, category: "filesystem" },
+      { name: "edit_file",         description: "Patch/edit existing files",  risky: false, category: "filesystem" },
+      { name: "delete_file",       description: "Delete files",               risky: true,  category: "filesystem" },
+      { name: "list_directory",    description: "List directory contents",    risky: false, category: "filesystem" },
+      { name: "search_files",      description: "Search files by pattern",    risky: false, category: "search"     },
+      { name: "grep_search",       description: "Text search in files",       risky: false, category: "search"     },
+      { name: "bash",              description: "Execute shell commands",      risky: true,  category: "shell"      },
+      { name: "run_command",       description: "Run a single command",       risky: true,  category: "shell"      },
+      { name: "web_fetch",         description: "Fetch URL content",          risky: false, category: "web"        },
+      { name: "web_search",        description: "Search the web",             risky: false, category: "web"        },
+      { name: "call_skill",        description: "Invoke a registered skill",  risky: false, category: "agent"      },
+      { name: "spawn_agent",       description: "Spawn a sub-agent",          risky: true,  category: "agent"      },
+      { name: "memory_read",       description: "Read from memory store",     risky: false, category: "agent"      },
+      { name: "memory_write",      description: "Write to memory store",      risky: false, category: "agent"      },
+      { name: "git_operation",     description: "Execute git commands",       risky: true,  category: "shell"      },
+      { name: "database_query",    description: "Query a database",           risky: true,  category: "shell"      },
+    ]
+    // Upsert tool_metadata
+    for (const t of TOOLS) {
+      await sql`
+        INSERT INTO tool_metadata (name, description, risky, category)
+        VALUES (${t.name}, ${t.description}, ${t.risky}, ${t.category})
+        ON CONFLICT (name) DO UPDATE SET description = EXCLUDED.description, risky = EXCLUDED.risky, category = EXCLUDED.category`
+    }
+    // Get all roles
+    const roles = await sql`SELECT id, name FROM roles`
+    const roleMap: Record<string, string> = {}
+    for (const r of roles) roleMap[r.name] = r.id
+
+    const MATRIX: Record<string, Record<string, string>> = {
+      admin:            { bash: "allow", run_command: "allow", write_file: "allow", edit_file: "allow", delete_file: "allow", read_file: "allow", list_directory: "allow", search_files: "allow", grep_search: "allow", web_fetch: "allow", web_search: "allow", call_skill: "allow", spawn_agent: "allow", memory_read: "allow", memory_write: "allow", git_operation: "allow", database_query: "allow" },
+      developer:        { bash: "ask",   run_command: "ask",   write_file: "ask",   edit_file: "ask",   delete_file: "ask",   read_file: "allow", list_directory: "allow", search_files: "allow", grep_search: "allow", web_fetch: "ask",   web_search: "allow", call_skill: "ask",   spawn_agent: "ask",   memory_read: "allow", memory_write: "ask",   git_operation: "ask",   database_query: "ask" },
+      readonly:         { bash: "deny",  run_command: "deny",  write_file: "deny",  edit_file: "deny",  delete_file: "deny",  read_file: "allow", list_directory: "allow", search_files: "allow", grep_search: "allow", web_fetch: "deny",  web_search: "allow", call_skill: "deny",  spawn_agent: "deny",  memory_read: "allow", memory_write: "deny",  git_operation: "deny",  database_query: "deny" },
+      autonomous_agent: { bash: "allow", run_command: "allow", write_file: "allow", edit_file: "allow", delete_file: "allow", read_file: "allow", list_directory: "allow", search_files: "allow", grep_search: "allow", web_fetch: "allow", web_search: "allow", call_skill: "allow", spawn_agent: "allow", memory_read: "allow", memory_write: "allow", git_operation: "allow", database_query: "allow" },
+    }
+    let seeded = 0
+    for (const [roleName, perms] of Object.entries(MATRIX)) {
+      const roleId = roleMap[roleName]
+      if (!roleId) continue
+      for (const [toolName, decision] of Object.entries(perms)) {
+        await sql`
+          INSERT INTO tool_access_policies (tool_name, role_id, decision)
+          VALUES (${toolName}, ${roleId}, ${decision})
+          ON CONFLICT (tool_name, role_id) DO NOTHING`
+        seeded++
+      }
+    }
+    defaultRBACEngineV2.invalidate()
+    return c.json({ ok: true, seeded })
   })
 
   // ── API Key Management (admin view) ──────────────────────────────

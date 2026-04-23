@@ -22,7 +22,7 @@ services:
       NODE_ENV: development
       LOG_LEVEL: "${LOG_LEVEL:-debug}"
       OPENCODE_URL: "http://127.0.0.1:4096"
-      OPENCODE_BIN: /home/tw10549/.opencode/bin/opencode
+      OPENCODE_BIN: /app/platform/node_modules/opencode-linux-arm64-musl/bin/opencode
       OPENCODE_DIR: /workspace
       AGENT_WORKSPACE_DIR: /workspace/.agent-workspace
       # PostgreSQL — connects to the postgres service
@@ -58,7 +58,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3100/health/ready"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:3100/health"]
       interval: 15s
       timeout: 5s
       start_period: 60s

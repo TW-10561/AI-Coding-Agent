@@ -11,7 +11,7 @@
 ## The 8 Problems Explained Simply
 
 ### Problem 1: No HITL Approval Workflow
-🔴 **Critical**
+ **Critical**
 
 **What it means:** Right now, when your AI agent wants to do something risky (like delete files or run bash commands), it just does it. No human checks it first.
 

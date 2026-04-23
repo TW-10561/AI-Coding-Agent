@@ -180,22 +180,57 @@ app.get("/", async (c) => {
   const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
   const modelIcon = (name: string): string => {
     const n = (name || '').toLowerCase()
-    if (n.includes('gpt') || n.includes('openai')) return '🤖'
-    if (n.includes('claude')) return '🟣'
-    if (n.includes('gemini') || n.includes('bard') || n.includes('palm')) return '💎'
-    if (n.includes('llama')) return '🦙'
-    if (n.includes('qwen')) return '🐉'
-    if (n.includes('mistral') || n.includes('mixtral')) return '🌊'
-    if (n.includes('deepseek')) return '🔭'
-    if (n.includes('phi')) return '🔬'
+    // Image / audio
     if (n.includes('dall-e') || n.includes('dalle') || n.includes('flux') || n.includes('stable-diff')) return '🎨'
     if (n.includes('whisper') || n.includes('speech') || n.includes('tts') || n.includes('audio')) return '🎤'
-    if (n.includes('embed') || n.includes('sentence') || n.includes('vector')) return '📊'
+    // Embeddings
+    if (n.includes('embed') || n.includes('sentence') || n.includes('vector') || n.includes('e5-')) return '📊'
+    // Code-specialized
+    if (n.includes('codestral') || n.includes('starcoder') || n.includes('codegemma') || n.includes('deepseek-coder')) return '💻'
+    // Reasoning
+    if (n.includes('o1') || n.includes('o3') || n.includes('o4')) return '🧩'
+    // GPT family
+    if (n.includes('gpt-5') || n.includes('gpt5')) return '🚀'
+    if (n.includes('gpt-4.1') || n.includes('gpt4.1')) return '⚡'
+    if (n.includes('gpt-4o') || n.includes('gpt4o')) return '🌐'
+    if (n.includes('gpt-4-turbo') || n.includes('gpt4-turbo')) return '🏎️'
+    if (n.includes('gpt-4') || n.includes('gpt4')) return '🔵'
+    if (n.includes('gpt-3.5') || n.includes('gpt3.5')) return '🤖'
+    if (n.includes('gpt-oss') || n.includes('gpt_oss')) return '🔓'
+    if (n.includes('gpt') || n.includes('openai')) return '🤖'
+    // Claude
+    if (n.includes('claude-opus')) return '🟣'
+    if (n.includes('claude-sonnet')) return '🟤'
+    if (n.includes('claude-haiku')) return '🌸'
+    if (n.includes('claude')) return '🟣'
+    // Google
+    if (n.includes('gemini') || n.includes('bard') || n.includes('palm')) return '💎'
+    if (n.includes('gemma')) return '💠'
+    // Meta LLaMA
+    if (n.includes('llama')) return '🦙'
+    // Qwen
+    if (n.includes('qwen3')) return '🐉'
+    if (n.includes('qwen2')) return '🔆'
+    if (n.includes('qwen')) return '🐉'
+    // MiniMax
     if (n.includes('minimax')) return '✨'
-    if (n.includes('codestral') || n.includes('starcoder') || n.includes('codegemma') || n.includes('coder')) return '💻'
-    if (n.includes('yi')) return '🌟'
+    // Mistral
+    if (n.includes('mixtral')) return '🌪️'
+    if (n.includes('mistral')) return '🌊'
+    // DeepSeek
+    if (n.includes('deepseek')) return '🔭'
+    // GLM / ChatGLM
+    if (n.includes('glm') || n.includes('chatglm')) return '🔷'
+    // Phi
+    if (n.includes('phi')) return '🔬'
+    // Yi
+    if (n.includes('yi-')) return '🌟'
+    // Falcon
     if (n.includes('falcon')) return '🦅'
+    // Solar
     if (n.includes('solar')) return '☀️'
+    // Cohere
+    if (n.includes('command') || n.includes('cohere')) return '🧲'
     return '🧠'
   }
 
@@ -649,9 +684,9 @@ app.get("/", async (c) => {
                 <div class="stat-label" data-i18n="statPlatform">Platform</div>
               </div>
               <div class="hero-stat">
-                <div class="stat-icon">${health.ok ? '🟢' : '�'}</div>
-                <div class="stat-num" style="color:${health.ok ? 'var(--ok)' : 'var(--warn, #f0ad4e)'}">${health.ok ? 'Connected' : 'Standalone'}</div>
-                <div class="stat-label" data-i18n="statOpenCode">OpenCode Engine</div>
+                <div class="stat-icon">${health.ok ? '🟢' : '🔗'}</div>
+                <div class="stat-num" style="color:${health.ok ? 'var(--ok)' : 'var(--accent, #a78bfa)'}">${health.ok ? 'Connected' : 'Integrated'}</div>
+                <div class="stat-label" data-i18n="statOpenCode">OpenCode Agent Loop</div>
               </div>
               <div class="hero-stat">
                 <div class="stat-icon">🤖</div>
@@ -893,8 +928,12 @@ app.get("/", async (c) => {
       if (dashToken) h['Authorization'] = 'Bearer ' + dashToken;
       return h;
     }
-    async function fetchJSON(path) {
-      const res = await fetch(API + path, { headers: authHeaders() });
+    async function fetchJSON(path, opts) {
+      const fetchOpts = { headers: authHeaders(), ...(opts || {}) };
+      if (opts && opts.method && opts.method !== 'GET' && !fetchOpts.headers['Content-Type']) {
+        fetchOpts.headers = { ...fetchOpts.headers, 'Content-Type': 'application/json' };
+      }
+      const res = await fetch(API + path, fetchOpts);
       if (res.status === 401 && path.startsWith('/api/admin')) {
         // Need login for admin endpoints
         showDashLogin();
@@ -1214,17 +1253,32 @@ app.get("/", async (c) => {
         if (list.length === 0) {
           container.innerHTML = '<div style="color:var(--muted);padding:12px">' + esc(t.noWorkspaces) + '</div>';
         } else {
-          container.innerHTML = list.map(ws => {
-            const lastSeen = new Date(ws.lastAccessedAt).toLocaleString();
-            const tags = (ws.tags||[]).map(tag => '<span class="ws-tag">' + esc(tag) + '</span>').join('');
-            const activeBadge = ws.active ? '<span class="ws-active-badge">' + t.active + '</span>' : '';
-            const owner = ws.ownerEmail ? ' &nbsp;&bull;&nbsp; user: ' + esc(ws.ownerEmail) : '';
+          // Group workspaces by directory so multi-user shared dirs are shown together
+          const byDir = {};
+          for (const ws of list) {
+            const dir = ws.directory;
+            if (!byDir[dir]) byDir[dir] = [];
+            byDir[dir].push(ws);
+          }
+          container.innerHTML = Object.entries(byDir).map(function([dir, wsList]) {
+            const ws = wsList[0]; // primary entry for name/active badge
+            const lastSeen = new Date(Math.max(...wsList.map(function(w) { return w.lastAccessedAt; }))).toLocaleString();
+            const allTags = [...new Set(wsList.flatMap(function(w) { return w.tags || []; }))];
+            const tags = allTags.map(function(tag) { return '<span class="ws-tag">' + esc(tag) + '</span>'; }).join('');
+            const isActive = wsList.some(function(w) { return w.active; });
+            const activeBadge = isActive ? '<span class="ws-active-badge">' + t.active + '</span>' : '';
+            const users = wsList.filter(function(w) { return w.ownerEmail; }).map(function(w) { return esc(w.ownerEmail); });
+            const userBadges = users.map(function(e) {
+              return '<span style="padding:1px 7px;background:var(--accent-soft);border:1px solid rgba(99,102,241,.2);border-radius:4px;font-size:0.7rem;color:var(--accent-h)">' + e + '</span>';
+            }).join(' ');
             return '<div class="ws-card">' +
               '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px">' +
               '<span class="ws-name">' + esc(ws.name) + '</span>' + activeBadge + tags +
+              (wsList.length > 1 ? '<span style="padding:1px 6px;background:var(--info-bg);border:1px solid var(--info-bd);border-radius:4px;font-size:0.7rem;color:var(--info)">' + wsList.length + ' users</span>' : '') +
               '</div>' +
-              '<div class="ws-dir">' + esc(ws.directory) + '</div>' +
-              '<div class="ws-meta">' + lastSeen + ' &nbsp;&bull;&nbsp; ref: ' + ws.id.slice(0,8) + owner + '</div>' +
+              '<div class="ws-dir">' + esc(dir) + '</div>' +
+              (userBadges ? '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:5px">' + userBadges + '</div>' : '') +
+              '<div class="ws-meta">' + lastSeen + ' &nbsp;&bull;&nbsp; ref: ' + ws.id.slice(0,8) + '</div>' +
               '</div>';
           }).join('');
         }
@@ -1400,6 +1454,10 @@ app.get("/", async (c) => {
             const model = s.model || '?';
             const mc = model.toLowerCase();
             const mColor = mc.includes('claude') ? '#f59e0b' : mc.includes('gpt') || mc.includes('openai') ? '#10b981' : mc.includes('gemini') ? '#3b82f6' : mc.includes('llama') ? '#ec4899' : '#a78bfa';
+            const userName = s.userDisplayName || s.userEmail || s.userId || 'Unknown User';
+            const userAvatar = (userName || 'U')[0].toUpperCase();
+            const avatarColors = ['#6366f1','#ec4899','#f59e0b','#10b981','#3b82f6','#8b5cf6'];
+            const avatarColor = avatarColors[userName.charCodeAt(0) % avatarColors.length];
             return '<div style="padding:14px 16px;border:1px solid var(--bd);border-radius:10px;margin-bottom:10px;background:var(--s1)">' +
               '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px">' +
               '<div style="display:flex;align-items:center;gap:8px">' +
@@ -1408,8 +1466,12 @@ app.get("/", async (c) => {
               '</div>' +
               '<span style="color:var(--mt);font-size:0.75rem">' + esc(time) + '</span>' +
               '</div>' +
-              '<div style="color:var(--fg);font-size:0.88rem;font-weight:500;margin-bottom:4px">' + esc(s.title || '(untitled)') + '</div>' +
-              '<div style="color:var(--mt);font-size:0.75rem">' + (s.messageCount || 0) + ' ' + t.messages + '</div>' +
+              '<div style="color:var(--fg);font-size:0.88rem;font-weight:500;margin-bottom:6px">' + esc(s.title || '(untitled)') + '</div>' +
+              '<div style="display:flex;align-items:center;gap:8px">' +
+              '<span style="width:20px;height:20px;border-radius:50%;background:' + avatarColor + ';color:#fff;font-size:0.65rem;font-weight:700;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0">' + esc(userAvatar) + '</span>' +
+              '<span style="color:var(--mt);font-size:0.75rem">' + esc(userName) + '</span>' +
+              '<span style="color:var(--mt);font-size:0.72rem;margin-left:auto">' + (s.messageCount || 0) + ' ' + t.messages + '</span>' +
+              '</div>' +
               '</div>';
           }).join('');
         }
@@ -1418,22 +1480,62 @@ app.get("/", async (c) => {
 
     function getModelIcon(name) {
       const n = (name || '').toLowerCase();
-      if (n.includes('gpt') || n.includes('openai')) return '🤖';
-      if (n.includes('claude')) return '🟣';
-      if (n.includes('gemini') || n.includes('bard') || n.includes('palm')) return '💎';
-      if (n.includes('llama')) return '🦙';
-      if (n.includes('qwen')) return '🐉';
-      if (n.includes('mistral') || n.includes('mixtral')) return '🌊';
-      if (n.includes('deepseek')) return '🔭';
-      if (n.includes('phi')) return '🔬';
-      if (n.includes('dall-e') || n.includes('dalle') || n.includes('flux') || n.includes('stable-diff')) return '🎨';
+      // Image / audio generation
+      if (n.includes('dall-e') || n.includes('dalle') || n.includes('flux') || n.includes('stable-diff') || n.includes('image-gen')) return '🎨';
       if (n.includes('whisper') || n.includes('speech') || n.includes('tts') || n.includes('audio')) return '🎤';
-      if (n.includes('embed') || n.includes('sentence') || n.includes('vector')) return '📊';
+      // Embedding / vector
+      if (n.includes('embed') || n.includes('sentence') || n.includes('vector') || n.includes('e5-')) return '📊';
+      // Code-specialized
+      if (n.includes('codestral') || n.includes('starcoder') || n.includes('codegemma') || n.includes('deepseek-coder') || n.includes('qwen-coder')) return '💻';
+      // Reasoning / thinking
+      if (n.includes('o1') || n.includes('o3') || n.includes('o4') || (n.includes('reason') && !n.includes('deepseeek'))) return '🧩';
+      // OpenAI GPT family — differentiate
+      if (n.includes('gpt-5') || n.includes('gpt5')) return '🚀';
+      if (n.includes('gpt-4.1') || n.includes('gpt4.1')) return '⚡';
+      if (n.includes('gpt-4o') || n.includes('gpt4o')) return '🌐';
+      if (n.includes('gpt-4-turbo') || n.includes('gpt4-turbo')) return '🏎️';
+      if (n.includes('gpt-4') || n.includes('gpt4')) return '🔵';
+      if (n.includes('gpt-3.5') || n.includes('gpt3.5') || n.includes('gpt-3') || n.includes('gpt3')) return '🤖';
+      if (n.includes('gpt-oss') || n.includes('gpt_oss')) return '🔓';
+      if (n.includes('gpt') || n.includes('openai')) return '🤖';
+      // Anthropic Claude
+      if (n.includes('claude-opus')) return '🟣';
+      if (n.includes('claude-sonnet')) return '🟤';
+      if (n.includes('claude-haiku')) return '🌸';
+      if (n.includes('claude')) return '🟣';
+      // Google
+      if (n.includes('gemini') || n.includes('bard') || n.includes('palm')) return '💎';
+      if (n.includes('gemma')) return '💠';
+      // Meta LLaMA
+      if (n.includes('llama-3') || n.includes('llama3')) return '🦙';
+      if (n.includes('llama')) return '🦙';
+      // Alibaba Qwen
+      if (n.includes('qwen3')) return '🐉';
+      if (n.includes('qwen2')) return '🔆';
+      if (n.includes('qwen')) return '🐉';
+      // MiniMax
       if (n.includes('minimax')) return '✨';
-      if (n.includes('codestral') || n.includes('starcoder') || n.includes('codegemma') || n.includes('coder')) return '💻';
-      if (n.includes('yi')) return '🌟';
+      // Mistral / Mixtral
+      if (n.includes('mixtral')) return '🌪️';
+      if (n.includes('mistral')) return '🌊';
+      // DeepSeek
+      if (n.includes('deepseek')) return '🔭';
+      // GLM / ChatGLM
+      if (n.includes('glm') || n.includes('chatglm')) return '🔷';
+      // Microsoft Phi
+      if (n.includes('phi-4') || n.includes('phi4')) return '🔬';
+      if (n.includes('phi')) return '🔬';
+      // Yi
+      if (n.includes('yi-')) return '🌟';
+      // Falcon
       if (n.includes('falcon')) return '🦅';
+      // Solar
       if (n.includes('solar')) return '☀️';
+      // Cohere
+      if (n.includes('command') || n.includes('cohere')) return '🧲';
+      // Perplexity
+      if (n.includes('sonar') || n.includes('pplx')) return '🔍';
+      // Default
       return '🧠';
     }
 
@@ -1462,11 +1564,12 @@ app.get("/", async (c) => {
                 html += '<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--s2);border:1px solid var(--bd);border-radius:8px">';
                 html += '<span style="font-size:1.2rem;flex-shrink:0">' + icon + '</span>';
                 html += '<div style="flex:1;min-width:0">';
-                html += '<div style="color:#a78bfa;font-family:ui-monospace,monospace;font-size:0.83rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(m.name || m.id) + '</div>';
+                html += '<span style="color:#a78bfa;font-family:ui-monospace,monospace;font-size:0.83rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block">' + esc(m.name || m.id) + '</span>';
                 html += '<div style="display:flex;gap:10px;margin-top:3px">';
                 if (m.contextLimit) html += '<span style="font-size:0.7rem;color:var(--mt)">ctx <strong style="color:var(--fg)">' + Math.floor(m.contextLimit/1000) + 'k</strong></span>';
                 if (m.outputLimit) html += '<span style="font-size:0.7rem;color:var(--mt)">out <strong style="color:var(--fg)">' + m.outputLimit + '</strong></span>';
-                html += '</div></div></div>';
+                html += '</div></div>';
+                html += '</div>';
               }
               html += '</div>';
             }
@@ -1584,6 +1687,7 @@ app.get("/", async (c) => {
             } else {
               uhtml += '<button class="btn" style="padding:2px 8px;font-size:0.68rem" onclick="changeStatus(\\'' + u.id + '\\', \\'active\\')">Activate</button>';
             }
+            uhtml += ' <button class="btn" style="padding:2px 8px;font-size:0.68rem;background:var(--err,#c0392b);color:#fff;border-color:var(--err,#c0392b)" onclick="deleteUser(\\'' + u.id + '\\', \\'' + esc(u.email) + '\\')">Delete</button>';
             uhtml += '</td></tr>';
           }
           uhtml += '</tbody></table>';
@@ -1632,6 +1736,13 @@ app.get("/", async (c) => {
       if (!res.ok) throw new Error(data.error || 'Failed to update status');
       loadUsers();
     }
+    async function deleteUser(userId, email) {
+      if (!confirm('Permanently delete user "' + email + '"?\\n\\nThis removes their account, API keys, and cannot be undone.')) return;
+      const res = await fetch('/api/admin/users/' + userId, { method: 'DELETE', headers: authHeaders() });
+      const data = await res.json().catch(function(){ return {}; });
+      if (!res.ok) { alert('Delete failed: ' + (data.error || 'Unknown error')); return; }
+      loadUsers();
+    }
 
     // On load — check if we have a saved token and show user info
     if (dashToken) {
@@ -1670,7 +1781,7 @@ app.route("/api/orchestrations", orchestrationRoutes(orchestrator))
 app.route("/api/queue", queueRoutes(scalableQueue, taskTracker))
 app.route("/api/parallel", parallelRoutes(parallelExecutor))
 app.route("/api/registry", registryRoutes())
-app.route("/api/chat", chatRoutes(workspaces, chatLog, parallelExecutor))
+app.route("/api/chat", chatRoutes(workspaces, chatLog, parallelExecutor, budget))
 app.route("/api/skills", skillRoutes(skills))
 app.route("/api/policies", policyRoutes(policyEngine))
 app.route("/api/hitl", hitlRoutes(hitl))

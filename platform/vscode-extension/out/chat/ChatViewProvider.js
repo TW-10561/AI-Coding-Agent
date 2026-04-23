@@ -54,10 +54,14 @@ class ChatViewProvider {
     _currentLanguage = "en";
     _isStreaming = false;
     _abortController = null;
+    // Output channel — shows agent tool execution in a visible VS Code terminal tab
+    _agentOutput;
     _modelConfigOverrides = {};
     // ── HITL polling during streaming ─────────────────────────────
     _hitlPollTimer = null;
     _shownHitlIds = new Set();
+    // ── Registration status polling ────────────────────────────────
+    _registrationPollTimer = null;
     constructor(_extensionUri, client, _context, _workspace) {
         this._extensionUri = _extensionUri;
         this._context = _context;
@@ -67,6 +71,14 @@ class ChatViewProvider {
         this._currentModel = cfg.get("defaultModel", "");
         this._currentAgent = cfg.get("defaultAgent", "build");
         this._currentLanguage = this._context.globalState.get("thirdwave.language", "en");
+        // Restore last active session so history survives VS Code reload
+        const savedSessionId = this._context.globalState.get("thirdwave.currentSessionId");
+        if (savedSessionId) {
+            this._currentSessionId = savedSessionId;
+            this._history = this._loadSessionHistory(savedSessionId);
+        }
+        // Create the agent output channel (visible in the Output panel)
+        this._agentOutput = vscode.window.createOutputChannel("Thirdwave Agent");
     }
     updateClient(client) {
         this._client = client;
@@ -112,6 +124,7 @@ class ChatViewProvider {
         const id = `sess_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
         this._currentSessionId = id;
         this._history = [];
+        this._context.globalState.update("thirdwave.currentSessionId", id);
         this._post({ type: "sessionCreated", sessionId: id });
         this._post({ type: "clearChat" });
         // Don't persist yet — session is saved only when the first message is sent.
@@ -182,7 +195,11 @@ class ChatViewProvider {
                     }
                     try {
                         const result = await this._client.register(email, password, fullName);
-                        this._post({ type: "registerSuccess", message: result.message || "Registration submitted for approval" });
+                        this._post({ type: "registerSuccess", message: result.message || "Registration submitted for approval", requestId: result.requestId });
+                        // Start polling registration status (every 30s) until approved/rejected
+                        if (result.requestId) {
+                            this._startRegistrationPoll(result.requestId);
+                        }
                     }
                     catch (e) {
                         this._post({ type: "authError", error: e.message || "Registration failed" });
@@ -225,7 +242,7 @@ class ChatViewProvider {
                     try {
                         const result = await this._client.saveApiKey(apiKey, displayName, gatewayUrl);
                         const keys = await this._client.listApiKeys().catch(() => ({ keys: [] }));
-                        this._post({ type: "apiKeySaved", result, keys: keys.keys || [] });
+                        this._post({ type: "apiKeySaved", result, keys: keys.keys || [], adminVerified: result?.key?.adminVerified === true });
                     }
                     catch (e) {
                         this._post({ type: "apiKeySaveError", error: e.message || "Failed to save API key" });
@@ -334,6 +351,10 @@ class ChatViewProvider {
                     break;
                 case "ready":
                     this._post({ type: "init", model: this._currentModel, agent: this._currentAgent, sessionId: this._currentSessionId, language: this._currentLanguage });
+                    // Reload history from globalState if in-memory copy is stale (extension reload)
+                    if (this._history.length === 0 && this._currentSessionId) {
+                        this._history = this._loadSessionHistory(this._currentSessionId);
+                    }
                     if (this._history.length > 0)
                         this._post({ type: "loadHistory", messages: this._history });
                     this._loadModels();
@@ -389,6 +410,7 @@ class ChatViewProvider {
                 case "switchSession":
                     if (typeof msg.sessionId === "string") {
                         this._currentSessionId = msg.sessionId;
+                        this._context.globalState.update("thirdwave.currentSessionId", msg.sessionId);
                         this._history = this._loadSessionHistory(msg.sessionId);
                         this._post({ type: "loadHistory", messages: this._history });
                     }
@@ -627,6 +649,23 @@ class ChatViewProvider {
     // When the agentic loop is running (directChat in flight), the server
     // may block on HITL approval.  Poll for pending requests every 2s and
     // surface them as a VS Code modal dialog so the user can Allow / Deny.
+    _startRegistrationPoll(requestId) {
+        if (this._registrationPollTimer)
+            clearInterval(this._registrationPollTimer);
+        this._registrationPollTimer = setInterval(async () => {
+            try {
+                const res = await this._client.getRegistrationStatus(requestId);
+                this._post({ type: "registrationStatus", status: res.status, message: res.message, requestId });
+                if (res.status === "approved" || res.status === "rejected") {
+                    clearInterval(this._registrationPollTimer);
+                    this._registrationPollTimer = null;
+                }
+            }
+            catch {
+                // Swallow — server may not be reachable yet
+            }
+        }, 30_000);
+    }
     _startHitlPolling() {
         this._stopHitlPolling();
         this._shownHitlIds.clear();
@@ -673,6 +712,8 @@ class ChatViewProvider {
     async _onUserMessage(text) {
         if (this._isStreaming)
             return;
+        // Ensure JWT is set on the client before every chat request
+        this._ensureToken();
         if (!this._currentSessionId)
             await this.createSession();
         const userMsg = { role: "user", content: text, timestamp: Date.now() };
@@ -854,6 +895,12 @@ class ChatViewProvider {
                     // the full agentic tool-calling loop. Pass abort signal so stop works.
                     // Show a "Working" block so users see the agent is active
                     this._post({ type: "streamWorking", phase: "thinking" });
+                    // Open agent output channel so users can see live activity in the Output panel
+                    this._agentOutput.clear();
+                    this._agentOutput.appendLine(`[Thirdwave Agent] Starting task: ${text.slice(0, 120)}${text.length > 120 ? "…" : ""}`);
+                    this._agentOutput.appendLine(`[Thirdwave Agent] Model: ${this._currentModel || "(auto)"} | ${new Date().toLocaleTimeString()}`);
+                    this._agentOutput.appendLine("─".repeat(60));
+                    this._agentOutput.show(true); // show but don't steal focus
                     // Start HITL polling — while directChat blocks, the server may pause
                     // on HITL approval. We poll every 2s to surface pending approvals.
                     this._startHitlPolling();
@@ -880,6 +927,12 @@ class ChatViewProvider {
                                 if (abortSignal.aborted)
                                     break;
                                 this._post({ type: "streamToolStep", tool: tc.tool, args: tc.args, success: tc.success, result: (tc.result || "").slice(0, 300) });
+                                // Log tool execution to the output channel so users can see agent activity
+                                const argSummary = Object.entries(tc.args || {}).map(([k, v]) => `${k}=${JSON.stringify(v).slice(0, 80)}`).join(" ");
+                                const status = tc.success ? "✓" : "✗";
+                                this._agentOutput.appendLine(`${status} [${tc.tool}] ${argSummary}`);
+                                if (tc.result && !tc.success)
+                                    this._agentOutput.appendLine(`  → ${String(tc.result).slice(0, 200)}`);
                                 await delay(40);
                             }
                         }
@@ -950,10 +1003,11 @@ class ChatViewProvider {
             }
             catch (err) {
                 // If aborted, treat as user-initiated stop — not an error
-                if (abortSignal.aborted) {
-                    // Clear working indicator if still showing
+                if (abortSignal.aborted || err?.name === "AbortError" || err?.cause?.name === "AbortError") {
+                    // Clear working indicator and exit cleanly — no error message shown
                     this._post({ type: "streamWorking", phase: "done" });
-                    // Keep whatever text we got so far
+                    this._post({ type: "streamEnd" });
+                    return; // finally block still runs
                 }
                 else {
                     // Fallback to non-streaming if stream fails
@@ -992,6 +1046,10 @@ class ChatViewProvider {
                 };
                 this._history.push(aMsg);
                 this._post({ type: "streamEnd", message: aMsg });
+                if (meta.toolCalls?.length) {
+                    this._agentOutput.appendLine("─".repeat(60));
+                    this._agentOutput.appendLine(`[Thirdwave Agent] Done — ${meta.toolCalls.length} tool call(s), ${Math.round(latency / 1000)}s`);
+                }
             }
             else {
                 // Model returned absolutely nothing — show a helpful fallback
@@ -1012,13 +1070,24 @@ class ChatViewProvider {
                     this._sessions[si].updatedAt = Date.now();
                     this._persistSessions();
                 }
+                // Sync stream-based sessions to backend so admin Sessions page shows them
+                if (!tools) {
+                    const sessionTitle = this._sessions.find(s => s.id === this._currentSessionId)?.title || text.substring(0, 60);
+                    this._client.registerChatSession({
+                        sessionId: this._currentSessionId,
+                        title: sessionTitle,
+                        model: meta.model || this._currentModel || "unknown",
+                        messageCount: this._history.length,
+                    });
+                }
             }
         }
         catch (e) {
             this._post({ type: "streamWorking", phase: "done" });
             this._post({ type: "streamEnd" });
-            // Don't show error for user-initiated abort
-            if (e.name !== "AbortError") {
+            // Don't show error for user-initiated abort (also catches TypeError wrapping AbortError)
+            const isAbort = e.name === "AbortError" || e.cause?.name === "AbortError";
+            if (!isAbort) {
                 const friendlyError = this._formatErrorMessage(e.message ?? String(e));
                 this._post({ type: "addMessage", message: { role: "system", content: `Error: ${friendlyError}`, timestamp: Date.now() } });
             }
@@ -1043,14 +1112,14 @@ class ChatViewProvider {
             const status = parseInt(jsonMatch[1], 10);
             try {
                 const body = JSON.parse(jsonMatch[2]);
-                // 403 — API key not verified
-                if (status === 403 && body.error && /not been verified|no key is configured|api key/i.test(body.error)) {
-                    return `🔑 API Key Not Verified — ${body.error}`;
-                }
-                // 403 — Model access denied (gateway ACL)
-                if (status === 403 && body.error && /model access denied/i.test(body.error)) {
+                // 403 — Model access restricted (gateway ACL) — must be checked BEFORE generic api-key match
+                if (status === 403 && body.error && /model access (denied|restricted)/i.test(body.error)) {
                     const modelName = body.model || "the selected model";
-                    return `⚠️ Model Access Denied — "${modelName}" is not available with your current API key. Try switching to a different model in the model selector above.`;
+                    return `⛔ Model Access Restricted — "${modelName}" is not permitted with your API key (gateway policy). Please select a different model.`;
+                }
+                // 403 — API key not verified
+                if (status === 403 && body.error && /not been verified|no key is configured/i.test(body.error)) {
+                    return `🔑 API Key Not Verified — ${body.error}`;
                 }
                 // 403 — Policy violation
                 if (status === 403 && body.error === "Policy violation") {
@@ -1061,9 +1130,13 @@ class ChatViewProvider {
                 if (status === 429) {
                     return `⏳ Rate Limited — Too many requests. Please wait a moment and try again.`;
                 }
-                // 502/503 — Gateway unavailable
+                // 502/503 — Model backend down or returning empty
                 if (status === 502 || status === 503) {
-                    return `🔌 Service Unavailable — The model provider is temporarily unavailable. Please try again in a few seconds.`;
+                    const modelName = body.model || "The selected model";
+                    if (body.errorType === "model_unavailable") {
+                        return `🔴 Model Unavailable — "${modelName}" is not responding (empty output). The model may be overloaded, loading, or restricted. Switch to a different model and retry.`;
+                    }
+                    return `🔴 Model Backend Down — "${modelName}" is currently unavailable (the inference server is offline or loading). Try again in a moment, or switch to a different model.`;
                 }
                 // Generic with parsed error field
                 if (body.error) {
@@ -1169,7 +1242,6 @@ class ChatViewProvider {
           <button class="it-btn" id="mdBtn" title="Active model"><svg viewBox="0 0 24 24"><path d="M20 18c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2H0v2h24v-2h-4zM4 6h16v10H4V6z"/></svg><span class="it-lbl" id="mdLbl">loading...</span></button>
           <span class="it-sep"></span>
           <button class="it-btn" id="compactBtn" title="Compact conversation"><svg viewBox="0 0 24 24" width="14" height="14"><path d="M6 19h12v2H6v-2zm0-2h12v-2H6v2zm0-4h12v-2H6v2zm0-4h12V7H6v2zm0-6v2h12V3H6z"/></svg><span class="it-lbl">Compact</span></button>
-          <button class="it-btn" id="diagBtn" title="Show diagnostics"><svg viewBox="0 0 24 24" width="14" height="14"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg><span class="it-lbl" id="diagLbl">0</span></button>
           <div class="active-skills-bar" id="activeSkillsBar" style="display:none"></div>
         </div>
       </div>
@@ -1363,25 +1435,25 @@ class ChatViewProvider {
             </div>
           </div>
           <div class="sec">
-            <div class="st">Display Name</div>
-            <input class="auth-inp" id="profileName" type="text" placeholder="Your name" style="margin-bottom:6px" />
-            <button class="auth-btn primary" id="saveProfileBtn" style="font-size:12px;padding:6px 0">Save Name</button>
+            <div class="st" data-i18n="displayName">Display Name</div>
+            <input class="auth-inp" id="profileName" type="text" data-i18n-placeholder="yourName" placeholder="Your name" style="margin-bottom:6px" />
+            <button class="auth-btn primary" id="saveProfileBtn" style="font-size:12px;padding:6px 0" data-i18n="saveName">Save Name</button>
             <div id="profileMsg" class="acct-feedback" style="display:none"></div>
           </div>
           <div class="sec">
-            <div class="st">Infra vLLM API Key</div>
-            <div class="apikey-input-wrap" style="margin-bottom:6px">
-              <input class="auth-inp" id="userApiKey" type="password" placeholder="vllm-..." style="margin-bottom:0;padding-right:36px" />
-              <button class="apikey-toggle" id="acctKeyToggle" type="button" title="Show/hide key"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg></button>
-            </div>
-            <div style="display:flex;gap:6px;margin-bottom:6px">
-              <button class="auth-btn secondary" id="verifyApiKeyBtn" style="font-size:12px;padding:6px 0">Verify</button>
-              <button class="auth-btn primary" id="saveApiKeyBtn" style="font-size:12px;padding:6px 0">Save Key</button>
+            <div class="st" data-i18n="infraVllmApiKey">Infra vLLM API Key</div>
+            <div id="apiKeyStatus" style="display:none;margin-bottom:8px;padding:6px 10px;border-radius:var(--r);font-size:11px;font-weight:600"></div>
+            <div id="apiKeyInputArea">
+              <div class="apikey-input-wrap" style="margin-bottom:6px">
+                <input class="auth-inp" id="userApiKey" type="password" placeholder="vllm-..." style="margin-bottom:0;padding-right:36px" />
+                <button class="apikey-toggle" id="acctKeyToggle" type="button" title="Show/hide key"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg></button>
+              </div>
+              <button class="auth-btn primary" id="saveApiKeyBtn" style="font-size:12px;padding:6px 0;margin-bottom:6px" data-i18n="saveKey">Save Key</button>
             </div>
             <div id="apiKeyMsg" class="acct-feedback" style="display:none"></div>
             <div id="apiKeyList" class="acct-key-list"></div>
             <div id="activeKeyDisplay" style="display:none">
-              <div class="acct-sec-lbl" style="margin-top:10px">Active Key</div>
+              <div class="acct-sec-lbl" style="margin-top:10px" data-i18n="activeKey">Active Key</div>
               <div class="active-key-wrap">
                 <input class="active-key-field masked" id="activeKeyField" type="text" readonly />
                 <button class="apikey-toggle" id="activeKeyToggle" type="button" title="Show/hide key"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg></button>
@@ -1392,7 +1464,7 @@ class ChatViewProvider {
           <div class="sec" style="margin-top:8px">
             <button class="auth-btn secondary" id="logoutBtn" style="font-size:12px;padding:7px 0;display:flex;align-items:center;justify-content:center;gap:6px">
               <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z"/></svg>
-              Sign Out
+              <span data-i18n="signOut">Sign Out</span>
             </button>
           </div>
         </div>

@@ -1,48 +1,19 @@
-# ── Thirdwave AI — Development Dockerfile ─────────────────────────────
-# Builds the platform server for development use.
-# Includes all dependencies for the backend, TUI, and OpenCode engine.
-# ────────────────────────────────────────────────────────────────────────
-
-# ── Stage 1: Build OpenCode from source ────────────────────────────────
 FROM oven/bun:1.3.10-alpine AS opencode-build
-
 WORKDIR /build
-
-# Copy monorepo package files for install
 COPY package.json bun.lock* turbo.json ./
-# Create placeholder dirs for optional opencode packages (may not exist in this repo)
 RUN mkdir -p packages/opencode packages/script
-
-# Install deps
 RUN bun install --frozen-lockfile 2>/dev/null || bun install
-
-# Copy opencode source and build (only if present in build context)
 RUN if [ -d packages/opencode ] && [ -f packages/opencode/package.json ]; then \
       bun install --cwd packages/opencode && \
       cd packages/opencode && bun run build -- --single --skip-install; \
     fi
-
-# ── Stage 2: Platform runtime ─────────────────────────────────────────
 FROM oven/bun:1.3.10-alpine AS runtime
-
-# Install system deps needed by the platform
 RUN apk add --no-cache git ripgrep curl docker-cli gcompat libc6-compat nodejs npm
-
 WORKDIR /app
-
-# Install platform dependencies (includes opencode-ai npm package which brings platform-specific binaries)
 COPY platform/package.json ./platform/
 RUN cd platform && bun install
-
-# Clean up bad cached OpenCode binary wrapper if it exists from bun install
-# This ensures the npm package wrapper uses the correct platform-specific binary
-RUN rm -f /app/platform/node_modules/opencode-ai/bin/.opencode
-
-# Install TUI dependencies
 COPY platform/tui/package.json ./platform/tui/
 RUN cd platform/tui && bun install
-
-# Copy platform source
 COPY platform/src ./platform/src
 COPY platform/scripts ./platform/scripts
 COPY platform/bin ./platform/bin
@@ -51,15 +22,9 @@ COPY platform/HITL ./platform/HITL
 COPY platform/util ./platform/util
 COPY platform/skills ./platform/skills
 COPY platform/tsconfig.json ./platform/
-# .env is provided at runtime via docker-compose environment; create empty placeholder
 RUN touch ./platform/.env
-
-# Create workspace directory for agent operations
 RUN mkdir -p /workspace/.agent-workspace
-
 WORKDIR /app/platform
-
-# Default environment
 ENV PORT=3100
 ENV HOST=0.0.0.0
 ENV NODE_ENV=development
@@ -67,11 +32,7 @@ ENV LOG_LEVEL=debug
 ENV OPENCODE_URL=http://127.0.0.1:4096
 ENV OPENCODE_BIN=opencode
 ENV OPENCODE_DIR=/workspace
-
 EXPOSE 3100 4096
-
 HEALTHCHECK --interval=15s --timeout=5s --start-period=60s \
   CMD wget -qO- http://localhost:3100/health/ready || exit 1
-
-# Start the platform server (with --watch for dev if bun supports it)
 CMD ["bun", "run", "scripts/start-all.ts"]

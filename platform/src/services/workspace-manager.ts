@@ -55,8 +55,11 @@ class PgWorkspaceManager {
     if (!fs.existsSync(absDir)) throw new Error(`Directory does not exist: ${absDir}`)
     if (!fs.statSync(absDir).isDirectory()) throw new Error(`Not a directory: ${absDir}`)
 
-    const existing = await pgSql`SELECT id FROM workspaces WHERE directory = ${absDir}`
-    if (existing.length > 0) throw new Error(`Directory already registered as workspace ${existing[0].id}`)
+    // Check per-user uniqueness — same user cannot register the same directory twice
+    if (opts.ownerId) {
+      const userExisting = await pgSql`SELECT id FROM workspaces WHERE directory = ${absDir} AND owner_id = ${opts.ownerId}`
+      if (userExisting.length > 0) throw new Error(`Directory already registered as workspace ${userExisting[0].id}`)
+    }
 
     const now = new Date()
     const tags = opts.tags ?? []
@@ -81,12 +84,16 @@ class PgWorkspaceManager {
     }
   }
 
-  async switchTo(id: string): Promise<Workspace> {
-    const ws = await this.get(id)
+  async switchTo(id: string, ownerId?: string): Promise<Workspace> {
+    const ws = await this.get(id, ownerId)
     if (!ws) throw new Error(`Workspace not found: ${id}`)
     if (!fs.existsSync(ws.directory)) throw new Error(`Workspace directory no longer exists: ${ws.directory}`)
 
-    await pgSql`UPDATE workspaces SET active = FALSE`
+    if (ownerId) {
+      await pgSql`UPDATE workspaces SET active = FALSE WHERE owner_id = ${ownerId}`
+    } else {
+      await pgSql`UPDATE workspaces SET active = FALSE`
+    }
     await pgSql`UPDATE workspaces SET active = TRUE, last_accessed_at = NOW() WHERE id = ${id}`
     this._activeID = id
     ws.active = true
@@ -94,28 +101,53 @@ class PgWorkspaceManager {
     return ws
   }
 
-  async get(id: string): Promise<Workspace | undefined> {
-    const rows = await pgSql`
-      SELECT w.*, u.email AS owner_email
-      FROM workspaces w
-      LEFT JOIN users u ON u.id = w.owner_id
-      WHERE w.id = ${id}
-    `
+  async get(id: string, ownerId?: string): Promise<Workspace | undefined> {
+    const rows = ownerId
+      ? await pgSql`
+          SELECT w.*, u.email AS owner_email
+          FROM workspaces w
+          LEFT JOIN users u ON u.id = w.owner_id
+          WHERE w.id = ${id} AND w.owner_id = ${ownerId}
+        `
+      : await pgSql`
+          SELECT w.*, u.email AS owner_email
+          FROM workspaces w
+          LEFT JOIN users u ON u.id = w.owner_id
+          WHERE w.id = ${id}
+        `
     return rows.length > 0 ? this.rowToWorkspace(rows[0]) : undefined
   }
 
-  async findByDirectory(directory: string): Promise<Workspace | undefined> {
+  async findByDirectory(directory: string, ownerId?: string): Promise<Workspace | undefined> {
     const absDir = path.resolve(directory)
-    const rows = await pgSql`
-      SELECT w.*, u.email AS owner_email
-      FROM workspaces w
-      LEFT JOIN users u ON u.id = w.owner_id
-      WHERE w.directory = ${absDir}
-    `
+    const rows = ownerId
+      ? await pgSql`
+          SELECT w.*, u.email AS owner_email
+          FROM workspaces w
+          LEFT JOIN users u ON u.id = w.owner_id
+          WHERE w.directory = ${absDir} AND w.owner_id = ${ownerId}
+        `
+      : await pgSql`
+          SELECT w.*, u.email AS owner_email
+          FROM workspaces w
+          LEFT JOIN users u ON u.id = w.owner_id
+          WHERE w.directory = ${absDir}
+        `
     return rows.length > 0 ? this.rowToWorkspace(rows[0]) : undefined
   }
 
-  async active(): Promise<Workspace | undefined> {
+  async active(ownerId?: string): Promise<Workspace | undefined> {
+    if (ownerId) {
+      const rows = await pgSql`
+        SELECT w.*, u.email AS owner_email
+        FROM workspaces w
+        LEFT JOIN users u ON u.id = w.owner_id
+        WHERE w.owner_id = ${ownerId} AND w.active = TRUE
+        ORDER BY w.last_accessed_at DESC
+        LIMIT 1
+      `
+      return rows.length > 0 ? this.rowToWorkspace(rows[0]) : undefined
+    }
     if (!this._activeID) return undefined
     return this.get(this._activeID)
   }
@@ -157,8 +189,8 @@ class PgWorkspaceManager {
     return rows.map((r: any) => this.rowToWorkspace(r))
   }
 
-  async update(id: string, patch: Partial<Pick<Workspace, "name" | "description" | "tags" | "metadata">>): Promise<Workspace> {
-    const ws = await this.get(id)
+  async update(id: string, patch: Partial<Pick<Workspace, "name" | "description" | "tags" | "metadata">>, ownerId?: string): Promise<Workspace> {
+    const ws = await this.get(id, ownerId)
     if (!ws) throw new Error(`Workspace not found: ${id}`)
 
     if (patch.name !== undefined) await pgSql`UPDATE workspaces SET name = ${patch.name} WHERE id = ${id}`
@@ -168,13 +200,17 @@ class PgWorkspaceManager {
     // Touch last_accessed_at on any update
     await pgSql`UPDATE workspaces SET last_accessed_at = NOW() WHERE id = ${id}`
 
-    return (await this.get(id))!
+    return (await this.get(id, ownerId))!
   }
 
-  async delete(id: string): Promise<boolean> {
-    const ws = await this.get(id)
+  async delete(id: string, ownerId?: string): Promise<boolean> {
+    const ws = await this.get(id, ownerId)
     if (!ws) return false
-    await pgSql`DELETE FROM workspaces WHERE id = ${id}`
+    if (ownerId) {
+      await pgSql`DELETE FROM workspaces WHERE id = ${id} AND owner_id = ${ownerId}`
+    } else {
+      await pgSql`DELETE FROM workspaces WHERE id = ${id}`
+    }
     if (this._activeID === id) this._activeID = null
     return true
   }
@@ -259,11 +295,15 @@ class SqliteWorkspaceManager {
     return ws
   }
 
-  switchTo(id: string): Workspace {
-    const ws = this.get(id)
+  switchTo(id: string, ownerId?: string): Workspace {
+    const ws = this.get(id, ownerId)
     if (!ws) throw new Error(`Workspace not found: ${id}`)
     if (!fs.existsSync(ws.directory)) throw new Error(`Workspace directory no longer exists: ${ws.directory}`)
-    this.db.run("UPDATE workspaces SET active = 0")
+    if (ownerId) {
+      this.db.run("UPDATE workspaces SET active = 0 WHERE owner_id = ?", [ownerId])
+    } else {
+      this.db.run("UPDATE workspaces SET active = 0")
+    }
     this.db.run("UPDATE workspaces SET active = 1, last_accessed_at = ? WHERE id = ?", [Date.now(), id])
     this._activeID = id
     ws.active = true
@@ -271,18 +311,26 @@ class SqliteWorkspaceManager {
     return ws
   }
 
-  get(id: string): Workspace | undefined {
-    const row = this.db.query("SELECT * FROM workspaces WHERE id = ?").get(id) as any
+  get(id: string, ownerId?: string): Workspace | undefined {
+    const row = ownerId
+      ? this.db.query("SELECT * FROM workspaces WHERE id = ? AND owner_id = ?").get(id, ownerId) as any
+      : this.db.query("SELECT * FROM workspaces WHERE id = ?").get(id) as any
     return row ? this.rowToWorkspace(row) : undefined
   }
 
-  findByDirectory(directory: string): Workspace | undefined {
+  findByDirectory(directory: string, ownerId?: string): Workspace | undefined {
     const absDir = path.resolve(directory)
-    const row = this.db.query("SELECT * FROM workspaces WHERE directory = ?").get(absDir) as any
+    const row = ownerId
+      ? this.db.query("SELECT * FROM workspaces WHERE directory = ? AND owner_id = ?").get(absDir, ownerId) as any
+      : this.db.query("SELECT * FROM workspaces WHERE directory = ?").get(absDir) as any
     return row ? this.rowToWorkspace(row) : undefined
   }
 
-  active(): Workspace | undefined {
+  active(ownerId?: string): Workspace | undefined {
+    if (ownerId) {
+      const row = this.db.query("SELECT * FROM workspaces WHERE owner_id = ? AND active = 1 ORDER BY last_accessed_at DESC LIMIT 1").get(ownerId) as any
+      return row ? this.rowToWorkspace(row) : undefined
+    }
     if (!this._activeID) return undefined
     return this.get(this._activeID)
   }
@@ -304,20 +352,24 @@ class SqliteWorkspaceManager {
     return rows.map(this.rowToWorkspace)
   }
 
-  update(id: string, patch: Partial<Pick<Workspace, "name" | "description" | "tags" | "metadata">>): Workspace {
-    const ws = this.get(id)
+  update(id: string, patch: Partial<Pick<Workspace, "name" | "description" | "tags" | "metadata">>, ownerId?: string): Workspace {
+    const ws = this.get(id, ownerId)
     if (!ws) throw new Error(`Workspace not found: ${id}`)
     if (patch.name !== undefined) this.db.run("UPDATE workspaces SET name = ? WHERE id = ?", [patch.name, id])
     if (patch.description !== undefined) this.db.run("UPDATE workspaces SET description = ? WHERE id = ?", [patch.description, id])
     if (patch.tags !== undefined) this.db.run("UPDATE workspaces SET tags = ? WHERE id = ?", [JSON.stringify(patch.tags), id])
     if (patch.metadata !== undefined) this.db.run("UPDATE workspaces SET metadata = ? WHERE id = ?", [JSON.stringify(patch.metadata), id])
-    return this.get(id)!
+    return this.get(id, ownerId)!
   }
 
-  delete(id: string): boolean {
-    const ws = this.get(id)
+  delete(id: string, ownerId?: string): boolean {
+    const ws = this.get(id, ownerId)
     if (!ws) return false
-    this.db.run("DELETE FROM workspaces WHERE id = ?", [id])
+    if (ownerId) {
+      this.db.run("DELETE FROM workspaces WHERE id = ? AND owner_id = ?", [id, ownerId])
+    } else {
+      this.db.run("DELETE FROM workspaces WHERE id = ?", [id])
+    }
     if (this._activeID === id) this._activeID = null
     return true
   }
@@ -361,13 +413,13 @@ export class WorkspaceManager {
   }
 
   async create(opts: WorkspaceCreateOptions): Promise<Workspace> { return this.impl.create(opts) }
-  async switchTo(id: string): Promise<Workspace> { return this.impl.switchTo(id) }
-  async get(id: string): Promise<Workspace | undefined> { return this.impl.get(id) }
-  async findByDirectory(dir: string): Promise<Workspace | undefined> { return this.impl.findByDirectory(dir) }
-  async active(): Promise<Workspace | undefined> { return this.impl.active() }
+  async switchTo(id: string, ownerId?: string): Promise<Workspace> { return this.impl.switchTo(id, ownerId) }
+  async get(id: string, ownerId?: string): Promise<Workspace | undefined> { return this.impl.get(id, ownerId) }
+  async findByDirectory(dir: string, ownerId?: string): Promise<Workspace | undefined> { return this.impl.findByDirectory(dir, ownerId) }
+  async active(ownerId?: string): Promise<Workspace | undefined> { return this.impl.active(ownerId) }
   async list(opts?: { tag?: string; ownerId?: string }): Promise<Workspace[]> { return this.impl.list(opts) }
-  async update(id: string, patch: Partial<Pick<Workspace, "name" | "description" | "tags" | "metadata">>): Promise<Workspace> { return this.impl.update(id, patch) }
-  async delete(id: string): Promise<boolean> { return this.impl.delete(id) }
+  async update(id: string, patch: Partial<Pick<Workspace, "name" | "description" | "tags" | "metadata">>, ownerId?: string): Promise<Workspace> { return this.impl.update(id, patch, ownerId) }
+  async delete(id: string, ownerId?: string): Promise<boolean> { return this.impl.delete(id, ownerId) }
   async stats(): Promise<{ total: number; active: string | null; directories: string[] }> { return this.impl.stats() }
   dispose() { this.impl.dispose() }
 }

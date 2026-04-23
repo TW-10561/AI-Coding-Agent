@@ -269,7 +269,7 @@ async function probeGateway(): Promise<LocalProvider | null> {
 
 // ── Registry build ────────────────────────────────────────────────────
 
-const CACHE_TTL_MS = 15_000     // 15 s — cheap to probe vLLM that often
+const CACHE_TTL_MS = 60_000     // 60 s — reduced from 15s to cut gateway probe overhead on every request
 
 let _cache: RegistrySnapshot | null = null
 let _cacheTs = 0
@@ -282,7 +282,9 @@ export async function buildRegistry(force = false): Promise<RegistrySnapshot> {
 
   // Gateway discovery — the ONLY source for local models
   const gw = await probeGateway()
-  if (gw) localProviders.push(gw)
+  if (gw) {
+    localProviders.push(gw)
+  }
 
   // Build cloud providers — only mark "configured" if their env key is set
   const cloudProviders: CloudProvider[] = CLOUD_CATALOG.map(p => ({

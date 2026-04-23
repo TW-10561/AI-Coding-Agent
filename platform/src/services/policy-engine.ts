@@ -19,6 +19,70 @@
 // ---------------------------------------------------------------------------
 
 import type { AuditLogger } from "./audit-logger"
+import { sql as pgSql, pgEnabled } from "../config/db"
+
+// ════════════════════════════════════════════════════════════════════════
+// Policy #8 — RBACEngineV2 (DB-backed with in-memory fallback + 30s cache)
+// ════════════════════════════════════════════════════════════════════════
+
+const RBAC_CACHE_TTL_MS = 30_000
+
+export class RBACEngineV2 {
+  private cache = new Map<string, { decision: Decision; expiresAt: number }>()
+
+  /** Check if toolName is allowed for userRole. Falls back to static matrix if DB unavailable. */
+  async checkToolAccess(toolName: string, userRole: string): Promise<Decision> {
+    const cacheKey = `${userRole}:${toolName}`
+    const cached = this.cache.get(cacheKey)
+    if (cached && cached.expiresAt > Date.now()) return cached.decision
+
+    if (pgEnabled) {
+      try {
+        const rows = await pgSql`
+          SELECT tap.decision FROM tool_access_policies tap
+          JOIN roles r ON r.id = tap.role_id
+          WHERE tap.tool_name = ${toolName} AND r.name = ${userRole}
+          LIMIT 1`
+        if (rows.length > 0) {
+          const decision = rows[0].decision as Decision
+          this.cache.set(cacheKey, { decision, expiresAt: Date.now() + RBAC_CACHE_TTL_MS })
+          return decision
+        }
+      } catch {
+        // DB unavailable — fall through to static matrix
+      }
+    }
+
+    // Fallback: map tool category to permission using static matrix
+    const role = userRole as Role
+    const perm = this._toolToPermission(toolName)
+    const staticDecision = ROLE_MATRIX[role]?.[perm] ?? "ask"
+    this.cache.set(cacheKey, { decision: staticDecision, expiresAt: Date.now() + RBAC_CACHE_TTL_MS })
+    return staticDecision
+  }
+
+  private _toolToPermission(toolName: string): Permission {
+    const n = toolName.toLowerCase()
+    if (n.includes("bash") || n.includes("shell") || n.includes("run") || n.includes("exec")) return "bash"
+    if (n.includes("write") || n.includes("edit") || n.includes("create") || n.includes("delete") || n.includes("patch")) return "edit"
+    if (n.includes("read") || n.includes("list") || n.includes("glob") || n.includes("search") || n.includes("grep")) return "read"
+    if (n.includes("fetch") || n.includes("web") || n.includes("url") || n.includes("http")) return "webfetch"
+    if (n.includes("skill")) return "skill"
+    return "read" // safe default
+  }
+
+  /** Invalidate cache for a specific role+tool combination (e.g. after admin update) */
+  invalidate(toolName?: string, roleName?: string) {
+    if (!toolName && !roleName) { this.cache.clear(); return }
+    for (const key of this.cache.keys()) {
+      if ((!roleName || key.startsWith(roleName + ":")) && (!toolName || key.endsWith(":" + toolName))) {
+        this.cache.delete(key)
+      }
+    }
+  }
+}
+
+export const defaultRBACEngineV2 = new RBACEngineV2()
 
 // ════════════════════════════════════════════════════════════════════════
 // Policy #2 — Sensitive File Guard

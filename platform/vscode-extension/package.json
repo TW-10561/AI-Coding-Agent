@@ -125,6 +125,16 @@
         "command": "thirdwave.refreshSkills",
         "title": "Thirdwave: Refresh Skills",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "thirdwave.toggleInlineCompletion",
+        "title": "Thirdwave: Toggle Inline Completion",
+        "icon": "$(lightbulb)"
+      },
+      {
+        "command": "thirdwave.showDiff",
+        "title": "Thirdwave: Show Diff Panel",
+        "icon": "$(diff)"
       }
     ],
     "viewsContainers": {
@@ -191,6 +201,11 @@
           "type": "boolean",
           "default": true,
           "description": "Enable tool calling for agentic responses"
+        },
+        "thirdwave.enableInlineCompletion": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable AI-powered inline code completions as you type"
         }
       }
     }

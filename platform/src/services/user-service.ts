@@ -414,6 +414,25 @@ export class UserService {
     `
     console.log(`[users] Default admin created: ${adminEmail} / admin123 — CHANGE PASSWORD IMMEDIATELY`)
   }
+
+  /**
+   * Hard-delete a user and all their associated data (API keys, sessions).
+   * Admins cannot delete their own account.
+   */
+  async deleteUser(targetUserId: string, requestingAdminId: string): Promise<void> {
+    if (!pgEnabled) throw new Error("PostgreSQL required")
+    if (targetUserId === requestingAdminId) {
+      throw Object.assign(new Error("You cannot delete your own account"), { status: 400 })
+    }
+    const [user] = await sql`SELECT id, email FROM users WHERE id = ${targetUserId}`
+    if (!user) throw Object.assign(new Error("User not found"), { status: 404 })
+
+    // Delete cascade: api_keys, registration_requests (by email), then user
+    await sql`DELETE FROM api_keys WHERE user_id = ${targetUserId}`
+    await sql`DELETE FROM registration_requests WHERE email = ${user.email}`
+    await sql`DELETE FROM users WHERE id = ${targetUserId}`
+    console.log(`[users] Admin ${requestingAdminId} deleted user ${user.email} (${targetUserId})`)
+  }
 }
 
 export const userService = new UserService()

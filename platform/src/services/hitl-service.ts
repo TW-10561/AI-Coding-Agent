@@ -59,12 +59,18 @@ export interface HITLConfig {
   autoApproveInAutonomous: boolean
   /** Max pending approvals before new requests are auto-denied */
   maxPendingApprovals: number
+  /** Optional Slack incoming-webhook URL; if set, posts a message on every 'ask' */
+  slackWebhookUrl?: string
+  /** Base URL of the platform (used to build approve/deny links in Slack messages) */
+  platformBaseUrl?: string
 }
 
 const DEFAULT_HITL_CONFIG: HITLConfig = {
   approvalTimeoutMs: 5 * 60 * 1000, // 5 minutes
   autoApproveInAutonomous: true,
   maxPendingApprovals: 50,
+  slackWebhookUrl: process.env.SLACK_WEBHOOK_URL,
+  platformBaseUrl: process.env.PLATFORM_BASE_URL ?? "http://localhost:3100",
 }
 
 // ── HITL Service ──────────────────────────────────────────────────────
@@ -353,6 +359,13 @@ export class HITLService {
       }
     }
 
+    // Fire Slack notification (best-effort, non-blocking)
+    if (this.config.slackWebhookUrl) {
+      this.notifySlack(request).catch(() => {
+        // Swallow Slack errors — HITL must not fail if Slack is unavailable
+      })
+    }
+
     // Audit log
     if (this.audit) {
       this.audit.log({
@@ -371,6 +384,72 @@ export class HITLService {
     }
 
     return request
+  }
+
+  private async notifySlack(req: ApprovalRequest): Promise<void> {
+    const { slackWebhookUrl, platformBaseUrl } = this.config
+    if (!slackWebhookUrl) return
+
+    const approveUrl = `${platformBaseUrl}/api/hitl/resolve/${req.id}?decision=approved`
+    const denyUrl    = `${platformBaseUrl}/api/hitl/resolve/${req.id}?decision=denied`
+
+    const emoji = req.severity === "critical" ? "🚨"
+      : req.severity === "high" ? "⚠️"
+      : req.severity === "medium" ? "🔶"
+      : "🔷"
+
+    const body = {
+      text: `${emoji} *HITL Approval Required* — \`${req.action}\``,
+      blocks: [
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: [
+              `${emoji} *HITL Approval Required*`,
+              `*Action*: \`${req.action}\``,
+              req.command ? `*Command*: \`${req.command.slice(0, 120)}\`` : null,
+              req.filePath ? `*File*: \`${req.filePath}\`` : null,
+              req.url ? `*URL*: ${req.url}` : null,
+              req.agentName ? `*Agent*: ${req.agentName}` : null,
+              req.description ? `*Details*: ${req.description}` : null,
+              `*Risk*: ${req.riskLevel ?? "unknown"} (score: ${req.riskScore ?? "?"})`,
+              `*Reasons*: ${req.reasons.slice(0, 3).join(", ")}`,
+              `*Expires*: <!date^${Math.floor(req.expiresAt / 1000)}^{time}|soon>`,
+            ].filter(Boolean).join("\n"),
+          },
+        },
+        {
+          type: "actions",
+          elements: [
+            {
+              type: "button",
+              text: { type: "plain_text", text: "✅ Approve" },
+              style: "primary",
+              url: approveUrl,
+              action_id: `hitl_approve_${req.id}`,
+            },
+            {
+              type: "button",
+              text: { type: "plain_text", text: "❌ Deny" },
+              style: "danger",
+              url: denyUrl,
+              action_id: `hitl_deny_${req.id}`,
+            },
+          ],
+        },
+      ],
+    }
+
+    const res = await fetch(slackWebhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      console.warn(`[hitl] Slack webhook failed: ${res.status} ${text.slice(0, 100)}`)
+    }
   }
 
   private expireOldRequests(): void {

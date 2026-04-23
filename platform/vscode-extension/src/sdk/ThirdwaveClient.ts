@@ -155,6 +155,13 @@ export class ThirdwaveClient {
     return this.request("POST", "/api/chat", opts, undefined, signal);
   }
 
+  /** Register a VS Code stream session with the backend (for admin Sessions page sync) */
+  async registerChatSession(opts: { sessionId: string; title: string; model: string; messageCount: number }): Promise<void> {
+    try {
+      await this.request("POST", "/api/chat/sessions/register", opts);
+    } catch { /* fire-and-forget — don't break UI on failure */ }
+  }
+
   /**
    * Stream chat via SSE — returns an async iterator of text chunks.
    * Falls back to non-streaming direct chat on error.
@@ -377,6 +384,10 @@ export class ThirdwaveClient {
 
   async register(email: string, password: string, fullName?: string): Promise<any> {
     return this.request("POST", "/api/auth/register", { email, password, fullName });
+  }
+
+  async getRegistrationStatus(requestId: string): Promise<{ status: string; message?: string }> {
+    return this.request("GET", `/api/auth/registration-status/${encodeURIComponent(requestId)}`);
   }
 
   async me(): Promise<{ user: any; token: any }> {

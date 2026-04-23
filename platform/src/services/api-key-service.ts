@@ -121,6 +121,39 @@ export class ApiKeyService {
       VALUES (${input.userId}, ${row.id}, 'created')
     `
 
+    // Auto-verify keys for admin users (they don't need separate approval)
+    try {
+      const [adminCheck] = await sql`
+        SELECT 1 FROM users u JOIN roles r ON u.role_id = r.id
+        WHERE u.id = ${input.userId} AND r.name = 'admin'
+      `
+      if (adminCheck) {
+        await sql`
+          UPDATE api_keys
+          SET admin_verified = TRUE, admin_verified_at = NOW(), admin_verified_by = ${input.userId}
+          WHERE id = ${row.id}
+        `
+        await sql`INSERT INTO api_key_audit_log (user_id, api_key_id, action) VALUES (${input.userId}, ${row.id}, 'admin_verified')`
+      }
+    } catch { /* non-fatal — admin can manually verify later */ }
+
+    // Auto-verify keys for admin users (they don't need separate approval)
+    try {
+      const [adminCheck] = await sql`
+        SELECT 1 FROM users u JOIN roles r ON u.role_id = r.id
+        WHERE u.id = ${input.userId} AND r.name = 'admin'
+      `
+      if (adminCheck) {
+        await sql`
+          UPDATE api_keys
+          SET admin_verified = TRUE, admin_verified_at = NOW(), admin_verified_by = ${input.userId}
+          WHERE id = ${row.id}
+        `
+        await sql`INSERT INTO api_key_audit_log (user_id, api_key_id, action) VALUES (${input.userId}, ${row.id}, 'admin_verified')`
+        row.admin_verified = true
+      }
+    } catch { /* non-fatal — admin can manually verify later */ }
+
     return { ...this._toRecord(row), gatewayVerification }
   }
 

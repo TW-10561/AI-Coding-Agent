@@ -120,6 +120,13 @@ export declare class ThirdwaveClient {
         limit?: number;
     }): Promise<MessageWithParts[]>;
     directChat(opts: DirectChatRequest, signal?: AbortSignal): Promise<DirectChatResponse>;
+    /** Register a VS Code stream session with the backend (for admin Sessions page sync) */
+    registerChatSession(opts: {
+        sessionId: string;
+        title: string;
+        model: string;
+        messageCount: number;
+    }): Promise<void>;
     /**
      * Stream chat via SSE — returns an async iterator of text chunks.
      * Falls back to non-streaming direct chat on error.
@@ -212,6 +219,10 @@ export declare class ThirdwaveClient {
         user: any;
     }>;
     register(email: string, password: string, fullName?: string): Promise<any>;
+    getRegistrationStatus(requestId: string): Promise<{
+        status: string;
+        message?: string;
+    }>;
     me(): Promise<{
         user: any;
         token: any;

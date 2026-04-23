@@ -49,8 +49,8 @@ Thirdwave currently has **fragmented database architecture** with **no HITL appr
 | 4 | **No Path-Level Access** | Can't restrict file/directory access per role | 🟠 High |
 | 5 | **No User Management** | No way to create/assign roles to team members | 🟠 High |
 | 6 | **Fragmented Audit Trail** | Compliance gaps; hard to trace HITL decisions | 🟠 High |
-| 7 | **SQLite at Scale** | Bottleneck at 20+ concurrent users | 🟡 Medium |
-| 8 | **No Approval Workflow UI** | Approvers have no way to see/approve requests | 🟡 Medium |
+| 7 | **SQLite at Scale** | Bottleneck at 20+ concurrent users | Medium |
+| 8 | **No Approval Workflow UI** | Approvers have no way to see/approve requests |  Medium |
 
 ---
 
@@ -58,8 +58,8 @@ Thirdwave currently has **fragmented database architecture** with **no HITL appr
 
 ### What We're Building
 
-✅ **Dynamic, database-backed RBAC system** — Create/edit roles without redeploying  
-✅ **Human-In-The-Loop approval workflow** — Risky actions require human approval  
+ **Dynamic, database-backed RBAC system** — Create/edit roles without redeploying  
+**Human-In-The-Loop approval workflow** — Risky actions require human approval  
 ✅ **Path-level access control** — Restrict which directories each role can read/write  
 ✅ **Comprehensive audit trail** — Proof of who approved/denied what  
 ✅ **Multi-user team support** — 10–50 engineers with different roles  
